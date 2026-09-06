@@ -282,6 +282,54 @@ def build_parser() -> argparse.ArgumentParser:
     tpl_use.add_argument("name", type=str)
     tpl_use.add_argument("--out", type=str, required=True, help="输出 JSON 路径")
 
+    # ── P6：反馈回路（submit-evaluation / compute-diff） ──
+    fb_p = sub.add_parser("feedback", help="P6 反馈回路：记录用户评价、计算产物 diff")
+    fb_sub = fb_p.add_subparsers(dest="feedback_cmd", required=True)
+    fb_eval = fb_sub.add_parser("submit", help="对一份合同记录用户评价（1-5 + verdict）")
+    fb_eval.add_argument("contract_id", type=str)
+    fb_eval.add_argument("--rating", type=int, required=True, choices=[1, 2, 3, 4, 5])
+    fb_eval.add_argument("--verdict", required=True, choices=["accept", "partial", "reject"])
+    fb_eval.add_argument("--revision", type=int, default=1)
+    fb_eval.add_argument("--attempt-id", type=str, default=None)
+    fb_eval.add_argument("--evaluator", type=str, default="user")
+    fb_eval.add_argument("--comments", type=str, default="")
+    fb_diff = fb_sub.add_parser("diff", help="计算 attempt 报告产物 vs 当前 workspace 的 diff")
+    fb_diff.add_argument("contract_id", type=str)
+    fb_diff.add_argument("--revision", type=int, default=1)
+    fb_diff.add_argument("--attempt-id", type=str, default=None)
+    fb_diff.add_argument("--workspace", type=str, default=None)
+
+    # ── P6：提升闭环（evolve-templates） ──
+    ev_p = sub.add_parser(
+        "evolve-templates",
+        help="P6: mine user_evaluations, write to templates/",
+    )
+    ev_p.add_argument("--min-rating", type=int, default=4, choices=[1, 2, 3, 4, 5])
+    ev_p.add_argument("--quality-threshold", type=float, default=0.7)
+    ev_p.add_argument("--limit", type=int, default=50)
+
+    # ── P6：多合同组合（portfolio） ──
+    pf_p = sub.add_parser("portfolio", help="P6 多合同一屏：按 lifecycle/deadline/acceptance 聚合")
+    pf_p.add_argument("--include-terminal", action="store_true", default=True)
+    pf_p.add_argument("--exclude-terminal", dest="include_terminal", action="store_false")
+    pf_p.add_argument("--limit", type=int, default=500)
+
+    # ── P6：trace（单合同完整时间轴） ──
+    tr_p = sub.add_parser(
+        "trace",
+        help="P6: contract timeline + eval + diff",
+    )
+    tr_p.add_argument("contract_id", type=str)
+    tr_p.add_argument("--revision", type=int, default=None)
+    tr_p.add_argument("--limit", type=int, default=500)
+
+    # ── P6：deadline 多级升级报告 ──
+    dl_p = sub.add_parser(
+        "deadline-report",
+        help="P6: scan active contracts, output actions",
+    )
+    dl_p.add_argument("--limit", type=int, default=500)
+
     # insights：接手包 / 看板 / 成本台账
     brief_p = sub.add_parser("brief", help="接手包：一份合同的状态/风险/最近失败/下一步")
     brief_p.add_argument("contract_id", type=str)
@@ -644,6 +692,197 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         return 1
 
+    # ── P6：反馈 / 提升 / 多合同 / trace / deadline-report ──
+    if args.command == "feedback":
+        from pathlib import Path as _Path
+
+        from lhgp.feedback import (
+            EvaluationRating,
+            EvaluationVerdict,
+            UserEvaluation,
+            compute_acceptance_diff,
+            record_diff,
+            record_evaluation,
+        )
+        from lhgp.persistence.events import EventType
+        from lhgp.persistence.events_query import append_event
+        from lhgp.persistence.schema import transaction as _tx
+
+        conn = _open_read_conn(args.data_dir)
+        try:
+            if args.feedback_cmd == "submit":
+                evaluation = UserEvaluation(
+                    contract_id=args.contract_id,
+                    contract_revision=int(args.revision or 1),
+                    attempt_id=args.attempt_id,
+                    evaluator=str(args.evaluator or "user"),
+                    rating=EvaluationRating(str(args.rating)),
+                    verdict=EvaluationVerdict(str(args.verdict)),
+                    comments=str(args.comments or ""),
+                )
+                with _tx(conn):
+                    eid = record_evaluation(conn, evaluation)
+                    append_event(
+                        conn,
+                        contract_id=args.contract_id,
+                        event_type=EventType.USER_EVALUATION_SUBMITTED,
+                        payload={
+                            "evaluation_id": eid,
+                            "rating": int(args.rating),
+                            "verdict": str(args.verdict),
+                        },
+                        now=datetime.now(UTC),
+                        contract_revision=int(args.revision or 1),
+                        attempt_id=evaluation.attempt_id,
+                        actor=evaluation.evaluator,
+                    )
+                print(
+                    json.dumps(
+                        {
+                            "evaluation_id": eid,
+                            "contract_id": args.contract_id,
+                            "rating": int(args.rating),
+                            "verdict": str(args.verdict),
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+                return 0
+            if args.feedback_cmd == "diff":
+                feedback_root: _Path | None = (
+                    _Path(args.data_dir).expanduser().resolve() if args.data_dir else None
+                )
+                workspace = (
+                    _Path(args.workspace).expanduser().resolve()
+                    if args.workspace
+                    else (feedback_root or _Path.cwd()) / "contracts" / args.contract_id
+                )
+                workspace.mkdir(parents=True, exist_ok=True)
+                diff = compute_acceptance_diff(
+                    args.contract_id,
+                    int(args.revision or 1),
+                    workspace,
+                    attempt_id=args.attempt_id,
+                )
+                with _tx(conn):
+                    did = record_diff(conn, diff)
+                    append_event(
+                        conn,
+                        contract_id=args.contract_id,
+                        event_type=EventType.ACCEPTANCE_DIFF_COMPUTED,
+                        payload={
+                            "diff_id": did,
+                            "files_changed_count": len(diff.files_changed),
+                            "summary": diff.summary,
+                        },
+                        now=datetime.now(UTC),
+                        contract_revision=int(args.revision or 1),
+                        attempt_id=args.attempt_id,
+                    )
+                print(
+                    json.dumps(
+                        {
+                            "diff_id": did,
+                            "summary": diff.summary,
+                            "files_changed": diff.files_changed,
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                        default=str,
+                    )
+                )
+                return 0
+        finally:
+            conn.close()
+        return 1
+
+    if args.command == "evolve-templates":
+        from lhgp.feedback.types import EvaluationRating
+        from lhgp.learning import TemplateEvolver
+
+        conn = _open_read_conn(args.data_dir)
+        try:
+            evolver = TemplateEvolver(
+                min_rating=EvaluationRating(str(args.min_rating)),
+                quality_threshold=float(args.quality_threshold),
+            )
+            result = evolver.run(conn, limit=int(args.limit))
+        finally:
+            conn.close()
+        print(
+            json.dumps(
+                {
+                    "written": [str(p) for p in result.written],
+                    "skipped_low_quality": result.skipped_low_quality,
+                    "skipped_existing": result.skipped_existing,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0
+
+    if args.command == "portfolio":
+        from lhgp.portfolio import portfolio_summary
+
+        conn = _open_read_conn(args.data_dir)
+        try:
+            snap = portfolio_summary(
+                conn,
+                include_terminal=bool(args.include_terminal),
+                limit=int(args.limit),
+            )
+        finally:
+            conn.close()
+        print(json.dumps(snap.to_dict(), ensure_ascii=False, indent=2, default=str))
+        return 0
+
+    if args.command == "trace":
+        from lhgp.portfolio import trace_contract
+
+        conn = _open_read_conn(args.data_dir)
+        try:
+            data = trace_contract(
+                conn,
+                args.contract_id,
+                contract_revision=args.revision,
+                limit=int(args.limit),
+            )
+        finally:
+            conn.close()
+        print(json.dumps(data, ensure_ascii=False, indent=2, default=str))
+        return 0
+
+    if args.command == "deadline-report":
+        from lhgp.enforcement import (
+            DeadlineEnforcer,
+            compute_deadline_level,
+            format_deadline_report,
+        )
+        from lhgp.persistence.store import get_contract
+
+        conn = _open_read_conn(args.data_dir)
+        try:
+            rows = conn.execute(
+                "SELECT contract_id FROM contracts WHERE state IN "
+                "('active','paused','blocked','drafted') "
+                "ORDER BY updated_at DESC LIMIT ?",
+                (int(args.limit),),
+            ).fetchall()
+            pairs = []
+            now = datetime.now(UTC)
+            for (cid,) in rows:
+                view = get_contract(conn, cid)
+                if view is None:
+                    continue
+                pairs.append((view, compute_deadline_level(view.draft.deadline_at, now=now)))
+            actions = DeadlineEnforcer().enforce_all(pairs)
+            deadline_report: dict[str, Any] = format_deadline_report(actions)
+        finally:
+            conn.close()
+        print(json.dumps(deadline_report, ensure_ascii=False, indent=2, default=str))
+        return 0
+
     if args.command == "brief":
         from lhgp.persistence.insights import build_brief
 
@@ -696,7 +935,7 @@ def main(argv: list[str] | None = None) -> int:
 
         conn = _open_read_conn(args.data_dir)
         try:
-            result = diff_revisions(
+            diff_result = diff_revisions(
                 conn,
                 contract_id=args.contract_id,
                 from_revision=args.from_rev,
@@ -704,7 +943,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         finally:
             conn.close()
-        print(json.dumps(result, ensure_ascii=False, indent=2))
+        print(json.dumps(diff_result, ensure_ascii=False, indent=2))
         return 0
 
     if args.command == "proposals":
@@ -820,12 +1059,12 @@ def main(argv: list[str] | None = None) -> int:
         root = Path(args.data_dir).expanduser().resolve() if args.data_dir else default_data_root()
         conn = connect(StoreConfig(db_path=root / "state.db"))
         try:
-            result = prune_terminal_events(
+            prune_result = prune_terminal_events(
                 conn, now=datetime.now(UTC), keep_days=args.keep_days, dry_run=not args.execute
             )
         finally:
             conn.close()
-        print(json.dumps(result, ensure_ascii=False, indent=2))
+        print(json.dumps(prune_result, ensure_ascii=False, indent=2))
         return 0
 
     if args.command == "watch":
