@@ -27,6 +27,13 @@ from longtask.cli.daemon_proc import (
 from longtask.cli.runner import AttemptRunner
 from longtask.cli.tick import run_daemon_tick
 from longtask.contracts.schema import ContractState
+from longtask.enforcement import (
+    DeadlineEnforcer,
+    DeadlineLevel,
+    EnforcementAction,
+    compute_deadline_level,
+    render_text,
+)
 from longtask.persistence.decisions import earliest_next_decision_at
 from longtask.persistence.events import EventType
 from longtask.persistence.notifications import drain_notifications
@@ -193,6 +200,10 @@ def run_daemon_loop(
             _consume_interrupt_requests(root, conn, runner, now_val)
             # 消费 verification/requested 请求（用户直接请求验收，§12.4）
             _consume_verification_requests(root, conn, runner, now_val)
+            # P6：deadline 升级/锁住，在本轮调度生效前兑现（幂等：相同 level
+            # 不重复落事件；breached 立即落 DEADLINE_BREACH_LOCKED，
+            # 阻断 run_daemon_tick 后续派发新 attempt）。
+            _enforce_deadlines(root, conn, now_val, emit_fn)
             # 消费由本机计划任务经 daemon/wake 投递的一次性 fired 信号；
             # 先解除旧登记，再由本轮 tick 计算并重新 arm 下一决策点。
             while True:
@@ -476,3 +487,84 @@ def _consume_interrupt_requests(
                 reason=str(payload.get("reason", "user interrupt")),
             )
             rebuild_projection(root, contract.contract_id, conn)
+
+
+def _latest_escalation_level(conn: sqlite3.Connection, contract_id: str) -> DeadlineLevel | None:
+    """最近一次 deadline 升级事件的 level；同 level 重扫不重复落事件。"""
+    row = conn.execute(
+        "SELECT payload_json FROM events "
+        "WHERE contract_id = ? AND event_type IN (?, ?) "
+        "ORDER BY event_id DESC LIMIT 1",
+        (
+            contract_id,
+            EventType.DEADLINE_LEVEL_ESCALATED.value,
+            EventType.DEADLINE_BREACH_LOCKED.value,
+        ),
+    ).fetchone()
+    if row is None:
+        return None
+    try:
+        return DeadlineLevel(_json.loads(row[0] or "{}").get("level", ""))
+    except (ValueError, _json.JSONDecodeError):
+        return None
+
+
+def _enforce_deadlines(
+    root: Path,
+    conn: sqlite3.Connection,
+    now: datetime,
+    emit: Callable[[str], None] | None = None,
+) -> list[EnforcementAction]:
+    """P6: deadline 升级 + 锁住（每轮 tick 顶部调用一次）。
+
+    遍历 ACTIVE/BLOCKED 合同，按当前时间算 level；level 与上次升级相同则跳过
+    （幂等）；level 升级或 breached 落 DEADLINE_LEVEL_ESCALATED /
+    DEADLINE_BREACH_LOCKED 事件，重建 projection 让后续 run_daemon_tick
+    看到新 deadline_status。
+
+    breached 等级的 action.lock_new_attempts 由后端调度器在 attempt 派发
+    时按 contract.deadline_status==MISSED 拒绝（与 DEADLINE_STATUS_CHANGED
+    共享同一守门），故此处只发事件、不另开闸。
+    """
+    enforcer = DeadlineEnforcer()
+    actions: list[EnforcementAction] = []
+    for contract in list_contracts(conn, limit=1000):
+        if contract.state not in (ContractState.ACTIVE, ContractState.BLOCKED):
+            continue
+        deadline = contract.draft.deadline_at
+        total_seconds = (deadline - contract.created_at).total_seconds()
+        if total_seconds <= 0:
+            continue
+        decision = compute_deadline_level(deadline, now=now, total_seconds=total_seconds)
+        if decision.level == DeadlineLevel.NORMAL:
+            continue
+        last_level = _latest_escalation_level(conn, contract.contract_id)
+        if last_level is not None and last_level.value == decision.level.value:
+            continue
+        action = enforcer.enforce(contract, decision, now=now)
+        actions.append(action)
+        event_type = (
+            EventType.DEADLINE_BREACH_LOCKED
+            if action.level == DeadlineLevel.BREACHED
+            else EventType.DEADLINE_LEVEL_ESCALATED
+        )
+        append_event(
+            conn,
+            contract_id=contract.contract_id,
+            goal_id=contract.goal_id,
+            event_type=event_type,
+            payload={
+                "level": action.level.value,
+                "actions": list(action.actions),
+                "rationale": action.rationale,
+                "remaining_seconds": action.metadata.get("remaining_seconds"),
+                "elapsed_ratio": action.metadata.get("elapsed_ratio"),
+            },
+            now=now,
+            actor="daemon",
+            contract_revision=contract.revision,
+        )
+        rebuild_projection(root, contract.contract_id, conn)
+    if emit is not None and actions:
+        emit(render_text(actions))
+    return actions
