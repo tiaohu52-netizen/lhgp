@@ -9,6 +9,7 @@ which writes new template files under ``templates/``.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Iterable
 from typing import Any
@@ -18,20 +19,44 @@ from lhgp.feedback.diff import compute_acceptance_diff
 from lhgp.feedback.store import get_latest_diff, list_evaluations
 from lhgp.feedback.types import EvaluationRating, EvaluationVerdict
 from lhgp.learning.types import DraftSuggestion, QualityScore, TemplateSignal
+from lhgp.persistence.events import EventType
 
 _HIGH_QUALITY_THRESHOLD = 0.7  # overall score >= threshold → template candidate
 
 
 def _acceptance_pass_rate(events: Iterable[sqlite3.Row]) -> float:
-    """Heuristic: count accept/reject events vs total; capped at 1.0."""
+    """Heuristic: count accept/reject events vs total; capped at 1.0.
+
+    Accepts both sqlite3.Row and plain tuples; for the latter, the
+    event_type column must be at index 0 (this is the only SELECT shape
+    we run against the events table here).
+
+    Positive signals (one of):
+      - event_type contains "passed" or "satisfied"
+        (covers synthetic event types from older callers and
+        ``contract/satisfied`` from the live event vocabulary)
+      - event_type is ``acceptance/status-changed`` with a payload
+        ``status`` of ``passed`` (read by callers that pass Rows with
+        both columns; not exercised by the current cursor shape, kept
+        for forward compatibility)
+    """
     accepted = 0
     total = 0
     for r in events:
-        et = r["event_type"] if "event_type" in r else r[2]
+        try:
+            et = r["event_type"]
+        except (KeyError, TypeError, IndexError):
+            try:
+                et = r[0]
+            except (KeyError, TypeError, IndexError):
+                continue
         if "acceptance" in et:
             total += 1
             if "passed" in et or "satisfied" in et:
                 accepted += 1
+        elif et == EventType.CONTRACT_SATISFIED.value:
+            total += 1
+            accepted += 1
     if total == 0:
         return 0.0
     return min(1.0, accepted / total)
@@ -119,10 +144,16 @@ def extract_template_signals(
             (ev.contract_id, ev.contract_revision),
         ):
             try:
-                import json
-
-                payload = json.loads(r["payload_json"])
-            except Exception:  # noqa: S112 — payload missing/corrupt, skip row
+                # sqlite3.Row by column name; plain tuple at index 0.
+                payload_text = r["payload_json"]
+            except (KeyError, TypeError):
+                try:
+                    payload_text = r[0]
+                except (KeyError, TypeError, IndexError):
+                    continue
+            try:
+                payload = json.loads(payload_text)
+            except (TypeError, ValueError, json.JSONDecodeError):
                 continue
             for kind in payload.get("check_kinds", []):
                 vocab.add(str(kind))
