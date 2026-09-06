@@ -336,6 +336,154 @@ def test_canonical_modules_preserve_module_execution_entrypoints() -> None:
     assert "LHGP" in mcp.stdout
 
 
+def test_p6_feedback_namespace_reexports_single_implementation() -> None:
+    """P6 feedback facade: longtask.feedback must be the same module objects
+    as lhgp.feedback so daemon code and external callers see the same
+    classes (no duplicate dataclass identity)."""
+    from lhgp.feedback import (
+        AcceptanceDiff as CanonicalAcceptanceDiff,
+    )
+    from lhgp.feedback import (
+        EvaluationRating as CanonicalEvaluationRating,
+    )
+    from lhgp.feedback import (
+        EvaluationVerdict as CanonicalEvaluationVerdict,
+    )
+    from lhgp.feedback import (
+        UserEvaluation as CanonicalUserEvaluation,
+    )
+    from lhgp.feedback import (
+        compute_acceptance_diff as canonical_compute_acceptance_diff,
+    )
+    from lhgp.feedback import (
+        get_latest_diff as canonical_get_latest_diff,
+    )
+    from lhgp.feedback import (
+        list_diffs as canonical_list_diffs,
+    )
+    from lhgp.feedback import (
+        list_evaluations as canonical_list_evaluations,
+    )
+    from lhgp.feedback import (
+        record_diff as canonical_record_diff,
+    )
+    from lhgp.feedback import (
+        record_evaluation as canonical_record_evaluation,
+    )
+    from longtask import feedback as legacy_feedback
+
+    assert CanonicalUserEvaluation is legacy_feedback.UserEvaluation
+    assert CanonicalAcceptanceDiff is legacy_feedback.AcceptanceDiff
+    assert CanonicalEvaluationRating is legacy_feedback.EvaluationRating
+    assert CanonicalEvaluationVerdict is legacy_feedback.EvaluationVerdict
+    assert canonical_record_evaluation is legacy_feedback.record_evaluation
+    assert canonical_record_diff is legacy_feedback.record_diff
+    assert canonical_get_latest_diff is legacy_feedback.get_latest_diff
+    assert canonical_list_evaluations is legacy_feedback.list_evaluations
+    assert canonical_list_diffs is legacy_feedback.list_diffs
+    assert canonical_compute_acceptance_diff is legacy_feedback.compute_acceptance_diff
+
+
+def test_p6_learning_namespace_reexports_single_implementation() -> None:
+    """P6 learning facade: longtask.learning must mirror lhgp.learning
+    so the auto-evolve pipeline has one canonical class identity."""
+    from lhgp.learning import (
+        DraftSuggestion as CanonicalDraftSuggestion,
+    )
+    from lhgp.learning import (
+        QualityScore as CanonicalQualityScore,
+    )
+    from lhgp.learning import (
+        TemplateEvolver as CanonicalTemplateEvolver,
+    )
+    from lhgp.learning import (
+        TemplateSignal as CanonicalTemplateSignal,
+    )
+    from lhgp.learning import (
+        auto_evolve as canonical_auto_evolve,
+    )
+    from lhgp.learning import (
+        extract_template_signals as canonical_extract_template_signals,
+    )
+    from lhgp.learning import (
+        score_contract_quality as canonical_score_contract_quality,
+    )
+    from lhgp.learning import (
+        suggest_draft_improvements as canonical_suggest_draft_improvements,
+    )
+    from longtask import learning as legacy_learning
+
+    assert CanonicalQualityScore is legacy_learning.QualityScore
+    assert CanonicalTemplateSignal is legacy_learning.TemplateSignal
+    assert CanonicalDraftSuggestion is legacy_learning.DraftSuggestion
+    assert CanonicalTemplateEvolver is legacy_learning.TemplateEvolver
+    assert canonical_auto_evolve is legacy_learning.auto_evolve
+    assert canonical_extract_template_signals is (legacy_learning.extract_template_signals)
+    assert canonical_score_contract_quality is (legacy_learning.score_contract_quality)
+    assert canonical_suggest_draft_improvements is (legacy_learning.suggest_draft_improvements)
+
+
+def test_p6_portfolio_namespace_reexports_single_implementation() -> None:
+    """P6 portfolio facade: longtask.portfolio must mirror lhgp.portfolio
+    so MCP / CLI tools return values match the canonical module identity."""
+    from lhgp.portfolio import (
+        ContractSummary as CanonicalContractSummary,
+    )
+    from lhgp.portfolio import (
+        PortfolioSnapshot as CanonicalPortfolioSnapshot,
+    )
+    from lhgp.portfolio import (
+        portfolio_summary as canonical_portfolio_summary,
+    )
+    from lhgp.portfolio import (
+        trace_contract as canonical_trace_contract,
+    )
+    from longtask import portfolio as legacy_portfolio
+
+    assert CanonicalContractSummary is legacy_portfolio.ContractSummary
+    assert CanonicalPortfolioSnapshot is legacy_portfolio.PortfolioSnapshot
+    assert canonical_portfolio_summary is legacy_portfolio.portfolio_summary
+    assert canonical_trace_contract is legacy_portfolio.trace_contract
+
+
+def test_p6_enforcement_namespace_reexports_single_implementation() -> None:
+    """P6 enforcement facade: longtask.enforcement must mirror
+    lhgp.enforcement so deadline-level actions emitted by the daemon
+    are the same class instance the operator / MCP tools read."""
+    from lhgp.enforcement import (
+        DeadlineEnforcer as CanonicalDeadlineEnforcer,
+    )
+    from lhgp.enforcement import (
+        DeadlineLevel as CanonicalDeadlineLevel,
+    )
+    from lhgp.enforcement import (
+        EnforcementAction as CanonicalEnforcementAction,
+    )
+    from lhgp.enforcement import (
+        compute_deadline_level as canonical_compute_deadline_level,
+    )
+    from lhgp.enforcement import (
+        format_deadline_report as canonical_format_deadline_report,
+    )
+    from lhgp.enforcement import (
+        render_text as canonical_render_text,
+    )
+    from longtask import enforcement as legacy_enforcement
+
+    assert CanonicalDeadlineEnforcer is legacy_enforcement.DeadlineEnforcer
+    assert CanonicalDeadlineLevel is legacy_enforcement.DeadlineLevel
+    assert CanonicalEnforcementAction is legacy_enforcement.EnforcementAction
+    assert canonical_compute_deadline_level is (legacy_enforcement.compute_deadline_level)
+    assert canonical_format_deadline_report is (legacy_enforcement.format_deadline_report)
+    assert canonical_render_text is legacy_enforcement.render_text
+    # Pin the enum values: a re-import that accidentally changed the
+    # spelling would silently break MCP clients that read level.value.
+    assert CanonicalDeadlineLevel.NORMAL.value == "normal"
+    assert CanonicalDeadlineLevel.WARNING.value == "warning"
+    assert CanonicalDeadlineLevel.URGENT.value == "urgent"
+    assert CanonicalDeadlineLevel.BREACHED.value == "breached"
+
+
 def test_entry_help_survives_non_utf8_console() -> None:
     """--help must not crash on consoles that cannot encode CJK (cp1252).
 
