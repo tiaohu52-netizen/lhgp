@@ -36,6 +36,19 @@ uv run python scripts/quality_gate.py
 | 6 | typecheck | `mypy --strict` | 类型债（strict 起步，无存量豁免） |
 | 7 | test + coverage | `pytest --cov`，覆盖率棘轮 | 测试失败或覆盖率低于基线 |
 
+## 编辑器 / MCP 客户端接入
+
+仓库根的 `.mcp.json` 用 `command: "lhgp-mcp"`，依赖 PATH 上能解析到
+`lhgp-mcp.exe`（本仓库 `uv sync --extra dev` 后落在 `.venv\Scripts/lhgp-mcp.exe`）。
+两种稳定做法：
+
+- 在激活的 venv 里跑编辑器（VSCode/Cursor/Claude Code 自动从 venv 解析）；
+- 或 `uv tool install .`（或把 `.venv/Scripts` 加到 `PATH`），让 `lhgp-mcp` 全局可解析。
+
+若要走绝对路径，请同步改 `tests/unit/test_p6_plugin_package.py::TestMcpConfig`
+对 `command` 字段的断言；该测试是 P6 范围的契约守门，单独动 `.mcp.json`
+会被拦下。
+
 ## 发布前 P6 验收
 
 发布候选除质量门外，还必须从仓库根目录执行：
