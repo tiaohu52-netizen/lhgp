@@ -23,7 +23,9 @@ from pathlib import Path
 from longtask.persistence.errors import StoreError, StoreTamperedError
 from longtask.persistence.types import StoreConfig
 
-STORE_SCHEMA_VERSION = 2  # state.db schema 版本（DESIGN §13.3）；P1 升 v2
+# P1=v2: goal/deadline/acceptance columns added
+# P6=v3: user_evaluations + acceptance_diffs tables added
+STORE_SCHEMA_VERSION = 3
 
 
 def connect(config: StoreConfig) -> sqlite3.Connection:
@@ -305,6 +307,10 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     # ── 迁移：v1 → v2 ──
     _migrate_v1_to_v2(conn)
 
+    # ── 迁移：v2 → v3（P6 feedback/diff 反馈回路）──
+    # 新表用 IF NOT EXISTS 幂等创建；旧库不需数据回填。
+    _migrate_v2_to_v3(conn)
+
     # events(goal_id / request_id) 列由上面的迁移物化（v1 库 ALTER TABLE
     # 后才存在），因此这两个 partial index 只能在迁移之后建——否则真实
     # v1 库在 ensure_schema 阶段直接 OperationalError（安全审查 持久化-C1）。
@@ -370,6 +376,61 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     )
 
     conn.execute(f"PRAGMA user_version={STORE_SCHEMA_VERSION}")
+
+
+def _migrate_v2_to_v3(conn: sqlite3.Connection) -> None:
+    """v2 → v3 原地迁移：新增 user_evaluations + acceptance_diffs 表（DESIGN §13.3）。"""
+    # 新表都是 IF NOT EXISTS 幂等创建；不需要数据回填。
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS user_evaluations (
+            evaluation_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            contract_id TEXT NOT NULL,
+            contract_revision INTEGER NOT NULL,
+            attempt_id TEXT,
+            evaluator TEXT NOT NULL,
+            rating INTEGER NOT NULL,
+            verdict TEXT NOT NULL,
+            comments TEXT,
+            created_at TEXT NOT NULL,
+            schema_version INTEGER NOT NULL DEFAULT 3
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_user_evaluations_contract
+        ON user_evaluations(contract_id, created_at)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_user_evaluations_verdict
+        ON user_evaluations(verdict, created_at)
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS acceptance_diffs (
+            diff_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            contract_id TEXT NOT NULL,
+            contract_revision INTEGER NOT NULL,
+            attempt_id TEXT,
+            snapshot_before_json TEXT NOT NULL DEFAULT '{}',
+            snapshot_after_json TEXT NOT NULL DEFAULT '{}',
+            files_changed_json TEXT NOT NULL DEFAULT '[]',
+            summary TEXT,
+            computed_at TEXT NOT NULL,
+            schema_version INTEGER NOT NULL DEFAULT 3
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_acceptance_diffs_contract
+        ON acceptance_diffs(contract_id, computed_at)
+        """
+    )
 
 
 def _migrate_v1_to_v2(conn: sqlite3.Connection) -> None:

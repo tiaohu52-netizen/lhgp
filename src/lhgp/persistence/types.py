@@ -11,7 +11,7 @@ from typing import Any
 @dataclass(slots=True)
 class StoreConfig:
     db_path: Path
-    schema_version: int = 2
+    schema_version: int = 3
 
 
 @dataclass(frozen=True, slots=True)
