@@ -143,8 +143,12 @@ def extract_template_signals(
         for r in conn.execute(
             "SELECT payload_json FROM events "
             "WHERE contract_id = ? AND contract_revision = ? "
-            "AND event_type = 'acceptance/status-changed'",
-            (ev.contract_id, ev.contract_revision),
+            "AND event_type = ?",
+            (
+                ev.contract_id,
+                ev.contract_revision,
+                EventType.ACCEPTANCE_STATUS_CHANGED.value,
+            ),
         ):
             try:
                 # sqlite3.Row by column name; plain tuple at index 0.
