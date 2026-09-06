@@ -101,7 +101,10 @@ def score_contract_quality(
             after_count = len(latest.snapshot_after.get("files", []))
             if after_count > 0:
                 diff_eff = max(0.0, 1.0 - abs(after_count - before_count) / max(after_count, 1))
-        except Exception:
+        except (OSError, ValueError, TypeError):
+            # Workspace I/O or shape errors → neutral score, do not poison
+            # the rest of the function. Programming bugs (AttributeError,
+            # KeyError) still surface.
             diff_eff = 0.5  # neutral
     return QualityScore.from_components(
         contract_id=contract_id,
