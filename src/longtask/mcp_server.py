@@ -513,6 +513,225 @@ def tool_interrupt_attempt(args: dict[str, Any], ctx: dict[str, Any]) -> dict[st
     return _mcp_route(Method.CONTROL_INTERRUPT, args, ctx)
 
 
+# ─── P6 feedback / learning / portfolio / enforcement tools ───────────────
+
+
+def tool_submit_evaluation(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    """Record a user evaluation for a finished contract.
+
+    Inserts into user_evaluations, appends a user/evaluation-submitted
+    event via the canonical event log, and returns the assigned
+    evaluation_id. The user's rating (1-5) + verdict (accept/partial/
+    reject) is the primary input to lhgp.learning.extract_template_signals.
+    """
+    from datetime import UTC, datetime
+
+    from lhgp.feedback import (
+        EvaluationRating,
+        EvaluationVerdict,
+        UserEvaluation,
+        record_evaluation,
+    )
+    from lhgp.persistence.events import EventType
+    from lhgp.persistence.events_query import append_event
+
+    contract_id = str(args.get("contract_id") or "").strip()
+    if not contract_id:
+        raise ValueError("contract_id is required")
+    rating = int(args.get("rating") or 0)
+    if not 1 <= rating <= 5:
+        raise ValueError("rating must be 1..5")
+    verdict = EvaluationVerdict(str(args.get("verdict") or "").strip())
+    contract_revision = int(args.get("contract_revision") or 1)
+    evaluation = UserEvaluation(
+        contract_id=contract_id,
+        contract_revision=contract_revision,
+        attempt_id=args.get("attempt_id"),
+        evaluator=str(args.get("evaluator") or "user"),
+        rating=EvaluationRating(str(rating)),
+        verdict=verdict,
+        comments=str(args.get("comments") or ""),
+    )
+    conn = ctx["conn"]
+    with _mcp_store_transaction(conn) as c:
+        evaluation_id = record_evaluation(c, evaluation)
+        append_event(
+            c,
+            contract_id=contract_id,
+            event_type=EventType.USER_EVALUATION_SUBMITTED,
+            payload={
+                "evaluation_id": evaluation_id,
+                "rating": int(rating),
+                "verdict": verdict.value,
+            },
+            now=datetime.now(UTC),
+            contract_revision=contract_revision,
+            attempt_id=evaluation.attempt_id,
+            actor=evaluation.evaluator,
+        )
+    return {
+        "evaluation_id": evaluation_id,
+        "contract_id": contract_id,
+        "contract_revision": contract_revision,
+        "rating": int(rating),
+        "verdict": verdict.value,
+        "created_at": datetime.now(UTC).isoformat(),
+    }
+
+
+def tool_compute_diff(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    """Compute the file diff between an attempt and the current workspace."""
+    from datetime import UTC, datetime
+    from pathlib import Path
+
+    from lhgp.feedback import compute_acceptance_diff, get_latest_diff, record_diff
+    from lhgp.persistence.events import EventType
+    from lhgp.persistence.events_query import append_event
+
+    contract_id = str(args.get("contract_id") or "").strip()
+    if not contract_id:
+        raise ValueError("contract_id is required")
+    contract_revision = int(args.get("contract_revision") or 1)
+    attempt_id = args.get("attempt_id")
+    workspace_arg = args.get("workspace")
+    root = ctx["root"]
+    workspace = Path(workspace_arg) if workspace_arg else root / "contracts" / contract_id
+    workspace.mkdir(parents=True, exist_ok=True)
+
+    prior = get_latest_diff(ctx["conn"], contract_id, contract_revision)
+    diff = compute_acceptance_diff(
+        contract_id,
+        contract_revision,
+        workspace,
+        before=(prior.snapshot_before if prior else None),
+        attempt_id=attempt_id,
+    )
+    conn = ctx["conn"]
+    with _mcp_store_transaction(conn) as c:
+        diff_id = record_diff(c, diff)
+        append_event(
+            c,
+            contract_id=contract_id,
+            event_type=EventType.ACCEPTANCE_DIFF_COMPUTED,
+            payload={
+                "diff_id": diff_id,
+                "files_changed_count": len(diff.files_changed),
+                "summary": diff.summary,
+            },
+            now=datetime.now(UTC),
+            contract_revision=contract_revision,
+            attempt_id=attempt_id,
+        )
+    return {
+        "diff_id": diff_id,
+        "summary": diff.summary,
+        "files_changed": diff.files_changed,
+        "snapshot_before_count": len(diff.snapshot_before.get("files", [])),
+        "snapshot_after_count": len(diff.snapshot_after.get("files", [])),
+        "computed_at": datetime.now(UTC).isoformat(),
+    }
+
+
+def tool_evolve_templates(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    """Mine high-quality contracts and materialise new auto-* template files."""
+    from lhgp.feedback.types import EvaluationRating
+    from lhgp.learning import TemplateEvolver
+
+    min_rating = int(args.get("min_rating") or 4)
+    quality_threshold = float(args.get("quality_threshold") or 0.7)
+    limit = int(args.get("limit") or 50)
+    evolver = TemplateEvolver(
+        min_rating=EvaluationRating(str(min(min_rating, 5))),
+        quality_threshold=quality_threshold,
+    )
+    result = evolver.run(ctx["conn"], limit=limit)
+    return {
+        "written": [str(p) for p in result.written],
+        "skipped_low_quality": result.skipped_low_quality,
+        "skipped_existing": result.skipped_existing,
+    }
+
+
+def tool_portfolio(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    """Snapshot all contracts in a single read."""
+    from lhgp.portfolio import portfolio_summary
+
+    include_terminal = bool(args.get("include_terminal", True))
+    limit = int(args.get("limit") or 500)
+    snap = portfolio_summary(ctx["conn"], include_terminal=include_terminal, limit=limit)
+    return snap.to_dict()
+
+
+def tool_trace_contract(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    """Full timeline + latest user_evaluation + latest acceptance_diff for a contract."""
+    from lhgp.portfolio import trace_contract
+
+    contract_id = str(args.get("contract_id") or "").strip()
+    if not contract_id:
+        raise ValueError("contract_id is required")
+    contract_revision = args.get("contract_revision")
+    if contract_revision is not None:
+        contract_revision = int(contract_revision)
+    limit = int(args.get("limit") or 500)
+    return trace_contract(
+        ctx["conn"], contract_id, contract_revision=contract_revision, limit=limit
+    )
+
+
+def tool_deadline_report(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    """Compute the deadline-level decision for every active contract."""
+    from datetime import UTC, datetime
+
+    from lhgp.enforcement import (
+        DeadlineEnforcer,
+        compute_deadline_level,
+        format_deadline_report,
+    )
+    from lhgp.persistence.store import get_contract
+
+    limit = int(args.get("limit") or 500)
+    conn = ctx["conn"]
+    rows = conn.execute(
+        """
+        SELECT contract_id FROM contracts
+        WHERE state IN ('active', 'paused', 'blocked', 'drafted')
+        ORDER BY updated_at DESC LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    pairs = []
+    now = datetime.now(UTC)
+    for (cid,) in rows:
+        view = get_contract(conn, cid)
+        if view is None:
+            continue
+        decision = compute_deadline_level(view.draft.deadline_at, now=now)
+        pairs.append((view, decision))
+    enforcer = DeadlineEnforcer()
+    actions = enforcer.enforce_all(pairs)
+    return format_deadline_report(actions)
+
+
+def _mcp_store_transaction(conn: Any) -> Any:
+    """Context manager for MCP tool writes; uses longtask's transaction() helper.
+
+    Bare :func:`sqlite3.Connection` does not give us a context manager for
+    transactions (lhgp.persistence.transaction is a thin re-export, but
+    not all connection objects exposed to MCP have a transaction() method
+    bound). We use the longtask.persistence.schema.transaction directly.
+    """
+    from contextlib import contextmanager
+
+    from longtask.persistence.schema import transaction
+
+    @contextmanager
+    def _ctx() -> Any:
+        with transaction(conn) as c:
+            yield c
+
+    return _ctx()
+
+
 def _get_session_token() -> str:
     """从环境变量获取 per-attempt session token（daemon spawn 时注入）。"""
     import os
@@ -1234,6 +1453,127 @@ TOOLS.update(
                 },
             },
         ),
+        "lhgp_submit_evaluation": (
+            tool_submit_evaluation,
+            {
+                "description": (
+                    "P6 反馈回路：合同达到终态后由用户/外部对结果评分。"
+                    "rating 1-5，verdict ∈ {accept, partial, reject}，comments 自由文本。"
+                    "触发 user/evaluation-submitted 事件，写入 user_evaluations 表。"
+                    "verdict=reject 会被 promoter 用来触发下一轮 escalate。"
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "required": ["contract_id", "rating", "verdict"],
+                    "properties": {
+                        "contract_id": {"type": "string"},
+                        "contract_revision": {"type": "integer", "minimum": 1},
+                        "attempt_id": {"type": "string"},
+                        "rating": {"type": "integer", "minimum": 1, "maximum": 5},
+                        "verdict": {"enum": ["accept", "partial", "reject"]},
+                        "evaluator": {"type": "string", "description": "评估者标识，默认 'user'"},
+                        "comments": {"type": "string"},
+                    },
+                },
+            },
+        ),
+        "lhgp_compute_diff": (
+            tool_compute_diff,
+            {
+                "description": (
+                    "P6 反馈回路：计算 attempt 报告的产物与当前 workspace 状态的 diff。"
+                    "返回 created/modified/deleted 列表，存入 acceptance_diffs 表。"
+                    "作为 :func:`lhgp_evolve_templates` 的输入信号。"
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "required": ["contract_id"],
+                    "properties": {
+                        "contract_id": {"type": "string"},
+                        "contract_revision": {"type": "integer", "minimum": 1},
+                        "attempt_id": {"type": "string"},
+                        "workspace": {
+                            "type": "string",
+                            "description": "workspace path, default data-dir/contracts/<id>/",
+                        },
+                    },
+                },
+            },
+        ),
+        "lhgp_evolve_templates": (
+            tool_evolve_templates,
+            {
+                "description": (
+                    "P6 提升闭环：从 user_evaluations 中挖掘高评分合同，"
+                    "自动写入 templates/ 目录。quality_threshold 默认 0.7，"
+                    "min_rating 默认 4。每次写入文件命名 auto-<contract_id>-r<r>.json。"
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "min_rating": {"type": "integer", "minimum": 1, "maximum": 5, "default": 4},
+                        "quality_threshold": {
+                            "type": "number",
+                            "minimum": 0.0,
+                            "maximum": 1.0,
+                            "default": 0.7,
+                        },
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 50},
+                    },
+                },
+            },
+        ),
+        "lhgp_portfolio": (
+            tool_portfolio,
+            {
+                "description": (
+                    "P6 多合同管理：聚合所有合同当前状态 + 用户最近评价，"
+                    "返回 by_state / by_deadline / by_acceptance 计数 + 列表。"
+                    "适合 dashboard / health 检查。只读。"
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "include_terminal": {"type": "boolean", "default": True},
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 2000, "default": 500},
+                    },
+                },
+            },
+        ),
+        "lhgp_trace": (
+            tool_trace_contract,
+            {
+                "description": (
+                    "P6 trace：单份合同完整时间轴，附最新 user_evaluation 与 acceptance_diff。"
+                    "调试'为什么这份合同这样关闭'用。只读。"
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "required": ["contract_id"],
+                    "properties": {
+                        "contract_id": {"type": "string"},
+                        "contract_revision": {"type": "integer", "minimum": 1},
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 2000, "default": 500},
+                    },
+                },
+            },
+        ),
+        "lhgp_deadline_report": (
+            tool_deadline_report,
+            {
+                "description": (
+                    "P6 deadline 多级升级：扫所有 active 合同，按 elapsed ratio 划 normal/warning/"
+                    "urgent/breached，返回每级动作建议（republish / notify / lock）。"
+                    "不直接副作用，调用方按 actions 字段落库。只读 + 决策输出。"
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 2000, "default": 500},
+                    },
+                },
+            },
+        ),
         "lhgp_notifications": (
             tool_notifications,
             {
@@ -1327,6 +1667,10 @@ _DESTRUCTIVE_TOOLS = {
     "lhgp_request_verification",
     "lhgp_interrupt_attempt",
     "lhgp_write_back",
+    # P6 反馈回路
+    "lhgp_submit_evaluation",
+    "lhgp_compute_diff",
+    "lhgp_evolve_templates",
 }
 _READ_ONLY_TOOLS = {
     "longtask_health",
@@ -1349,6 +1693,10 @@ _READ_ONLY_TOOLS = {
     "lhgp_list_contracts",
     "lhgp_attempt_status",
     "lhgp_notifications",
+    # P6
+    "lhgp_portfolio",
+    "lhgp_trace",
+    "lhgp_deadline_report",
 }
 for _tool_name, (_tool_fn, _tool_schema) in list(TOOLS.items()):
     _tool_schema.setdefault(
