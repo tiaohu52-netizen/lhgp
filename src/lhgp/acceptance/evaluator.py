@@ -130,8 +130,13 @@ def evaluate_check(
             expected = str(spec.args.get("text", ""))
             timeout = _command_timeout_seconds(spec, timeout_seconds)
             completed = subprocess.run(  # noqa: S603
-                argv, cwd=workspace_root, shell=False,
-                capture_output=True, text=True, timeout=timeout, check=False,
+                argv,
+                cwd=workspace_root,
+                shell=False,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                check=False,
             )
             output = completed.stdout or ""
             if spec.kind == CheckKind.OUTPUT_CONTAINS:
@@ -139,8 +144,10 @@ def evaluate_check(
             else:
                 matched = expected not in output
             return CheckResult(
-                check_id, "pass" if matched else "fail",
-                " ".join(argv), f"looking for {expected!r} in stdout",
+                check_id,
+                "pass" if matched else "fail",
+                " ".join(argv),
+                f"looking for {expected!r} in stdout",
             )
 
         if spec.kind == CheckKind.OUTPUT_MATCHES:
@@ -148,13 +155,20 @@ def evaluate_check(
             pattern = str(spec.args.get("regex", ""))
             timeout = _command_timeout_seconds(spec, timeout_seconds)
             completed = subprocess.run(  # noqa: S603
-                argv, cwd=workspace_root, shell=False,
-                capture_output=True, text=True, timeout=timeout, check=False,
+                argv,
+                cwd=workspace_root,
+                shell=False,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                check=False,
             )
             matched = re.search(pattern, completed.stdout or "") is not None
             return CheckResult(
-                check_id, "pass" if matched else "fail",
-                " ".join(argv), f"regex {pattern!r} on stdout",
+                check_id,
+                "pass" if matched else "fail",
+                " ".join(argv),
+                f"regex {pattern!r} on stdout",
             )
 
         if spec.kind == CheckKind.FILE_NOT_EMPTY:
@@ -162,8 +176,10 @@ def evaluate_check(
                 return CheckResult(check_id, "fail", "path-policy", "target escapes workspace")
             text = target.read_text(encoding="utf-8").strip()
             return CheckResult(
-                check_id, "pass" if text else "fail",
-                str(target), f"{len(text)} chars",
+                check_id,
+                "pass" if text else "fail",
+                str(target),
+                f"{len(text)} chars",
             )
 
         if spec.kind in (CheckKind.LINE_COUNT_MIN, CheckKind.LINE_COUNT_MAX):
@@ -171,13 +187,12 @@ def evaluate_check(
                 return CheckResult(check_id, "fail", "path-policy", "target escapes workspace")
             lines = len(target.read_text(encoding="utf-8").splitlines())
             threshold = int(spec.args.get("count", 0))
-            if spec.kind == CheckKind.LINE_COUNT_MIN:
-                ok = lines >= threshold
-            else:
-                ok = lines <= threshold
+            ok = lines >= threshold if spec.kind == CheckKind.LINE_COUNT_MIN else lines <= threshold
             return CheckResult(
-                check_id, "pass" if ok else "fail",
-                str(target), f"{lines} lines (limit: {threshold})",
+                check_id,
+                "pass" if ok else "fail",
+                str(target),
+                f"{lines} lines (limit: {threshold})",
             )
 
         if spec.kind == CheckKind.NO_FORBIDDEN:
@@ -187,7 +202,8 @@ def evaluate_check(
             forbidden = [str(p) for p in spec.args.get("patterns", ())]
             found = [p for p in forbidden if p in text]
             return CheckResult(
-                check_id, "pass" if not found else "fail",
+                check_id,
+                "pass" if not found else "fail",
                 str(target),
                 f"forbidden found: {found}" if found else "clean",
             )
@@ -209,8 +225,10 @@ def evaluate_check(
             expected = spec.args.get("value")
             ok = current == expected
             return CheckResult(
-                check_id, "pass" if ok else "fail",
-                str(target), f"path={spec.args.get('path')} got={current!r} want={expected!r}",
+                check_id,
+                "pass" if ok else "fail",
+                str(target),
+                f"path={spec.args.get('path')} got={current!r} want={expected!r}",
             )
 
         if spec.kind == CheckKind.STRUCTURE_VALID:

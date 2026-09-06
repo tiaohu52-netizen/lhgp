@@ -75,6 +75,13 @@ class EventType(StrEnum):
     WAKEUP_RTC_ARMED = "wakeup/rtc-armed"
     WAKEUP_RTC_FIRED = "wakeup/rtc-fired"
     WAKEUP_DEGRADED = "wakeup/degraded"
+    # ── P6：反馈回路 / 多合同组合 / deadline 多级升级 ──
+    USER_EVALUATION_SUBMITTED = "user/evaluation-submitted"
+    ACCEPTANCE_DIFF_COMPUTED = "acceptance/diff-computed"
+    DEADLINE_LEVEL_ESCALATED = "deadline/level-escalated"
+    DEADLINE_BREACH_LOCKED = "deadline/breach-locked"
+    PORTFOLIO_SUMMARY_VIEWED = "portfolio/summary-viewed"
+    TEMPLATE_EVOLVED = "template/evolved"
 
 
 __all__ = ["EventType"]
