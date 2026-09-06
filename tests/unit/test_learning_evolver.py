@@ -21,6 +21,7 @@ Boundary cases covered:
 from __future__ import annotations
 
 import json
+import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -30,6 +31,11 @@ from lhgp.contracts.contract_draft import ContractDraft
 from lhgp.contracts.contract_view import ContractState, DeadlineStatus
 from lhgp.contracts.contract_view_entity import ContractView
 from lhgp.contracts.schema import Acceptance, Budget
+from lhgp.feedback.types import (
+    EvaluationRating,
+    EvaluationVerdict,
+    UserEvaluation,
+)
 from lhgp.learning.evolver import (
     _AUTO_PREFIX,
     _QUALITY_THRESHOLD,
@@ -300,3 +306,201 @@ class TestQualityScoreMath:
             diff_efficiency=0.3,
         )
         assert score.overall == pytest.approx(0.445, abs=1e-9)
+
+
+class TestAutoEvolveEndToEnd:
+    """Real-DB integration: auto_evolve + TemplateEvolver.run() against
+    a tmp data dir. Pins the wiring between extractor → evolver → disk
+    so a future schema change or wiring break is caught."""
+
+    def _setup_db(self, tmp_path: Path) -> sqlite3.Connection:
+        from datetime import UTC, datetime, timedelta
+
+        from lhgp.contracts.schema import (
+            Acceptance,
+            Budget,
+            ContractDraft,
+            ContractState,
+        )
+        from lhgp.feedback.store import record_evaluation
+        from lhgp.feedback.types import (
+            EvaluationRating,
+        )
+        from lhgp.persistence.events import EventType
+        from lhgp.persistence.events_query import append_event
+        from lhgp.persistence.store import (
+            StoreConfig,
+            connect,
+            ensure_schema,
+            save_contract,
+            update_contract_state,
+        )
+
+        db = tmp_path / "state.db"
+        conn = connect(StoreConfig(db_path=db))
+        ensure_schema(conn)
+        now = datetime(2026, 9, 7, 12, 0, 0, tzinfo=UTC)
+        # Contract in ACTIVE state with a perfect user evaluation + accepted
+        # events so extract_template_signals returns one TemplateSignal
+        # with overall >= 0.7.
+        draft = ContractDraft(
+            title="Auto-evolve smoke",
+            objective="verify end-to-end auto-evolve",
+            deadline_at=now + timedelta(hours=2),
+            hard_constraints={},
+            acceptance=Acceptance(standard="ok", checks=("y",)),
+            workload_initial_hours=1.0,
+            budget=Budget(
+                max_dispatches=2,
+                max_escalations=1,
+                max_concurrent_attempts=1,
+                max_attempt_minutes=10,
+                max_output_bytes=65536,
+            ),
+        )
+        save_contract(conn, draft, contract_id="lt-evo-e2e", now=now)
+        update_contract_state(
+            conn, contract_id="lt-evo-e2e", new_state=ContractState.ACTIVE, now=now
+        )
+        record_evaluation(
+            conn,
+            UserEvaluation(
+                contract_id="lt-evo-e2e",
+                contract_revision=1,
+                evaluator="u",
+                rating=EvaluationRating.EXCELLENT,
+                verdict=EvaluationVerdict.ACCEPT,
+                comments="all-round solid",
+            ),
+        )
+        for _ in range(2):
+            append_event(
+                conn,
+                contract_id="lt-evo-e2e",
+                event_type=EventType.CONTRACT_SATISFIED,
+                payload={},
+                now=now,
+                actor="system",
+                contract_revision=1,
+            )
+        return conn
+
+    def test_auto_evolve_writes_template(self, tmp_path: Path, monkeypatch) -> None:
+        from lhgp.learning import auto_evolve
+        from lhgp.learning import evolver as ev_mod
+
+        # auto_evolve uses the global _templates_dir() — redirect to
+        # tmp_path so the test never touches the user's ~/.lhgp/templates.
+        target = tmp_path / "templates"
+        monkeypatch.setattr(ev_mod, "_templates_dir", lambda: target)
+
+        conn = self._setup_db(tmp_path)
+        try:
+            result = auto_evolve(conn, min_rating=EvaluationRating.GOOD, limit=10)
+        finally:
+            conn.close()
+        # 1 high-quality signal cleared the 0.7 threshold → 1 file written.
+        assert len(result.written) == 1
+        assert result.written[0].parent == target
+        assert result.written[0].exists()
+        # Filename is the documented auto-<id>-r<rev>.json shape.
+        assert result.written[0].name == "auto-lt-evo-e2e-r1.json"
+        # No re-run collision on a fresh target_dir.
+        assert result.skipped_existing == 0
+        assert result.skipped_low_quality == 0
+
+    def test_template_evolver_run_uses_target_dir(self, tmp_path: Path) -> None:
+        from lhgp.learning import TemplateEvolver
+
+        conn = self._setup_db(tmp_path)
+        try:
+            target = tmp_path / "evolved"
+            ev = TemplateEvolver(
+                min_rating=EvaluationRating.GOOD,
+                quality_threshold=_QUALITY_THRESHOLD,
+                target_dir=target,
+            )
+            result = ev.run(conn, limit=10)
+        finally:
+            conn.close()
+        assert len(result.written) == 1
+        assert result.written[0].parent == target
+        assert result.written[0].name == "auto-lt-evo-e2e-r1.json"
+
+    def test_quality_threshold_blocks_low_score(self, tmp_path: Path) -> None:
+        from lhgp.learning import TemplateEvolver
+
+        conn = self._setup_db(tmp_path)
+        try:
+            # _setup_db produces overall=1.0 (rating 5 + perfect pass_rate
+            # + diff_eff=1.0). Threshold above 1.0 is unreachable → the
+            # signal is dropped inside TemplateEvolver.run().
+            ev = TemplateEvolver(
+                min_rating=EvaluationRating.GOOD,
+                quality_threshold=1.01,
+                target_dir=tmp_path,
+            )
+            result = ev.run(conn, limit=10)
+        finally:
+            conn.close()
+        assert result.written == ()
+        # No auto-*.json template file should have been written. The tmp
+        # path contains a state.db from setup_db; we filter for templates.
+        assert not list(tmp_path.glob("auto-*.json"))
+
+    def test_min_rating_filter_drops_low_rated(self, tmp_path: Path) -> None:
+        from lhgp.feedback.store import record_evaluation
+        from lhgp.feedback.types import (
+            EvaluationRating,
+        )
+        from lhgp.learning import auto_evolve
+
+        conn = self._setup_db(tmp_path)
+        try:
+            # Add a NEUTRAL (3) evaluation: signal extraction requires
+            # rating >= min_rating, so the extra row is filtered out and
+            # the existing EXCELLENT row (5) still produces one signal.
+            record_evaluation(
+                conn,
+                UserEvaluation(
+                    contract_id="lt-evo-e2e",
+                    contract_revision=1,
+                    evaluator="u",
+                    rating=EvaluationRating.NEUTRAL,
+                    verdict=EvaluationVerdict.ACCEPT,
+                    comments="meh",
+                ),
+            )
+            result = auto_evolve(conn, min_rating=EvaluationRating.GOOD, limit=10)
+        finally:
+            conn.close()
+        # Only the EXCELLENT row clears GOOD (4); the NEUTRAL row is dropped.
+        assert len(result.written) == 1
+
+    def test_reject_verdict_filtered(self, tmp_path: Path) -> None:
+        from lhgp.feedback.store import record_evaluation
+        from lhgp.feedback.types import (
+            EvaluationRating,
+        )
+        from lhgp.learning import auto_evolve
+
+        conn = self._setup_db(tmp_path)
+        try:
+            # Append a REJECT verdict for the same contract: extractor
+            # drops it, leaving the original ACCEPT signal to win.
+            record_evaluation(
+                conn,
+                UserEvaluation(
+                    contract_id="lt-evo-e2e",
+                    contract_revision=1,
+                    evaluator="u",
+                    rating=EvaluationRating.EXCELLENT,
+                    verdict=EvaluationVerdict.REJECT,
+                    comments="rejected",
+                ),
+            )
+            result = auto_evolve(conn, min_rating=EvaluationRating.GOOD, limit=10)
+        finally:
+            conn.close()
+        # The ACCEPT evaluation still produces a template.
+        assert len(result.written) == 1
