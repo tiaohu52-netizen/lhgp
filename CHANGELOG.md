@@ -4,6 +4,72 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version numbers
 follow [SemVer](https://semver.org/spec/v2.0.0.html); dates in ISO 8601.
 
+## [0.1.0a7] - 2026-09-07
+
+反馈回路 + 多合同管理 + deadline 强制（P6）合并发布版。
+
+### Added
+
+- **反馈回路**（`lhgp/feedback`）：`user_evaluations` + `acceptance_diffs`
+  两张表。1-5 评分、verdict、comments；diff 走 workspace walk 算
+  before/after 文件指纹。6 个新事件类型：`USER_EVALUATION_SUBMITTED` /
+  `ACCEPTANCE_DIFF_COMPUTED`。
+- **多合同管理**（`lhgp/portfolio`）：`portfolio_summary`（全量合同 +
+  by_state / by_deadline / by_acceptance 计数 + 最新 evaluation join）、
+  `trace_contract`（单合同事件流 + 最新 eval / diff）。事件类型
+  `PORTFOLIO_SUMMARY_VIEWED`。
+- **Deadline 强制**（`lhgp/enforcement`）：NORMAL / WARNING(30%) /
+  URGENT(5%) / BREACHED 四级，`DeadlineEnforcer` 返
+  `EnforcementAction`（republish / notify_user / request_verification /
+  lock_new_attempts）。daemon_loop 每 tick 顶部调
+  `_enforce_deadlines`，breached 落 `DEADLINE_BREACH_LOCKED` + rebuild
+  projection；相同 level 重扫不重复落事件（幂等）。`MIN_ESCALATION_WINDOW`
+  60s 守门。事件类型 `DEADLINE_LEVEL_ESCALATED` /
+  `DEADLINE_BREACH_LOCKED`。
+- **自动模板演化**（`lhgp/learning`）：`extract_template_signals` 从
+  evaluation + diff 矿信号，`TemplateEvolver` 把高质量合同
+  （`overall ≥ 0.7`）自动写 `templates/auto-<cid>-r<rev>.json`，同 stem
+  碰撞自动加 `-n2` / `-n3` 后缀（永不覆盖）。事件类型
+  `TEMPLATE_EVOLVED`。
+- **建议通道**：`suggest_draft_improvements` 在 prepare 阶段读历史
+  signals 返非破坏性 advisory。
+- **Schema v3**：`_migrate_v2_to_v3` 幂等加 2 张新表 + 9 索引；不回填
+  历史事件（保 revision CAS 干净）。`STORE_SCHEMA_VERSION = 3`，
+  `StoreConfig.schema_version` 默认 3。`_check_schema_version` 高于本
+  版本只读拒写（fail-closed）。
+- **新工具**（6 个，`lhgp_*`）：`submit_evaluation` / `compute_diff` /
+  `evolve_templates` / `portfolio` / `trace` / `deadline_report`（总数
+  41 → 47）。
+- **新 CLI 命令**：`feedback submit|diff`、`evolve-templates`、
+  `portfolio`、`trace`、`deadline-report`。
+- **双命名空间 facade**：`longtask/feedback.py` / `learning.py` /
+  `portfolio.py` / `enforcement.py` 各自 re-export 自 `lhgp/`，身份
+  钉住（`is` 测试）。
+
+### Fixed
+
+- `_enforce_deadlines` 在 `total_seconds ≤ 0` 时 `continue` 跳过 breached
+  合同 → 改用 `None` 透传让 `compute_deadline_level` 看 `remaining ≤ 0`
+  必返 BREACHED。
+- `compute_acceptance_diff` summary 字段 `len(changes) - len(created)`
+  把 deleted 算成 modified → 独立维护 `modified` 列表，summary 改用三类
+  分别 count。
+- `_acceptance_pass_rate` 在 1 列 cursor（返回 plain tuple）上
+  `r["event_type"]` TypeError 被 `except Exception: continue` 静默吞
+  → 改成 Row/tuple 双兼容；正信号只认 synthetic "passed"/"satisfied"
+  是死代码（真实事件名里无），加 `EventType.CONTRACT_SATISFIED` 作为
+  真实正信号。
+- `extract_template_signals` vocabulary 循环同样 `r["payload_json"]` 失
+  败被静默吞，导致 `vocab` 永远空、auto-evolve 模板
+  `acceptance.checks` 退化成默认 `structure-valid` → 同样改双兼容。
+
+### Quality
+
+- 7/7 quality gate 绿（format / lint / arch / deps / claims / mypy /
+  pytest+coverage）。测试 775 → 885（+110，5 个新 P6 单测 + 1 个集成
+  + 4 个 namespace identity）。
+- coverage ≥ 73% 维持。
+
 ## [0.1.0a6] - 2026-09-06
 
 审计全部清零 + E1-E4 全部增强（PR #15-#19），合并发布版。
