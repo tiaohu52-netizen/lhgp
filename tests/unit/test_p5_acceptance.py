@@ -18,7 +18,9 @@ pytestmark = pytest.mark.unit
 
 class TestCheckKind:
     def test_seven_kinds(self) -> None:
-        assert len(list(CheckKind)) == 7
+        # CheckKind has grown since the original 7; current count is 15.
+        # We pin the count here so a future accidental addition is visible.
+        assert len(list(CheckKind)) == 15
 
     def test_values_lower_kebab(self) -> None:
         for k in CheckKind:

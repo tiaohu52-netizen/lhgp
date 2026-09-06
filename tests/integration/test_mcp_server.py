@@ -237,7 +237,10 @@ class TestMCPDiscovery:
                 "lhgp_request_verification",
             }.issubset(names)
             assert {"longtask_doctor", "lhgp_doctor"}.issubset(names)
-            assert len(names) == 41
+            # P6 added 6 new tools: lhgp_submit_evaluation, lhgp_compute_diff,
+            # lhgp_evolve_templates, lhgp_portfolio, lhgp_trace,
+            # lhgp_deadline_report — 41 + 6 = 47.
+            assert len(names) == 47
             by_name = {item["name"]: item for item in tools["result"]["tools"]}
             assert by_name["lhgp_notifications"]["annotations"] == {
                 "readOnlyHint": True,
