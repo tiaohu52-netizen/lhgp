@@ -532,9 +532,11 @@ def _enforce_deadlines(
         if contract.state not in (ContractState.ACTIVE, ContractState.BLOCKED):
             continue
         deadline = contract.draft.deadline_at
-        total_seconds = (deadline - contract.created_at).total_seconds()
-        if total_seconds <= 0:
-            continue
+        window_seconds = (deadline - contract.created_at).total_seconds()
+        # window<=0 表示 deadline<=created_at（数据异常）。
+        # 仍要走完流程：compute_deadline_level 看 remaining<=0 必返 BREACHED，
+        # 至少保证事件落地；不能因为窗口算不出来就把 breached 合同漏过。
+        total_seconds: float | None = window_seconds if window_seconds > 0 else None
         decision = compute_deadline_level(deadline, now=now, total_seconds=total_seconds)
         if decision.level == DeadlineLevel.NORMAL:
             continue
