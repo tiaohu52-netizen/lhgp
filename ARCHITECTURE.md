@@ -27,6 +27,10 @@ SPEC §19.3 规定迁移顺序：**不得先做全仓机械 rename**。最终目
 | **acceptance/** | `lhgp/acceptance/` | `longtask/acceptance/` | 验收：typed check、evaluator、verdict |
 | **admission/** | `lhgp/admission/` | `longtask/admission/` | 准入：7 条件判定、offer、refuse |
 | **forecast/** | `lhgp/forecast/` | `longtask/forecast/` | Deadline 风险快照模型 |
+| **feedback/** | `lhgp/feedback/` | `longtask/feedback.py` | 用户评价 + 验收态 diff（types/store/diff） |
+| **learning/** | `lhgp/learning/` | `longtask/learning.py` | 信号提取 + 自动模板演化（extractor/evolver） |
+| **portfolio/** | `lhgp/portfolio/` | `longtask/portfolio.py` | dashboard 聚合 + 单合同 trace（summary/tracking） |
+| **enforcement/** | `lhgp/enforcement/` | `longtask/enforcement.py` | deadline 多级升级 + lock（levels/enforcer/report） |
 | **adapters/processes** | `lhgp/adapters/processes.py` | `longtask/adapters/processes.py` | 三平台进程探测（win/linux/darwin） |
 | **adapters/base+handles+manifest** | `lhgp/adapters/` | `longtask/adapters/` | 执行器协议面 |
 | **promoter/escalation+fairness+proposals** | `lhgp/promoter/` | `longtask/promoter/` | 升级阶梯、公平性、提案校验（纯函数） |
@@ -39,8 +43,8 @@ SPEC §19.3 规定迁移顺序：**不得先做全仓机械 rename**。最终目
 | **persistence/projections+context+notifications** | `longtask/persistence/` | `lhgp/persistence/` | 文件投影、上下文编译、通知 outbox |
 | **promoter/reconcile+records** | `longtask/promoter/` | `lhgp/promoter/` | 重启恢复四分支 |
 | **adapters/subprocess+registry+factory** | `longtask/adapters/` | `lhgp/adapters/` | 子进程适配器、执行器注册表 |
-| **mcp_server** | `longtask/mcp_server.py` | `lhgp/mcp_server.py` | 39 个 MCP 工具 |
-| **cli/daemon_proc+daemon_loop+tick+runner** | `longtask/cli/` | `lhgp/cli/` | daemon 生命周期与主循环 |
+| **mcp_server** | `longtask/mcp_server.py` | `lhgp/mcp_server.py` | 47 个 MCP 工具（含 6 个 P6 评价/学习/portfolio/trace/deadline 工具） |
+| **cli/daemon_proc+daemon_loop+tick+runner** | `longtask/cli/` | `lhgp/cli/` | daemon 生命周期与主循环（daemon_loop 内调用 `_enforce_deadlines`） |
 
 **简记**：协议概念（模型/验收/准入/预测/传输）在 `lhgp`；运行时机械
 （CLI/store/适配器/daemon）在 `longtask`。新功能如果偏概念 → `lhgp`；
