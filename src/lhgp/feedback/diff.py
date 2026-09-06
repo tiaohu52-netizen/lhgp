@@ -103,12 +103,13 @@ def compute_acceptance_diff(
     changes: list[dict[str, Any]] = []
     created = [r for r in after_files if r not in before_files]
     deleted = [r for r in before_files if r not in after_files]
+    modified = []
     for r in after_files:
         if r in before_files and (
             before_files[r].size_bytes != after_files[r].size_bytes
             or before_files[r].mtime_ns != after_files[r].mtime_ns
         ):
-            changes.append(
+            modified.append(
                 {
                     "path": r,
                     "action": "modified",
@@ -120,9 +121,11 @@ def compute_acceptance_diff(
         changes.append({"path": r, "action": "created", "size_after": after_files[r].size_bytes})
     for r in deleted:
         changes.append({"path": r, "action": "deleted", "size_before": before_files[r].size_bytes})
+    for m in modified:
+        changes.append(m)
 
     summary = (
-        f"{len(created)} created, {len(changes) - len(created)} modified, "
+        f"{len(created)} created, {len(modified)} modified, "
         f"{len(deleted)} deleted; {len(after_files)} files after, "
         f"{len(before_files)} files before"
     )
