@@ -44,3 +44,6 @@ promo/*.mp4
 promo/*.gif
 promo/*.webm
 promo/demo-data/
+
+# 一次性 scratch / 调试日志（被移动到 .scratch-trash/ 后由本规则忽略）
+.scratch-trash/
