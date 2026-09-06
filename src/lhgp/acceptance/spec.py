@@ -23,9 +23,15 @@ Structure:
     }
 
 Judges:
-- "machine": existing typed checks (file-exists, command-exit-zero, etc.)
-- "agent": an LLM verifier evaluates a natural-language criterion
+- "machine": deterministic typed checks (15 kinds including file-exists,
+  command-exit-zero, output-contains, no-forbidden, json-path-equals, etc.)
 - "user": requires explicit user confirmation (cannot be automated away)
+
+Note: "agent" judge was removed. LLM-judged acceptance is non-deterministic
+(different runs produce different verdicts), gameable via prompt injection,
+and produces pseudo-precision (0.7 vs 0.8 scores are meaningless). If a
+criterion can't be expressed as machine or user, the check design isn't
+finished — expand the machine vocabulary instead.
 
 This makes the acceptance boundary explicit: which parts are automated,
 which are delegated, and which require the user. The user can see and
@@ -38,7 +44,7 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-VALID_JUDGES = ("machine", "agent", "user")
+VALID_JUDGES = ("machine", "user")
 VALID_COMBINATORS = ("all", "any")
 
 
@@ -194,7 +200,7 @@ def compose_verdict(
     pending (they require asynchronous evaluation).
     """
     machine_map = {f"{r.kind}:{r.target}": r for r in machine_results}
-    counters = {"machine_pass": 0, "machine_fail": 0, "agent_pending": 0, "user_pending": 0}
+    counters = {"machine_pass": 0, "machine_fail": 0, "user_pending": 0}
     all_results: list[CheckResult] = list(machine_results)
 
     def eval_node(node: Any) -> str:
@@ -227,19 +233,9 @@ def compose_verdict(
             elif result.outcome == "fail":
                 counters["machine_fail"] += 1
             return result.outcome
-        elif judge == "agent":
-            counters["agent_pending"] += 1
-            all_results.append(
-                CheckResult(
-                    judge="agent",
-                    kind="agent-eval",
-                    target=node.get("prompt", "")[:60],
-                    outcome="pending",
-                    detail="requires LLM verifier",
-                    source="agent",
-                )
-            )
-            return "pending"
+        # agent judge removed: non-deterministic, gameable, pseudo-precise.
+        # If a criterion can't be expressed as machine or user, the spec
+        # isn't finished being designed yet.
         elif judge == "user":
             counters["user_pending"] += 1
             all_results.append(
@@ -261,8 +257,6 @@ def compose_verdict(
         summary_parts.append(f"machine: {counters['machine_pass']} pass")
     if counters["machine_fail"]:
         summary_parts.append(f"machine: {counters['machine_fail']} fail")
-    if counters["agent_pending"]:
-        summary_parts.append(f"agent: {counters['agent_pending']} pending")
     if counters["user_pending"]:
         summary_parts.append(f"user: {counters['user_pending']} pending")
 
@@ -272,7 +266,6 @@ def compose_verdict(
         summary="; ".join(summary_parts) or "no criteria",
         machine_pass=counters["machine_pass"],
         machine_fail=counters["machine_fail"],
-        agent_pending=counters["agent_pending"],
         user_pending=counters["user_pending"],
     )
 

@@ -25,17 +25,23 @@ class TestSpecValidation:
         spec = {
             "all": [
                 {"judge": "machine", "kind": "file-exists", "target": "report.md"},
-                {"judge": "agent", "prompt": "Is it clear?", "min_score": 0.7},
                 {
-                    "any": [
-                        {"judge": "user"},
-                        {"judge": "agent", "prompt": "Is it OK?", "min_score": 0.9},
-                    ]
+                    "judge": "machine",
+                    "kind": "output-contains",
+                    "target": "pytest",
+                    "args": {"text": "passed"},
                 },
+                {"any": [{"judge": "user"}]},
             ]
         }
         errors = validate_spec(spec)
         assert not errors, f"unexpected errors: {errors}"
+
+    def test_agent_judge_rejected(self) -> None:
+        """agent judge 已移除——非确定、可欺骗、伪精确。"""
+        spec = {"judge": "agent", "prompt": "Is it good?"}
+        errors = validate_spec(spec)
+        assert any("judge" in e for e in errors)
 
     def test_invalid_judge_rejected(self) -> None:
         spec = {"judge": "oracle", "kind": "file-exists", "target": "x"}
@@ -47,11 +53,6 @@ class TestSpecValidation:
         errors = validate_spec(spec)
         assert any("kind" in e for e in errors)
         assert any("target" in e for e in errors)
-
-    def test_agent_requires_prompt(self) -> None:
-        spec = {"judge": "agent"}
-        errors = validate_spec(spec)
-        assert any("prompt" in e for e in errors)
 
     def test_empty_combinator_rejected(self) -> None:
         spec = {"all": []}
@@ -89,16 +90,14 @@ class TestSpecEvaluation:
         spec = {
             "all": [
                 {"judge": "machine", "kind": "file-exists", "target": "a.txt"},
-                {"judge": "agent", "prompt": "Good?"},
                 {"judge": "user"},
             ]
         }
         results = evaluate_machine_checks(spec, check_results={"file-exists:a.txt": "pass"})
         verdict = compose_verdict(spec, machine_results=results)
-        # Machine passed but agent+user pending → overall pending
+        # Machine passed but user pending → overall pending
         assert verdict.outcome == "pending"
         assert verdict.machine_pass == 1
-        assert verdict.agent_pending == 1
         assert verdict.user_pending == 1
 
     def test_verdict_fail_dominates_pending(self) -> None:

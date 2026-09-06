@@ -123,6 +123,96 @@ def evaluate_check(
                 " ".join(argv),
                 f"exit={completed.returncode}",
             )
+        # ── 扩展词汇表：让更多意图能表达成确定性检查 ──
+        if spec.kind in (CheckKind.OUTPUT_CONTAINS, CheckKind.OUTPUT_NOT_CONTAINS):
+            # 运行命令，检查 stdout 是否包含/不包含指定文本
+            argv = [spec.target, *(str(x) for x in spec.args.get("argv", ()))]
+            expected = str(spec.args.get("text", ""))
+            timeout = _command_timeout_seconds(spec, timeout_seconds)
+            completed = subprocess.run(  # noqa: S603
+                argv, cwd=workspace_root, shell=False,
+                capture_output=True, text=True, timeout=timeout, check=False,
+            )
+            output = completed.stdout or ""
+            if spec.kind == CheckKind.OUTPUT_CONTAINS:
+                matched = expected in output
+            else:
+                matched = expected not in output
+            return CheckResult(
+                check_id, "pass" if matched else "fail",
+                " ".join(argv), f"looking for {expected!r} in stdout",
+            )
+
+        if spec.kind == CheckKind.OUTPUT_MATCHES:
+            argv = [spec.target, *(str(x) for x in spec.args.get("argv", ()))]
+            pattern = str(spec.args.get("regex", ""))
+            timeout = _command_timeout_seconds(spec, timeout_seconds)
+            completed = subprocess.run(  # noqa: S603
+                argv, cwd=workspace_root, shell=False,
+                capture_output=True, text=True, timeout=timeout, check=False,
+            )
+            matched = re.search(pattern, completed.stdout or "") is not None
+            return CheckResult(
+                check_id, "pass" if matched else "fail",
+                " ".join(argv), f"regex {pattern!r} on stdout",
+            )
+
+        if spec.kind == CheckKind.FILE_NOT_EMPTY:
+            if target is None:
+                return CheckResult(check_id, "fail", "path-policy", "target escapes workspace")
+            text = target.read_text(encoding="utf-8").strip()
+            return CheckResult(
+                check_id, "pass" if text else "fail",
+                str(target), f"{len(text)} chars",
+            )
+
+        if spec.kind in (CheckKind.LINE_COUNT_MIN, CheckKind.LINE_COUNT_MAX):
+            if target is None:
+                return CheckResult(check_id, "fail", "path-policy", "target escapes workspace")
+            lines = len(target.read_text(encoding="utf-8").splitlines())
+            threshold = int(spec.args.get("count", 0))
+            if spec.kind == CheckKind.LINE_COUNT_MIN:
+                ok = lines >= threshold
+            else:
+                ok = lines <= threshold
+            return CheckResult(
+                check_id, "pass" if ok else "fail",
+                str(target), f"{lines} lines (limit: {threshold})",
+            )
+
+        if spec.kind == CheckKind.NO_FORBIDDEN:
+            if target is None:
+                return CheckResult(check_id, "fail", "path-policy", "target escapes workspace")
+            text = target.read_text(encoding="utf-8")
+            forbidden = [str(p) for p in spec.args.get("patterns", ())]
+            found = [p for p in forbidden if p in text]
+            return CheckResult(
+                check_id, "pass" if not found else "fail",
+                str(target),
+                f"forbidden found: {found}" if found else "clean",
+            )
+
+        if spec.kind == CheckKind.JSON_PATH_EQUALS:
+            if target is None:
+                return CheckResult(check_id, "fail", "path-policy", "target escapes workspace")
+            data = json.loads(target.read_text(encoding="utf-8"))
+            path_parts = str(spec.args.get("path", "")).split(".")
+            current = data
+            for part in path_parts:
+                if isinstance(current, dict):
+                    current = current.get(part)
+                elif isinstance(current, list) and part.isdigit():
+                    current = current[int(part)]
+                else:
+                    current = None
+                    break
+            expected = spec.args.get("value")
+            ok = current == expected
+            return CheckResult(
+                check_id, "pass" if ok else "fail",
+                str(target), f"path={spec.args.get('path')} got={current!r} want={expected!r}",
+            )
+
         if spec.kind == CheckKind.STRUCTURE_VALID:
             json.loads(target.read_text(encoding="utf-8"))  # type: ignore[union-attr]
             return CheckResult(check_id, "pass", str(target))

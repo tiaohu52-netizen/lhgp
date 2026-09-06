@@ -21,6 +21,14 @@ class CheckKind(StrEnum):
     STRUCTURE_VALID = "structure-valid"
     OBSERVABLE = "observable"
     USER_ASSERTION = "user-assertion"
+    OUTPUT_CONTAINS = "output-contains"
+    OUTPUT_NOT_CONTAINS = "output-not-contains"
+    OUTPUT_MATCHES = "output-matches"
+    FILE_NOT_EMPTY = "file-not-empty"
+    LINE_COUNT_MIN = "line-count-min"
+    LINE_COUNT_MAX = "line-count-max"
+    NO_FORBIDDEN = "no-forbidden"
+    JSON_PATH_EQUALS = "json-path-equals"
 
 
 @dataclass(frozen=True, slots=True)
