@@ -26,14 +26,14 @@ import json
 import logging
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from longtask.contracts.schema import ContractDraft, ContractView
 from longtask.persistence.events import EventType
 from longtask.persistence.events_query import get_latest_forecast_snapshot
-from longtask.persistence.store import append_event
+from longtask.persistence.store import append_event, get_contract
 
 logger = logging.getLogger(__name__)
 
@@ -609,11 +609,124 @@ def handover_prompt_addendum(root: Path, contract_id: str) -> str:
     return text[:HANDOVER_IN_PROMPT_CHARS]
 
 
+# Auto-handover detector: same string used by the daemon loop's HANDOVER_DUE
+# emitter. EventType.HANDOVER_DUE lands in a follow-up commit that consolidates
+# ``src/lhgp/persistence/events.py``; until then we hardcode the literal so the
+# new event is still observable end-to-end and the events table has a stable
+# audit trail.
+HANDOVER_DUE_EVENT_TYPE = "handover/due"  # TODO: use EventType.HANDOVER_DUE
+
+# Debounce window for the warm-warning branch: once we fire a HANDOVER_DUE
+# we won't re-fire for the same attempt within this many seconds. A re-check
+# inside the window returns False so the daemon doesn't loop on a snapshot
+# that hasn't grown.
+HANDOVER_DUE_DEBOUNCE_SECONDS = 60
+
+
+def _resolve_data_root(conn: sqlite3.Connection) -> Path | None:
+    """Return the directory holding the SQLite file behind ``conn``.
+
+    Mirrors ``_data_root_from_conn`` in ``lhgp.wiki.sync`` so the active.md
+    read in ``check_handover_due`` lands at the same path that
+    ``compile_context_snapshot`` wrote. Returns None for in-memory or
+    unnamed databases (callers must treat that as "cannot judge").
+    """
+    try:
+        row = conn.execute("PRAGMA database_list").fetchone()
+    except sqlite3.DatabaseError:
+        return None
+    if row is None:
+        return None
+    file_path = row[2] if len(row) > 2 else None
+    if not file_path:
+        return None
+    return Path(str(file_path)).resolve().parent
+
+
+def check_handover_due(
+    conn: sqlite3.Connection,
+    contract_id: str,
+    attempt_id: str,
+    *,
+    low_water: float = 0.6,
+    high_water: float = 0.9,
+) -> bool:
+    """Decide if this attempt's active.md is at risk of exhausting the
+    §4.1 context window.
+
+    The daemon loop calls this between attempts. When True, the caller
+    writes a ``handover.md`` via the existing ``_handover_data`` path
+    with ``next_action`` populated from the most recent attempt's
+    submitted evaluation, and emits a HANDOVER_DUE event so the next
+    attempt resumes from a clean session.
+
+    Returns:
+        - False: contract not found, or active.md missing (no snapshot
+          to judge).
+        - True: size / max_bytes >= high_water (overdue — fire
+          immediately, no debounce).
+        - True: size / max_bytes >= low_water AND no HANDOVER_DUE event
+          in the last ``HANDOVER_DUE_DEBOUNCE_SECONDS`` for this attempt
+          (warm warning; the function writes a HANDOVER_DUE event
+          itself so a re-call inside the debounce window returns False).
+        - False otherwise.
+    """
+    view = get_contract(conn, contract_id)
+    if view is None:
+        return False
+    policy = ContextPolicy.from_contract(view.draft)
+
+    root = _resolve_data_root(conn)
+    if root is None:
+        return False
+    active_path = (
+        root / "contracts" / contract_id / CONTEXT_DIR / ATTEMPTS_DIR / attempt_id / ACTIVE_FILE
+    )
+    if not active_path.is_file():
+        return False
+
+    size = active_path.stat().st_size
+    ratio = size / policy.max_bytes
+
+    if ratio >= high_water:
+        return True  # Overdue: always fire, no debounce.
+
+    if ratio >= low_water:
+        now = datetime.now(UTC)
+        cutoff_iso = (now - timedelta(seconds=HANDOVER_DUE_DEBOUNCE_SECONDS)).isoformat()
+        recent = conn.execute(
+            "SELECT 1 FROM events WHERE contract_id = ? AND attempt_id = ? "
+            "AND event_type = ? AND created_at >= ? LIMIT 1",
+            (contract_id, attempt_id, HANDOVER_DUE_EVENT_TYPE, cutoff_iso),
+        ).fetchone()
+        if recent is not None:
+            return False
+        append_event(
+            conn,
+            contract_id=contract_id,
+            attempt_id=attempt_id,
+            event_type=HANDOVER_DUE_EVENT_TYPE,  # TODO: use EventType.HANDOVER_DUE
+            payload={
+                "size": size,
+                "max_bytes": policy.max_bytes,
+                "ratio": round(ratio, 4),
+                "reason": "auto_handover_warm",
+            },
+            now=now,
+            actor="daemon",
+            role="system",
+        )
+        return True
+
+    return False
+
+
 __all__ = [
     "ACTIVE_FILE",
     "SCRATCH_FILE",
     "CapacityRefusedError",
     "ContextPolicy",
+    "check_handover_due",
     "compile_context_snapshot",
     "handover_prompt_addendum",
 ]
