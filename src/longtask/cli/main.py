@@ -220,6 +220,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="请求原因（写入审计事件）",
     )
 
+    # attempt resume: assemble a self-contained brief from active.md + handover.md
+    attempt_p = sub.add_parser("attempt", help="attempt-level control surface")
+    attempt_sub = attempt_p.add_subparsers(dest="attempt_cmd", required=True)
+    attempt_resume = attempt_sub.add_parser(
+        "resume",
+        help="read active.md + handover.md, print a self-contained resume brief",
+    )
+    attempt_resume.add_argument("contract_id", type=str, help="合同 ID")
+    attempt_resume.add_argument("attempt_id", type=str, help="正在恢复的 attempt ID")
+    attempt_resume.add_argument(
+        "--next-attempt-id",
+        type=str,
+        default=None,
+        help="新 attempt 的 ID（默认从 attempt_id + 时间派生）",
+    )
+
     # kill-switch
     ks_p = sub.add_parser("kill-switch", help="全局 Emergency Stop 熔断控制")
     ks_group = ks_p.add_mutually_exclusive_group(required=True)
@@ -1554,6 +1570,25 @@ def main(argv: list[str] | None = None) -> int:
             data_dir=root,
             dry_run=dry_run,
         )
+
+    if args.command == "attempt" and args.attempt_cmd == "resume":
+        from lhgp.contracts import build_resume_brief
+
+        conn = connect(StoreConfig(db_path=root / "state.db"))
+        try:
+            ensure_schema(conn)
+            resume_brief = build_resume_brief(
+                root,
+                args.contract_id,
+                args.attempt_id,
+                next_attempt_id=args.next_attempt_id,
+                conn=conn,
+                now=datetime.now(UTC),
+            )
+        finally:
+            conn.close()
+        print(resume_brief.body)
+        return 0
 
     if args.command == "attempt" and args.attempt_cmd == "resume":
         from lhgp.contracts import build_resume_brief

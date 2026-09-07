@@ -321,6 +321,32 @@ def tool_brief(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
     return build_brief(ctx["conn"], contract_id=args["contract_id"], now=_now())
 
 
+def tool_resume_attempt(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    """读取 active.md + handover.md，拼出一次可喂入新 LLM 会话的 self-contained brief。
+
+    会落 attempt/resumed 审计事件（见 resume.py 中的 TODO，待 events.py 整合后
+    切换到 EventType.ATTEMPT_RESUMED）。返回的 body 字段直接给模型当上下文。
+    """
+    from lhgp.contracts import build_resume_brief
+
+    brief = build_resume_brief(
+        ctx["root"],
+        args["contract_id"],
+        args["attempt_id"],
+        next_attempt_id=args.get("next_attempt_id"),
+        conn=ctx["conn"],
+        now=_now(),
+    )
+    return {
+        "contract_id": brief.contract_id,
+        "attempt_id": brief.attempt_id,
+        "next_attempt_id": brief.next_attempt_id,
+        "active_md_path": str(brief.active_md_path),
+        "handover_md_path": str(brief.handover_md_path),
+        "body": brief.body,
+    }
+
+
 def tool_board(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
     """多合同一屏：风险/状态/预算/下次决策点，按风险排序（只读聚合）。"""
     from lhgp.persistence.insights import build_board
@@ -1327,6 +1353,33 @@ TOOLS: dict[
             "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False},
         },
     ),
+    "lhgp_resume_attempt": (
+        tool_resume_attempt,
+        {
+            "description": (
+                "attempt 恢复入口：读取 active.md + handover.md，拼出一次 self-contained "
+                "resume brief（body 字段直接喂给新会话）。会落 attempt/resumed 审计事件。"
+                "何时用：上一轮崩溃 / 上下文耗尽 / 502 失败后想无脑接着干。"
+            ),
+            "inputSchema": {
+                "type": "object",
+                "required": ["contract_id", "attempt_id"],
+                "properties": {
+                    "contract_id": {"type": "string"},
+                    "attempt_id": {"type": "string"},
+                    "next_attempt_id": {
+                        "type": "string",
+                        "description": "可选；新 attempt ID（默认从 attempt_id + 时间派生）",
+                    },
+                },
+            },
+            "annotations": {
+                "readOnlyHint": False,
+                "destructiveHint": False,
+                "openWorldHint": False,
+            },
+        },
+    ),
     "lhgp_board": (
         tool_board,
         {
@@ -1824,6 +1877,7 @@ _DESTRUCTIVE_TOOLS = {
     "lhgp_attach_executor",
     "lhgp_request_verification",
     "lhgp_interrupt_attempt",
+    "lhgp_resume_attempt",
     "lhgp_write_back",
     # P6 反馈回路
     "lhgp_submit_evaluation",

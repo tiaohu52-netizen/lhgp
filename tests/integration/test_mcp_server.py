@@ -240,7 +240,9 @@ class TestMCPDiscovery:
             # P6 added 6 new tools: lhgp_submit_evaluation, lhgp_compute_diff,
             # lhgp_evolve_templates, lhgp_portfolio, lhgp_trace,
             # lhgp_deadline_report — 41 + 6 = 47.
-            assert len(names) == 47
+            # Plan-mode gate added lhgp_submit_plan — 47 + 1 = 48.
+            # attempt/resume entry point added lhgp_resume_attempt — 48 + 1 = 49.
+            assert len(names) == 49
             by_name = {item["name"]: item for item in tools["result"]["tools"]}
             assert by_name["lhgp_notifications"]["annotations"] == {
                 "readOnlyHint": True,
