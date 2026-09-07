@@ -4,6 +4,84 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version numbers
 follow [SemVer](https://semver.org/spec/v2.0.0.html); dates in ISO 8601.
 
+## [0.1.0a10] - 2026-09-08
+
+Resilient contract execution:从「能跑」到「死了也能接着干」。
+
+### Added
+
+- **Auto-handover detector (DESIGN §4.1)**:`src/longtask/persistence/context.py::check_handover_due`
+  在 `active.md` 逼近 context 窗口时返回 True。`HANDOVER_DUE_DEBOUNCE_SECONDS=60`
+  warm 分支自动 debounce,`overdue` (ratio ≥ 0.9) 立即触发。`HANDOVER_DUE` 审计
+  事件记 `reason=auto_handover_warm` / `auto_handover_overdue`。`_resolve_data_root()`
+  PRAGMA helper 让 in-memory DB 走 None 路径不被错误处理。
+  **`src/longtask/cli/daemon_loop.py::_check_handover_due`** 每轮 tick 遍历
+  `runner.running_attempts()`,在 `run_daemon_tick` 之前对 overdue attempt
+  补 HANDOVER_DUE 事件(warm 分支事件已由 detector 自己落,不再双发),best-effort
+  单 attempt 异常不破坏整轮 tick。
+
+- **Transient retry for RPC dispatch**:`src/longtask/rpc/dispatch.py::with_transient_retry`
+  装饰器,指数退避 + 抖动,对 `ConnectError` / `ReadTimeout` /
+  `RemoteProtocolError` / stdlib `ConnectionError` / `TimeoutError` / 429/502/503/504
+  自动重试,4xx(除 429)和 5xx(除 502/503/504)直接上抛不重试。
+  `src/lhgp/rpc/server.py::route()` 用此装饰器包住默认 conn 路径,每次重试
+  写 `RETRY_ATTEMPTED` 事件带 attempt/delay/error_type/method,审计失败
+  永不破坏重试(closure try/except 吞掉)。默认 conn 路径无法跨调用传 conn,
+  该路径 audit 静默 skip(commit message 文档化)。
+
+- **Structured Plan gate**:`src/lhgp/contracts/plan.py` 新 dataclass `Plan` /
+  `PlanStep` / `PlanValidation` + 白名单 `ALLOWED_ACTIONS = {read file, run command,
+  ask user, verify acceptance, write file, search code}`。`Plan.validate(view)` 四道
+  检查:step 数 ≥ 1、action 在白名单、rationale 含 objective 关键词、每个 acceptance
+  check 被某 step 的 target 或 expected_outcome 覆盖。approved → 落 `PLAN_APPROVED`;
+  rejected → 落 `PLAN_REJECTED` 带 `rejection_reasons`。两个入口对称:
+  - CLI:`lhgp plan submit <contract_id> [--from <file>] [--submitted-by ...]`,
+    从 stdin/file 读 JSON。
+  - MCP:`lhgp_submit_plan` (新增 49 个工具之一),相同 pipeline。
+  - 写侧三事件:`PLAN_SUBMITTED`(必落)→ `PLAN_APPROVED` 或 `PLAN_REJECTED`。
+  - **`src/longtask/cli/dispatch.py` 在 runner 端强制**:`_has_recent_plan_approval`
+    查 24h lookback 内最近一次 PLAN_APPROVED/PLAN_REJECTED,后续被 PLAN_REJECTED
+    推翻的 approval 不算数。`_plan_gate_required(contract)` opt-in via
+    `contract.draft.context["gate"] == "plan"`,默认 off 不破坏现有合同。
+    开启且 gate 不满足时,`DISPATCH_REFUSED` + `reason=plan gate: no recent
+    PLAN_APPROVED event`,返回 None → caller 走 blocked(any path that bypasses
+    `plan submit` / `tool_submit_plan` 都不能派发 gated 合同)。
+
+- **Resume brief entry point**:`src/lhgp/contracts/resume.py::build_resume_brief`
+  读 `active.md` + `handover.md` 拼一份 self-contained brief(可直接喂入新
+  LLM 会话,免去重新推导项目背景)。`active.md` 缺失 → `FileNotFoundError`;
+  `handover.md` 缺失 → 用 `_(no handover.md written)_` 占位,best-effort。
+  `_derive_next_attempt_id` 纯函数(可 override,默认从 `attempt_id + iso 时间`
+  派生)。每次调用写 `ATTEMPT_RESUMED` 事件带 `from_attempt_id` /
+  `next_attempt_id` / actor。两个入口:
+  - CLI:`lhgp attempt resume <contract_id> <attempt_id> [--next-attempt-id ...]`
+    把 brief body 打到 stdout。
+  - MCP:`lhgp_resume_attempt` (新增 49 个工具之一),返回结构化 dict
+    (contract_id / attempt_id / next_attempt_id / active_md_path /
+    handover_md_path / body)。
+
+- **6 new EventType entries**:`src/lhgp/persistence/events.py` 新增
+  `RETRY_ATTEMPTED` / `PLAN_SUBMITTED` / `PLAN_APPROVED` / `PLAN_REJECTED` /
+  `HANDOVER_DUE` / `ATTEMPT_RESUMED`,wire string 与先前 4 个 stream pin
+  的字面量完全一致,**零 protocol drift**,已落盘的事件无需迁移。
+
+### Quality
+
+- 7/7 quality gate 全过(format / lint / arch / deps / claims / mypy /
+  pytest+coverage)。无 new `# type: ignore`、无 new `Any` returns。
+- 测试 +30(7 → 1114 passed, 6 skipped, 75.62% coverage)。新增 18 个
+  覆盖本轮产品面:
+  - 12 个 `tests/unit/test_plan_gate.py`(helper 函数 + 4 条 dispatch 分支)
+  - 3 个 `tests/integration/test_mcp_server.py`(真实调
+    `tool_submit_plan` / `tool_resume_attempt` 并查审计事件流)
+  - 3 个 `tests/unit/test_auto_handover.py`(`_check_handover_due` daemon tick
+    集成:overdue emit / warm 不双发 / missing active.md skip)
+- Verifier 标 APPROVE。fix 完所有上一轮报告的 must-fix:`attempt resume`
+  块在 `main.py` 重复 3 份已 dedupe,过期 docstring 已清理,daemon loop
+  现在真调 `check_handover_due`,plan gate 在 runner 端真实拦截。
+- Worktree 痕迹已清(`.worktrees/attempt-resume` / `feat/attempt-resume` 分支
+  / `feat/rpc-transient-retry` 已合入 main 后删除)。
+
 ## [0.1.0a9] - 2026-09-07
 
 memory-and-wiki Phase 2 + 3 + 4:协议从「能写入」到「会沉淀/会看自己」。
