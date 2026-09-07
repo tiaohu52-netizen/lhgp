@@ -1,20 +1,23 @@
-"""P6+1: protocol-internal wiki reader (CLI side).
+"""P6+1: protocol-internal wiki reader (CLI side) — package form.
 
 The wiki is plain Markdown under ``docs/wiki/`` (git-tracked, Obsidian-style).
 This module wraps ``scripts/build_wiki_index.py`` for the CLI: load
-``.index.json``, dispatch list/read/search/show-graph subcommands.
+``.index.json``, dispatch list/read/search/show-graph subcommands, and
+expose the ``publish`` subcommand for self-publishing contract pages under
+``docs/wiki/auto/``.
 
-The wiki never touches the SQL store. The CLI is read-only and works
-without a running daemon — it's a documentation tool, not a runtime
-component.
+The wiki never touches the SQL store on the read path. ``publish`` is the
+single write path: it reads contracts from SQLite and materialises Markdown
+under ``docs/wiki/auto/`` so the same indexer that scans hand-written pages
+also picks the generated ones up.
 
 Why a CLI and not just ``cat docs/wiki/...``:
   - ``show-graph`` shows backlinks, which would otherwise need a second
     script run.
   - ``search`` does case-insensitive title + tag + body scan with consistent
     output.
-  - The same entry point is what the planned ``lhgp-memory`` (Phase 2) will
-    reuse for surfacing memories alongside wiki pages.
+  - ``publish`` is the projection of authoritative contract state into the
+    wiki tree — the indexer treats its output like any other page.
 """
 
 from __future__ import annotations
@@ -24,6 +27,8 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from lhgp.wiki import sync as _sync
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WIKI_ROOT = REPO_ROOT / "docs" / "wiki"
@@ -231,7 +236,29 @@ def _cmd_graph(pages: dict[str, WikiEntry], args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_publish(args: argparse.Namespace) -> int:
+    """Render Markdown pages for active contracts. Used in tests / embed.
+
+    The CLI dispatch in ``longtask.cli.main`` opens the connection itself
+    (so it can reuse ``--data-dir`` and tear down the connection on exit);
+    this thin wrapper is here for callers that already have a connection
+    and want the same one-line output.
+    """
+    from lhgp.wiki.sync import AUTO_SUBDIR  # local import to avoid cycle in tests
+
+    conn = args._publish_conn
+    wiki_root: Path = args.wiki_root
+    written = _sync.publish_active_contracts(conn, wiki_root)
+    print(f"published {len(written)} page(s) under {wiki_root / AUTO_SUBDIR}")
+    return 0
+
+
 def wiki_command(args: argparse.Namespace) -> int:
+    if args.wiki_cmd == "publish":
+        # Production dispatch is in longtask.cli.main (it owns the DB
+        # connection); this branch only fires for callers that drive
+        # ``wiki_command`` directly with their own connection.
+        return _cmd_publish(args)
     pages = _build_pages()
     if args.wiki_cmd == "list":
         return _cmd_list(pages, args)
@@ -245,4 +272,16 @@ def wiki_command(args: argparse.Namespace) -> int:
     return 2
 
 
-__all__ = ["WikiEntry", "wiki_command"]
+# Re-export the sync module's primary entry point so callers that already
+# ``from lhgp.wiki import publish_active_contracts`` keep working.
+publish_active_contracts = _sync.publish_active_contracts
+
+
+__all__ = [
+    "INDEX_PATH",
+    "REPO_ROOT",
+    "WIKI_ROOT",
+    "WikiEntry",
+    "publish_active_contracts",
+    "wiki_command",
+]

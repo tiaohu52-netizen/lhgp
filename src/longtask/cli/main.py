@@ -344,6 +344,16 @@ def build_parser() -> argparse.ArgumentParser:
     wiki_search.add_argument("--type", type=str, default=None)
     wiki_graph = wiki_sub.add_parser("show-graph", help="print outgoing + backlinks for one page")
     wiki_graph.add_argument("page", type=str)
+    wiki_publish = wiki_sub.add_parser(
+        "publish",
+        help="render Markdown pages for active contracts under <wiki_root>/auto/",
+    )
+    wiki_publish.add_argument(
+        "--wiki-root",
+        type=Path,
+        default=None,
+        help="wiki root (default: <repo>/docs/wiki)",
+    )
 
     # ── P6+1 / memory-and-wiki Phase 2：memory 长期记忆
     from lhgp.memory import MemoryKind, MemoryScope
@@ -978,7 +988,30 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "wiki":
-        from lhgp.wiki import wiki_command
+        from lhgp.wiki import REPO_ROOT, WIKI_ROOT, wiki_command
+
+        if args.wiki_cmd == "publish":
+            from lhgp.wiki import publish_active_contracts
+
+            root = (
+                Path(args.data_dir).expanduser().resolve() if args.data_dir else default_data_root()
+            )
+            conn = connect(StoreConfig(db_path=root / "state.db"))
+            try:
+                ensure_schema(conn)
+                wiki_root = (
+                    Path(args.wiki_root).expanduser().resolve()
+                    if getattr(args, "wiki_root", None)
+                    else (REPO_ROOT / "docs" / "wiki" if REPO_ROOT else WIKI_ROOT)
+                )
+                written = publish_active_contracts(conn, wiki_root)
+                if not written:
+                    print("no active contracts")
+                else:
+                    print(f"published {len(written)} page(s) under {wiki_root / 'auto'}")
+            finally:
+                conn.close()
+            return 0
 
         return wiki_command(args)
 
