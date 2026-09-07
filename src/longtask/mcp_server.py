@@ -579,6 +579,109 @@ def tool_submit_evaluation(args: dict[str, Any], ctx: dict[str, Any]) -> dict[st
     }
 
 
+def tool_submit_plan(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    """Submit a Plan for a contract attempt and validate it against the gate.
+
+    Always writes a ``PLAN_SUBMITTED`` event for audit. If the validator
+    returns ``approved=True``, also writes a ``PLAN_APPROVED`` event so
+    the runner can dispatch the attempt; otherwise writes a
+    ``PLAN_REJECTED`` event with the rejection reasons in the payload.
+    The runner requires a matching ``PLAN_APPROVED`` in the contract's
+    recent event stream before it can transition ``DISPATCHING -> RUNNING``.
+    """
+    from datetime import UTC, datetime
+
+    from lhgp.contracts.plan import Plan, PlanStep
+    from lhgp.persistence.events_query import append_event
+    from lhgp.persistence.store import get_contract
+
+    contract_id = str(args.get("contract_id") or "").strip()
+    if not contract_id:
+        raise ValueError("contract_id is required")
+    steps_raw = args.get("steps")
+    if not isinstance(steps_raw, list) or not steps_raw:
+        raise ValueError("steps must be a non-empty array")
+    submitted_by = str(args.get("submitted_by") or "agent:mcp").strip()
+
+    view = get_contract(ctx["conn"], contract_id)
+    if view is None:
+        from longtask.rpc.errors import ErrorCode, RpcError
+
+        raise RpcError(code=ErrorCode.UNKNOWN_CONTRACT, message=f"contract {contract_id} not found")
+
+    steps: list[PlanStep] = []
+    for index, raw in enumerate(steps_raw, start=1):
+        if not isinstance(raw, dict):
+            raise ValueError(f"steps[{index}] must be an object")
+        try:
+            steps.append(
+                PlanStep(
+                    step_id=int(raw.get("step_id", index)),
+                    action=str(raw.get("action") or ""),
+                    target=str(raw.get("target") or ""),
+                    rationale=str(raw.get("rationale") or ""),
+                    expected_outcome=str(raw.get("expected_outcome") or ""),
+                )
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"steps[{index}] is malformed: {exc}") from exc
+
+    now = datetime.now(UTC)
+    plan = Plan(
+        contract_id=contract_id,
+        steps=tuple(steps),
+        submitted_at=now,
+        submitted_by=submitted_by,
+    )
+    validation = plan.validate(view)
+
+    # TODO: use EventType.PLAN_SUBMITTED / PLAN_APPROVED / PLAN_REJECTED
+    # once the events.py consolidation commit lands.  String literals are
+    # pinned here to avoid a circular import on the old EventType enum.
+    conn = ctx["conn"]
+    append_event(
+        conn,
+        contract_id=contract_id,
+        event_type="plan/submitted",  # TODO: use EventType.PLAN_SUBMITTED
+        payload={
+            "submitted_by": submitted_by,
+            "step_count": len(steps),
+            "step_ids": [s.step_id for s in steps],
+        },
+        now=now,
+        actor=submitted_by,
+    )
+    if validation.approved:
+        append_event(
+            conn,
+            contract_id=contract_id,
+            event_type="plan/approved",  # TODO: use EventType.PLAN_APPROVED
+            payload={"submitted_by": submitted_by, "step_count": len(steps)},
+            now=now,
+            actor="daemon",
+        )
+    else:
+        append_event(
+            conn,
+            contract_id=contract_id,
+            event_type="plan/rejected",  # TODO: use EventType.PLAN_REJECTED
+            payload={
+                "submitted_by": submitted_by,
+                "rejection_reasons": list(validation.rejection_reasons),
+            },
+            now=now,
+            actor="daemon",
+        )
+
+    return {
+        "contract_id": contract_id,
+        "approved": validation.approved,
+        "rejection_reasons": list(validation.rejection_reasons),
+        "step_count": len(steps),
+        "submitted_at": now.isoformat(),
+    }
+
+
 def tool_compute_diff(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
     """Compute the file diff between an attempt and the current workspace."""
     from datetime import UTC, datetime
@@ -1477,6 +1580,61 @@ TOOLS.update(
                 },
             },
         ),
+        "lhgp_submit_plan": (
+            tool_submit_plan,
+            {
+                "description": (
+                    "Plan-mode gate：合同 attempt 派工前，agent 必须提交结构化计划。"
+                    "每个 step 包含 action（白名单：read file/run command/ask user/"
+                    "verify acceptance/write file/search code）、target、rationale、"
+                    "expected_outcome。validator 检查：步骤数 ≥1、action 在白名单、"
+                    "rationale 含 objective 关键词、每个 acceptance check 被某 step 的"
+                    " target 或 expected_outcome 覆盖。approved 时落 plan/approved "
+                    "事件，runner 看到才放行 DISPATCHING→RUNNING；rejected 时落"
+                    " plan/rejected 事件并返回 rejection_reasons。"
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "required": ["contract_id", "steps"],
+                    "properties": {
+                        "contract_id": {"type": "string"},
+                        "submitted_by": {
+                            "type": "string",
+                            "description": "提交者标识，默认 'agent:mcp'",
+                        },
+                        "steps": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                                "type": "object",
+                                "required": [
+                                    "action",
+                                    "target",
+                                    "rationale",
+                                    "expected_outcome",
+                                ],
+                                "properties": {
+                                    "step_id": {"type": "integer", "minimum": 1},
+                                    "action": {
+                                        "enum": [
+                                            "read file",
+                                            "run command",
+                                            "ask user",
+                                            "verify acceptance",
+                                            "write file",
+                                            "search code",
+                                        ]
+                                    },
+                                    "target": {"type": "string"},
+                                    "rationale": {"type": "string"},
+                                    "expected_outcome": {"type": "string"},
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        ),
         "lhgp_compute_diff": (
             tool_compute_diff,
             {
@@ -1671,6 +1829,8 @@ _DESTRUCTIVE_TOOLS = {
     "lhgp_submit_evaluation",
     "lhgp_compute_diff",
     "lhgp_evolve_templates",
+    # Plan-mode gate
+    "lhgp_submit_plan",
 }
 _READ_ONLY_TOOLS = {
     "longtask_health",

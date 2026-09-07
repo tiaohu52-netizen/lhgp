@@ -24,9 +24,11 @@ from lhgp.contracts.contract_view import (
     from_state_dict,
     to_state_dict,
 )
+from lhgp.contracts.plan import ALLOWED_ACTIONS, Plan, PlanStep, PlanValidation
 from lhgp.contracts.validation import validate_draft, validate_raw
 
 __all__ = [
+    "ALLOWED_ACTIONS",
     "ALLOWED_CONTROLS",
     "DEFAULT_VERIFICATION_RESERVED",
     "FROZEN_FIELDS",
@@ -48,6 +50,9 @@ __all__ = [
     "DeadlineStatus",
     "Enforcement",
     "EventActor",
+    "Plan",
+    "PlanStep",
+    "PlanValidation",
     "QuietHours",
     "from_state_dict",
     "to_state_dict",

@@ -330,6 +330,30 @@ def build_parser() -> argparse.ArgumentParser:
     )
     dl_p.add_argument("--limit", type=int, default=500)
 
+    # ── Plan-mode gate：合同 attempt 派工前先提交结构化计划 ──
+    plan_p = sub.add_parser(
+        "plan",
+        help="plan-mode gate: submit a Plan for a contract attempt",
+    )
+    plan_sub = plan_p.add_subparsers(dest="plan_cmd", required=True)
+    plan_submit = plan_sub.add_parser(
+        "submit", help="read a Plan JSON from stdin, validate, write audit event"
+    )
+    plan_submit.add_argument("contract_id", type=str, help="target contract ID")
+    plan_submit.add_argument(
+        "--submitted-by",
+        type=str,
+        default="agent:cli",
+        help="submitter identity (default 'agent:cli')",
+    )
+    plan_submit.add_argument(
+        "--from",
+        dest="from_file",
+        type=str,
+        default=None,
+        help="read plan JSON from this file (default: stdin)",
+    )
+
     # ── P6 后续：wiki ── 工作方法 wiki
     wiki_p = sub.add_parser(
         "wiki",
@@ -998,6 +1022,118 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(deadline_report, ensure_ascii=False, indent=2, default=str))
         return 0
 
+    if args.command == "plan":
+        if args.plan_cmd == "submit":
+            from lhgp.contracts.plan import Plan, PlanStep
+            from lhgp.persistence.events_query import append_event
+            from lhgp.persistence.schema import transaction as _tx
+            from lhgp.persistence.store import get_contract
+
+            if args.from_file:
+                raw = Path(args.from_file).read_text(encoding="utf-8")
+            else:
+                raw = sys.stdin.read()
+            try:
+                payload = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                print(f"Error: invalid JSON: {exc}", file=sys.stderr)
+                return 2
+            if not isinstance(payload, dict):
+                print("Error: plan payload must be a JSON object", file=sys.stderr)
+                return 2
+            raw_steps = payload.get("steps")
+            if not isinstance(raw_steps, list) or not raw_steps:
+                print("Error: plan.steps must be a non-empty array", file=sys.stderr)
+                return 2
+
+            steps: list[PlanStep] = []
+            for index, raw_step in enumerate(raw_steps, start=1):
+                if not isinstance(raw_step, dict):
+                    print(f"Error: steps[{index}] must be an object", file=sys.stderr)
+                    return 2
+                try:
+                    steps.append(
+                        PlanStep(
+                            step_id=int(raw_step.get("step_id", index)),
+                            action=str(raw_step.get("action") or ""),
+                            target=str(raw_step.get("target") or ""),
+                            rationale=str(raw_step.get("rationale") or ""),
+                            expected_outcome=str(raw_step.get("expected_outcome") or ""),
+                        )
+                    )
+                except (TypeError, ValueError) as exc:
+                    print(f"Error: steps[{index}] malformed: {exc}", file=sys.stderr)
+                    return 2
+
+            conn = _open_read_conn(args.data_dir)
+            try:
+                view = get_contract(conn, args.contract_id)
+                if view is None:
+                    print(f"Error: contract {args.contract_id} not found", file=sys.stderr)
+                    return 1
+                now = datetime.now(UTC)
+                new_plan = Plan(
+                    contract_id=args.contract_id,
+                    steps=tuple(steps),
+                    submitted_at=now,
+                    submitted_by=str(args.submitted_by),
+                )
+                plan_validation = new_plan.validate(view)
+                with _tx(conn):
+                    # TODO: use EventType.PLAN_SUBMITTED / PLAN_APPROVED /
+                    # PLAN_REJECTED once the events.py consolidation commit
+                    # lands.  String literals are pinned here to avoid a
+                    # circular import on the old EventType enum.
+                    append_event(
+                        conn,
+                        contract_id=args.contract_id,
+                        event_type="plan/submitted",
+                        payload={
+                            "submitted_by": args.submitted_by,
+                            "step_count": len(steps),
+                            "step_ids": [s.step_id for s in steps],
+                        },
+                        now=now,
+                        actor=args.submitted_by,
+                    )
+                    if plan_validation.approved:
+                        append_event(
+                            conn,
+                            contract_id=args.contract_id,
+                            event_type="plan/approved",
+                            payload={
+                                "submitted_by": args.submitted_by,
+                                "step_count": len(steps),
+                            },
+                            now=now,
+                            actor="daemon",
+                        )
+                    else:
+                        append_event(
+                            conn,
+                            contract_id=args.contract_id,
+                            event_type="plan/rejected",
+                            payload={
+                                "submitted_by": args.submitted_by,
+                                "rejection_reasons": list(plan_validation.rejection_reasons),
+                            },
+                            now=now,
+                            actor="daemon",
+                        )
+            finally:
+                conn.close()
+            plan_result = {
+                "contract_id": args.contract_id,
+                "approved": plan_validation.approved,
+                "rejection_reasons": list(plan_validation.rejection_reasons),
+                "step_count": len(steps),
+                "submitted_at": now.isoformat(),
+            }
+            print(json.dumps(plan_result, ensure_ascii=False, indent=2))
+            return 0 if plan_validation.approved else 1
+        parser.parse_args(["plan", "--help"])
+        return 0
+
     if args.command == "brief":
         from lhgp.persistence.insights import build_brief
 
@@ -1418,6 +1554,44 @@ def main(argv: list[str] | None = None) -> int:
             data_dir=root,
             dry_run=dry_run,
         )
+
+    if args.command == "attempt" and args.attempt_cmd == "resume":
+        from lhgp.contracts import build_resume_brief
+
+        conn = connect(StoreConfig(db_path=root / "state.db"))
+        try:
+            ensure_schema(conn)
+            resume_brief = build_resume_brief(
+                root,
+                args.contract_id,
+                args.attempt_id,
+                next_attempt_id=args.next_attempt_id,
+                conn=conn,
+                now=datetime.now(UTC),
+            )
+        finally:
+            conn.close()
+        print(resume_brief.body)
+        return 0
+
+    if args.command == "attempt" and args.attempt_cmd == "resume":
+        from lhgp.contracts import build_resume_brief
+
+        conn = connect(StoreConfig(db_path=root / "state.db"))
+        try:
+            ensure_schema(conn)
+            resume_brief = build_resume_brief(
+                root,
+                args.contract_id,
+                args.attempt_id,
+                next_attempt_id=args.next_attempt_id,
+                conn=conn,
+                now=datetime.now(UTC),
+            )
+        finally:
+            conn.close()
+        print(resume_brief.body)
+        return 0
 
     # 6. executor 命令
     if args.command == "executor":
