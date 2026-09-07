@@ -4,6 +4,72 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version numbers
 follow [SemVer](https://semver.org/spec/v2.0.0.html); dates in ISO 8601.
 
+## [0.1.0a9] - 2026-09-07
+
+memory-and-wiki Phase 2 + 3 + 4:协议从「能写入」到「会沉淀/会看自己」。
+
+### Added
+
+- **Failure-driven memory**:`src/lhgp/feedback/lessons.py::mine_lesson_if_due(conn,
+  contract_id, min_failures=3)` 当 contract 累积 ≥ 3 个 `ATTEMPT_FAILED` 或
+  `verdict=reject` 信号时,自动写一条 `GOTCHA` 全局记忆。新事件类型
+  `MEMORY_LESSON_MINED`(audit 账本)。Hook 通过 `record_evaluation` 的
+  REJECT 分支触发(failure 路径),不污染 ACCEPT 评估。`source_event_id`
+  fallback:REJECT-only cluster 没有 ATTEMPT_FAILED 时,fallback 到
+  `user_evaluations.evaluation_id`,审计账本永远不会 NULL。
+  `last_reject_id` 走 `last_reject_id` audit payload key。
+- **Protocol-aware flow**:`lhgp flow contract <id>` 走 contract 引用代码的
+  call graph,不是任意 .py。`walk_contract(conn, contract_id, src_root=None)`
+  从 `acceptance.standard` / `acceptance.checks` / `execution.target` /
+  `context.python_module` 抽 seed 串,优先按模块路径解析,失败回退到
+  substring grep(3 个 cap,触发 cap 时打 WARNING)。支持 `import X` /
+  `from X import Y` 字面 statement 自动转 module path。`path.stat().st_size`
+  预检 ≥ 2 MiB 的文件直接拒,避免 OOM。空结果产 contract:`<id>` 占位节点。
+- **Self-publishing wiki**:`lhgp wiki publish` 把 active contract 渲染
+  到 `<wiki_root>/auto/<id>.md`(Obsidian frontmatter + sectioned body:
+  objective / status / acceptance / deadline / next_action / memory /
+  related)。`next_action` 从 `handover.md` 解析。terminal 7d 后回填 banner,
+  fresh terminal 不动。Path safety: contract_id 走 slug 归一化
+  (`[^A-Za-z0-9_.-]` → `_`) + `is_relative_to(auto_dir)` 检查
+  防止 `..` 越界。Wiki dispatcher 走 `longtask.cli.main` 拿连接。
+
+### Changed
+
+- `src/lhgp/wiki.py` → 包 `src/lhgp/wiki/{__init__,sync}.py`;公共 surface
+  (`WikiEntry`, `wiki_command`, `WIKI_ROOT`, `INDEX_PATH`, `REPO_ROOT`)
+  不变,新加 `publish_active_contracts`。
+- `MemoryIndex._gather_candidates` 3 SQL → 1 SQL(unions GLOBAL + PROJECT +
+  DOMAIN via `json_each` 标签匹配)。100K+ memory 表不再 3 次 indexed scan。
+- `MEMORY_AUTO_MINED(_FAILED)` actor 字段截断到 64 字符 + warning log。
+- `Memory.body_md` cap 文档化:64 KiB UTF-8 BYTES ≈ 21K CJK chars。
+- 死代码删除:`wiki_command(publish)` 死分支、`_WalkContext.methods` dead
+  state、`Flow.node`(未使用)、`ast_walker` 重复装饰器/嵌套类 fallback。
+- `wiki/sync.py` 的 `TERMINAL_STATES` 改 import `lhgp.contracts.state_machine`
+  唯一来源,不再本地重复定义。
+
+### Security
+
+- P1:wiki publish path traversal。`contract_id = "../../etc/passwd"` 在
+  旧实现下能逃出 `auto/` 目录(已验证)。新实现 slug 归一化 +
+  `is_relative_to` 双重防御,5 个 parametrised 回归测试
+  (`..` POSIX / `..\` Windows / subdir/space/collision)全部 0 文件逃出。
+- P1:CR-only line endings 归一化为 CRLF,匹配 codebase 其它文件
+  (`contract_flow.py` / `test_contract_flow.py` 之前是 Mac OS Classic
+  CR-only,在某些 editor / pre-commit hook 下显示为一行)。
+
+### Quality
+
+- 7/7 quality gate 全过(ruff format / lint / arch / deps / claims /
+  mypy / pytest+coverage)。
+- 测试 +45:1049 → 1055 (含 5 个 path safety + 1 个 REJECT-only
+  fallback + 1 个 4-type digest + 1 个 violation list length +
+  2 个 size pre-check + 1 个 mem 64KiB exact cap + 1 个 stage
+  ingest 等)。
+- 覆盖率 76.17% (target ≥ 70%)。
+- Verifier 4-agent 集群 review(2 fresh-context 报告,2 deep
+  walk-throughs)产 2 P1(已修)+ 7 P2(已修 5,留 2:CHANGELOG/ARCHITECTURE
+  在此 commit)+ 7 P3(已修 4,留 3 nit)。
+
 ## [0.1.0a8] - 2026-09-07
 
 memory-and-wiki Phase 1：协议内 wiki 合并发布版。

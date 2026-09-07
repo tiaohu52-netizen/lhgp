@@ -31,9 +31,9 @@ SPEC §19.3 规定迁移顺序：**不得先做全仓机械 rename**。最终目
 | **learning/** | `lhgp/learning/` | `longtask/learning.py` | 信号提取 + 自动模板演化（extractor/evolver） |
 | **portfolio/** | `lhgp/portfolio/` | `longtask/portfolio.py` | dashboard 聚合 + 单合同 trace（summary/tracking） |
 | **enforcement/** | `lhgp/enforcement/` | `longtask/enforcement.py` | deadline 多级升级 + lock（levels/enforcer/report） |
-| **wiki/** | `lhgp/wiki.py` | `longtask/wiki.py` | 协议内 wiki 阅读器（read-only CLI；不接 SQL，扫 .index.json） |
-| **memory/** | `lhgp/memory/` | `longtask/memory.py` | 协议级长期记忆（SQLite `memories` 表 / types / store / index / CLI；auto-mine hook 在 `lhgp/feedback/store.py::_maybe_record_memory_from_evaluation`，由 `record_evaluation` 调用） |
-| **flow/** | `lhgp/flow/` | `longtask/flow.py` | 代码/手写流程图（AST walker / Mermaid / Excalidraw 渲染 / `## flow` wiki 段读取） |
+| **wiki/** | `lhgp/wiki/__init__.py` (read API) + `lhgp/wiki/sync.py` (writer) | `longtask/wiki.py` | 协议内 wiki 双向：read 走 `.index.json` 派 `list/read/search/show-graph`；write 走 `lhgp wiki publish` 把 active contract 渲染到 `<wiki_root>/auto/<id>.md` (Obsidian frontmatter)。`publish_active_contracts` 是单 SQL 入口,从 `state_machine.TERMINAL_STATES` 派 active/terminal 划分 |
+| **memory/** | `lhgp/memory/` | `longtask/memory.py` | 协议级长期记忆(SQLite `memories` 表 / types / store / index / CLI)。两种 auto-mine 入口:(1) `_maybe_record_memory_from_evaluation` — evaluation 走 `PATTERN` / `GOTCHA` 记录;(2) `_maybe_mine_lesson` — REJECT 触发 + 失败 cluster 写 `GOTCHA` 全局 lesson。两条都走 `record_evaluation` hook,异常 swallow 不污染 evaluation 写入 |
+| **flow/** | `lhgp/flow/` | `longtask/flow.py` | 代码/手写/协议流程图。`ast_walker.py` 走任意 .py;`contract_flow.py::walk_contract` 走 contract 引用代码的 call graph(`acceptance.*` / `execution.target` / `context.python_module` → module path → `walk_source`);Mermaid / Excalidraw 渲染;`wiki_parser` 读 `## flow` 段 |
 | **adapters/processes** | `lhgp/adapters/processes.py` | `longtask/adapters/processes.py` | 三平台进程探测（win/linux/darwin） |
 | **adapters/base+handles+manifest** | `lhgp/adapters/` | `longtask/adapters/` | 执行器协议面 |
 | **promoter/escalation+fairness+proposals** | `lhgp/promoter/` | `longtask/promoter/` | 升级阶梯、公平性、提案校验（纯函数） |
