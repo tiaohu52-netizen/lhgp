@@ -246,6 +246,55 @@ class TestIdempotency:
         finally:
             conn.close()
 
+    def test_reject_only_cluster_uses_reject_id_as_source_event_id(self, tmp_path: Path) -> None:
+        """When the cluster is REJECT-only (no ATTEMPT_FAILED events),
+        the memory's ``source_event_id`` falls back to the most recent
+        REJECT's evaluation_id so the audit trail still has provenance
+        back to a real signal (not NULL)."""
+        conn = _make_conn(tmp_path)
+        try:
+            # Bypass record_evaluation's hook so we control exactly
+            # when the lesson is mined. Insert REJECTs directly.
+            reject_ids: list[int] = []
+            for i in range(3):
+                cur = conn.execute(
+                    "INSERT INTO user_evaluations "
+                    "(contract_id, contract_revision, evaluator, rating, "
+                    "verdict, comments, created_at, schema_version) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        CID_A,
+                        1,
+                        "u",
+                        1,
+                        "reject",
+                        f"r{i}",
+                        (NOW + timedelta(seconds=i)).isoformat(),
+                        4,
+                    ),
+                )
+                reject_ids.append(int(cur.lastrowid))
+            conn.commit()
+
+            memory_id = mine_lesson_if_due(conn, CID_A, min_failures=3, now=NOW)
+            assert memory_id is not None
+            row = conn.execute(
+                "SELECT source_event_id FROM memories WHERE id = ?", (memory_id,)
+            ).fetchone()
+            assert row is not None
+            assert row[0] is not None, "source_event_id must not be NULL"
+            # The fallback value must be one of the REJECT ids in the table.
+            assert row[0] in reject_ids
+            evts = _lesson_events(conn)
+            assert len(evts) == 1
+            # In a REJECT-only cluster, last_failure_event_id is
+            # omitted from the payload; the REJECT fallback is under
+            # last_reject_id.
+            assert "last_failure_event_id" not in evts[0][1]
+            assert evts[0][1]["last_reject_id"] in reject_ids
+        finally:
+            conn.close()
+
 
 # ---------------------------------------------------------------------------
 # Memory shape + audit event payload

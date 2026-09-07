@@ -25,16 +25,19 @@ _LOG = logging.getLogger("lhgp.feedback.lessons")
 def _count_failures_since_last_lesson(
     conn: sqlite3.Connection,
     contract_id: str,
-) -> tuple[int, int, int | None]:
-    """Return (fail_count, reject_count, last_fail_event_id) since last lesson.
+) -> tuple[int, int, int | None, int | None]:
+    """Return (fail_count, reject_count, last_fail_event_id, last_reject_id).
 
     ``fail_count`` is the number of ATTEMPT_FAILED events for the contract
     with event_id strictly greater than the last MEMORY_LESSON_MINED
     event. ``reject_count`` is the number of user_evaluations with
     verdict=reject for the contract with created_at strictly greater
-    than that same lesson event. Both signals are terminal failure
-    signals; either alone is enough to trip the lesson once the sum
-    crosses ``min_failures``.
+    than that same lesson event. ``last_fail_event_id`` is the
+    ``events.event_id`` of the most recent ATTEMPT_FAILED (None if
+    none). ``last_reject_id`` is the ``user_evaluations.id`` of the
+    most recent REJECT (None if none); this is the fallback used as
+    ``source_event_id`` when no ATTEMPT_FAILED is in the cluster so
+    the audit event still carries provenance back to a real signal.
     """
     from lhgp.persistence.events import EventType
 
@@ -57,17 +60,19 @@ def _count_failures_since_last_lesson(
 
     if last_lesson_at is None:
         reject_row = conn.execute(
-            "SELECT COUNT(*) FROM user_evaluations WHERE contract_id = ? AND verdict = ?",
+            "SELECT COUNT(*), MAX(evaluation_id) FROM user_evaluations "
+            "WHERE contract_id = ? AND verdict = ?",
             (contract_id, "reject"),
         ).fetchone()
     else:
         reject_row = conn.execute(
-            "SELECT COUNT(*) FROM user_evaluations "
+            "SELECT COUNT(*), MAX(evaluation_id) FROM user_evaluations "
             "WHERE contract_id = ? AND verdict = ? AND created_at > ?",
             (contract_id, "reject", last_lesson_at),
         ).fetchone()
     reject_count = int(reject_row[0] or 0)
-    return fail_count, reject_count, last_fail_event_id
+    last_reject_id = int(reject_row[1]) if reject_row[1] is not None else None
+    return fail_count, reject_count, last_fail_event_id, last_reject_id
 
 
 def _build_lesson_body(
@@ -104,11 +109,17 @@ def _emit_lesson_audit(
     failure_count: int,
     last_failure_event_id: int | None,
     now: datetime,
+    *,
+    last_reject_id: int | None = None,
 ) -> None:
     """Append a MEMORY_LESSON_MINED event so the lesson is auditable.
 
     Best-effort, like the auto-mine audit: if the events table is
     unavailable the memory still stands as the source of truth.
+
+    When the cluster has no ATTEMPT_FAILED events (REJECT-only) the
+    audit log still carries the most recent REJECT's evaluation_id
+    under ``last_reject_id`` so provenance survives.
     """
     from lhgp.persistence.events import EventType
     from lhgp.persistence.events_query import append_event
@@ -120,6 +131,8 @@ def _emit_lesson_audit(
     }
     if last_failure_event_id is not None:
         payload["last_failure_event_id"] = int(last_failure_event_id)
+    if last_reject_id is not None:
+        payload["last_reject_id"] = int(last_reject_id)
     try:
         append_event(
             conn,
@@ -164,8 +177,8 @@ def mine_lesson_if_due(
     if min_failures < 1:
         raise ValueError("min_failures must be >= 1")
     now = now or datetime.now(UTC)
-    fail_count, reject_count, last_fail_event_id = _count_failures_since_last_lesson(
-        conn, contract_id
+    fail_count, reject_count, last_fail_event_id, last_reject_id = (
+        _count_failures_since_last_lesson(conn, contract_id)
     )
     total = fail_count + reject_count
     if total < min_failures:
@@ -173,6 +186,11 @@ def mine_lesson_if_due(
 
     from lhgp.memory import MemoryKind, MemoryScope, make_memory, record_memory
 
+    # Use the most recent ATTEMPT_FAILED event as the memory's
+    # source_event_id; fall back to the most recent REJECT
+    # evaluation id when the cluster is REJECT-only so the audit
+    # log still has provenance.
+    source_event_id = last_fail_event_id if last_fail_event_id is not None else last_reject_id
     body_md = _build_lesson_body(contract_id, fail_count, reject_count, last_fail_event_id)
     title = f"[{contract_id}] failure cluster ({total} signals) — auto-mined lesson"
     memory = make_memory(
@@ -180,7 +198,7 @@ def mine_lesson_if_due(
         body_md=body_md,
         tags=("source/lesson", f"contract/{contract_id}", f"failures/{total}"),
         source_contract_id=contract_id,
-        source_event_id=last_fail_event_id,
+        source_event_id=source_event_id,
         source_actor="auto-lesson",
         score=0.75,
         expires_in_days=365,
@@ -199,6 +217,7 @@ def mine_lesson_if_due(
         total,
         last_fail_event_id,
         now,
+        last_reject_id=last_reject_id,
     )
     return memory_id
 
