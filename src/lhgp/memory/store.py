@@ -140,9 +140,22 @@ def search_memories(
     scope: MemoryScope | str | None = None,
     limit: int = 50,
 ) -> list[Memory]:
-    """Case-insensitive substring search over title + body + tags."""
-    like = f"%{needle.lower()}%"
-    clauses = ["(LOWER(title) LIKE ? OR LOWER(body_md) LIKE ? OR LOWER(tags_json) LIKE ?)"]
+    """Case-insensitive substring search over title + body + tags.
+
+    The needle is escaped before being wrapped in ``%...%`` so a user
+    searching for ``%`` or ``_`` does not get wildcard expansion. A
+    raw ``%`` in the search string would otherwise widen the match
+    set beyond what the user typed. ``ESCAPE '\\'`` tells SQLite
+    that the backslash is the escape character; without it the
+    backslashes are literal and the wildcard would still fire.
+    """
+    escaped = needle.lower().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    like = f"%{escaped}%"
+    clauses = [
+        "(LOWER(title) LIKE ? ESCAPE '\\' "
+        "OR LOWER(body_md) LIKE ? ESCAPE '\\' "
+        "OR LOWER(tags_json) LIKE ? ESCAPE '\\')"
+    ]
     params: list[Any] = [like, like, like]
     if scope is not None:
         clauses.append("scope = ?")

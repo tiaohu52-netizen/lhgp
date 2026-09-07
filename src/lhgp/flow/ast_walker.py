@@ -19,6 +19,12 @@ from __future__ import annotations
 import ast
 from dataclasses import dataclass, field
 
+# Refuse to walk absurdly large source files: a 2 MiB Python file
+# pushes ``ast.parse`` into GB-scale intermediate representations
+# and the diagram it produces is unreadable anyway. The bound is
+# generous (most real modules are < 200 KiB) but cheap to enforce.
+_MAX_SOURCE_BYTES = 2 * 1024 * 1024
+
 
 @dataclass(frozen=True, slots=True)
 class FlowNode:
@@ -332,6 +338,8 @@ def walk_source(source: str, module_name: str) -> Flow:
       - edges: caller -> callee (caller is the enclosing function/method,
         or the module node itself for top-level code)
     """
+    if len(source.encode("utf-8")) > _MAX_SOURCE_BYTES:
+        raise ValueError(f"source exceeds {_MAX_SOURCE_BYTES} bytes; AST walk refused")
     tree = ast.parse(source)
     ctx = _WalkContext(module_id=module_name)
     _register_definitions(tree.body, ctx)

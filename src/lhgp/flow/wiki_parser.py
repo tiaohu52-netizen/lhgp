@@ -27,7 +27,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 _FLOW_HEADING = re.compile(r"^##\s+flow\s*$", re.MULTILINE)
-_MERMAID_FENCE = re.compile(r"```mermaid\s*\n(.*?)```", re.DOTALL)
+# Mermaid fence accepts a same-line init block: `````mermaid {theme: neutral}``.
+# The ``\S*`` consumes the optional JSON-ish init; the body may be empty.
+_MERMAID_FENCE = re.compile(r"```mermaid\b[^\n]*\n(.*?)```", re.DOTALL)
 # Files saved by Windows editors (Notepad, some VSCode configs) carry a
 # UTF-8 BOM at byte 0. Without stripping it the ``^##`` anchor never
 # matches, and the page silently disappears from ``list_flow_pages``.
@@ -39,6 +41,7 @@ class FlowSection:
     page: str  # path relative to docs/wiki/
     mermaid: str
     line: int  # 1-based line where the ``## flow`` heading appears
+    init: str = ""  # same-line init block, e.g. "{theme: neutral}"
 
 
 def extract_flow_section(page_text: str, *, page: str = "<inline>") -> FlowSection | None:
@@ -55,7 +58,13 @@ def extract_flow_section(page_text: str, *, page: str = "<inline>") -> FlowSecti
     fence = _MERMAID_FENCE.search(after)
     if not fence:
         return None
-    return FlowSection(page=page, mermaid=fence.group(1).rstrip() + "\n", line=line)
+    body = fence.group(1).rstrip() + "\n"
+    # Reconstruct the init block from the original text slice so we
+    # capture whatever the user typed (whitespace, JSON-like keys).
+    fence_full = fence.group(0)
+    first_line_end = fence_full.index("\n")
+    init = fence_full[len("```mermaid") : first_line_end].strip()
+    return FlowSection(page=page, mermaid=body, line=line, init=init)
 
 
 def list_flow_pages(wiki_root: Path) -> list[str]:

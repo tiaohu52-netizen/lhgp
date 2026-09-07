@@ -34,6 +34,24 @@ Kind defines *shape*:
   - ``reference`` — pointer to a doc/wiki page or code location
   - ``heuristic`` — rule of thumb ("when X, prefer Y")
   - ``gotcha`` — anti-pattern ("don't do X because Z")
+
+Isolation boundary
+----------------
+
+Memory rows are **not partitioned by user, tenant, or contract_id**.
+The ``source_contract_id`` column is provenance (where the memory was
+mined from), not a visibility filter. A single-user / single-state.db
+deployment treats this as "by design". A multi-tenant deployment that
+wants user A's auto-mined comments to stay out of user B's context
+needs an explicit isolation layer — most plausibly:
+
+  - a new ``owner_id`` column with a corresponding index, populated at
+    insert time
+  - the ``MemoryIndex.retrieve`` path filters by ``owner_id`` from the
+    contract's authority record before reading memories
+
+Until that change lands, do not put PII or per-tenant trade secrets
+into ``body_md`` — they will be visible to every contract.
 """
 
 from __future__ import annotations
@@ -43,6 +61,13 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
+
+# Cap the per-memory body to keep the SQLite row small and the
+# MemoryIndex rendering predictable. 64 KiB is generous for a single
+# pattern/rule/heuristic (long-form references use wiki pages, not
+# memory rows). Larger bodies are rejected at construction time so
+# the caller sees the limit at the boundary, not at SELECT time.
+_MAX_BODY_BYTES = 64 * 1024
 
 
 class MemoryScope(StrEnum):
@@ -80,6 +105,14 @@ class Memory:
     created_at: datetime | None = None
     expires_at: datetime | None = None
     schema_version: int = 4
+
+    def __post_init__(self) -> None:
+        # Enforce the body cap at construction so a runaway record
+        # cannot sneak past a single call site.
+        if len(self.body_md.encode("utf-8")) > _MAX_BODY_BYTES:
+            raise ValueError(
+                f"body_md exceeds {_MAX_BODY_BYTES} bytes; use a wiki page for long-form content"
+            )
 
     def to_db_row(self) -> dict[str, Any]:
         return {
