@@ -1587,44 +1587,6 @@ def main(argv: list[str] | None = None) -> int:
         print(resume_brief.body)
         return 0
 
-    if args.command == "attempt" and args.attempt_cmd == "resume":
-        from lhgp.contracts import build_resume_brief
-
-        conn = connect(StoreConfig(db_path=root / "state.db"))
-        try:
-            ensure_schema(conn)
-            resume_brief = build_resume_brief(
-                root,
-                args.contract_id,
-                args.attempt_id,
-                next_attempt_id=args.next_attempt_id,
-                conn=conn,
-                now=datetime.now(UTC),
-            )
-        finally:
-            conn.close()
-        print(resume_brief.body)
-        return 0
-
-    if args.command == "attempt" and args.attempt_cmd == "resume":
-        from lhgp.contracts import build_resume_brief
-
-        conn = connect(StoreConfig(db_path=root / "state.db"))
-        try:
-            ensure_schema(conn)
-            resume_brief = build_resume_brief(
-                root,
-                args.contract_id,
-                args.attempt_id,
-                next_attempt_id=args.next_attempt_id,
-                conn=conn,
-                now=datetime.now(UTC),
-            )
-        finally:
-            conn.close()
-        print(resume_brief.body)
-        return 0
-
     # 6. executor 命令
     if args.command == "executor":
         if args.executor_cmd == "list":

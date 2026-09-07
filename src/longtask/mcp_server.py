@@ -324,8 +324,8 @@ def tool_brief(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
 def tool_resume_attempt(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
     """读取 active.md + handover.md，拼出一次可喂入新 LLM 会话的 self-contained brief。
 
-    会落 attempt/resumed 审计事件（见 resume.py 中的 TODO，待 events.py 整合后
-    切换到 EventType.ATTEMPT_RESUMED）。返回的 body 字段直接给模型当上下文。
+    会落 attempt/resumed 审计事件（EventType.ATTEMPT_RESUMED）。
+    返回的 body 字段直接给模型当上下文。
     """
     from lhgp.contracts import build_resume_brief
 
