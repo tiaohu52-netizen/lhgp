@@ -21,6 +21,7 @@ source 阶段摘要（stages/*.md）与 promotion 流程属 §4.1 完整语义�
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sqlite3
 from dataclasses import dataclass
@@ -31,7 +32,7 @@ from typing import Any
 from longtask.contracts.schema import ContractDraft, ContractView
 from longtask.persistence.events import EventType
 from longtask.persistence.events_query import get_latest_forecast_snapshot
-from longtask.persistence.store import append_event, get_events
+from longtask.persistence.store import append_event
 
 CONTEXT_DIR = "context"
 ATTEMPTS_DIR = "attempts"
@@ -44,6 +45,16 @@ DEFAULT_EXPIRES_MINUTES = 240
 
 # task_prompt 内交接摘要的追加上限：任务文本不该被交接内容淹没
 HANDOVER_IN_PROMPT_CHARS = 1200
+
+# 用户 directive 注入硬 cap:防止用户连发 50 条打爆 max_bytes,
+# 也防止单条 1MB directive 直接撑爆 snapshot 渲染。
+_MAX_DIRECTIVES_INJECTED = 20
+_DIRECTIVE_TEXT_CHARS = 240
+
+# Active.md 段顺序(优先级):breach warning > 长期记忆 > 其它。
+# breach warning 必须在 contract anchor 之前,任何只读 contract metadata
+# 的工具先看到时间风险信号。
+# 长期记忆 放 deadline 之后、handover 之前 —— 风险感知 > 历史现场。
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,18 +108,38 @@ class ContextPolicy:
         )
 
 
-def _handover_data(root: Path, contract_id: str) -> dict[str, str]:
-    """读交接文件的最低必填结构；缺失按空值（无交接=初次 attempt）。"""
+def _handover_data(
+    root: Path,
+    contract_id: str,
+    conn: sqlite3.Connection | None = None,
+    now: datetime | None = None,
+) -> dict[str, str]:
+    """读交接文件的最低必填结构；缺失按空值（无交接=初次 attempt）。
+
+    读失败（OSError、parse 异常、data=None）时落
+    HANDOVER_INCOMPLETE 事件 —— 区分"无交接=初次 attempt"和
+    "交接文件损坏=上 attempt 写的坏掉"两种语义，避免 verifier 看到
+    空交接段时误判为初次 attempt。
+    """
     from longtask.persistence.projections import parse_handover_markdown
 
     path = root / "contracts" / contract_id / "handover.md"
     if not path.is_file():
         return {}
     try:
-        data, _violations = parse_handover_markdown(path.read_text(encoding="utf-8"))
-    except OSError:
+        text = path.read_text(encoding="utf-8")
+        data, violations = parse_handover_markdown(text)
+    except OSError as exc:
+        _record_handover_incomplete(conn, contract_id, "os_error", str(exc), now)
         return {}
     if data is None:
+        _record_handover_incomplete(
+            conn,
+            contract_id,
+            "parse_failed",
+            "; ".join(violations) or "no parse result",
+            now,
+        )
         return {}
     return {
         "current_stage": data.current_stage,
@@ -120,38 +151,84 @@ def _handover_data(root: Path, contract_id: str) -> dict[str, str]:
     }
 
 
+def _record_handover_incomplete(
+    conn: sqlite3.Connection | None,
+    contract_id: str,
+    reason: str,
+    detail: str,
+    now: datetime | None,
+) -> None:
+    """Best-effort: write HANDOVER_INCOMPLETE so the audit log shows why the
+    handover section is empty."""
+    if conn is None or now is None:
+        return
+    with contextlib.suppress(Exception):
+        append_event(
+            conn,
+            contract_id=contract_id,
+            goal_id=None,
+            event_type=EventType.HANDOVER_INCOMPLETE,
+            payload={"reason": reason, "detail": detail[:512]},
+            now=now,
+            actor="context",
+            role="system",
+        )
+
+
+# Event types that count as "the previous attempt said something about its
+# terminal state" — the only kind the active.md digest should include.
+_ATTEMPT_DIGEST_EVENT_TYPES: tuple[str, ...] = (
+    EventType.ATTEMPT_SUCCEEDED.value,
+    EventType.ATTEMPT_FAILED.value,
+    EventType.ATTEMPT_STALE.value,
+    EventType.CONTEXT_SCRATCH_UPDATED.value,
+)
+
+
 def _recent_attempt_digest(conn: sqlite3.Connection, contract_id: str, limit: int = 3) -> str:
     """最近终态与进度摘要——跨会话恢复的事实通道。
 
-    Scratch 更新来自执行者，属于不可信工作数据；快照明确标注来源，
-    让下一模型能恢复进度但不能把进度文本当成协议指令。
+    SQL-side filter on event_type plus DB-side LIMIT so a long-lived
+    contract (100k+ events) never pulls more than ~20 rows. The
+    result is then filtered to the last ``limit`` per type and
+    rendered. Scratch updates are marked untrusted so the next model
+    can resume but cannot treat the work-in-progress text as a
+    protocol instruction.
     """
-    events = get_events(conn, contract_id=contract_id)
-    relevant = [
-        e
-        for e in events
-        if e.event_type
-        in (
-            EventType.ATTEMPT_SUCCEEDED,
-            EventType.ATTEMPT_FAILED,
-            EventType.ATTEMPT_STALE,
-            EventType.CONTEXT_SCRATCH_UPDATED,
-        )
-    ]
+    from lhgp.persistence.events_query import get_recent_events
+
+    events = get_recent_events(
+        conn,
+        contract_id=contract_id,
+        event_types=_ATTEMPT_DIGEST_EVENT_TYPES,
+        limit=max(20, limit * 4),
+    )
+    # Take the last ``limit`` per type, then the most recent ``limit``
+    # overall — preserves the chronological tail while keeping at
+    # least one of each kind when present.
+    by_type: dict[str, list[Any]] = {}
+    for e in events:
+        by_type.setdefault(str(e.event_type), []).append(e)
+    kept: list[Any] = []
+    for ev_list in by_type.values():
+        kept.extend(ev_list[-1:])  # last per type
+    kept.sort(key=lambda e: e.event_id)
+    picked = kept[-limit:]
     lines: list[str] = []
-    for e in relevant[-limit:]:
-        if e.attempt_id:
-            kind = str(e.event_type).split("/")[-1]
-            if e.event_type == EventType.CONTEXT_SCRATCH_UPDATED:
-                try:
-                    payload = json.loads(e.payload_json or "{}")
-                except (TypeError, ValueError):
-                    payload = {}
-                note = payload.get("note") if isinstance(payload, dict) else None
-                suffix = f" — progress data (untrusted): {note}" if note else ""
-                lines.append(f"- {e.attempt_id}: {kind}{suffix}")
-            else:
-                lines.append(f"- {e.attempt_id}: {kind}")
+    for e in picked:
+        if not e.attempt_id:
+            continue
+        kind = str(e.event_type).split("/")[-1]
+        if e.event_type == EventType.CONTEXT_SCRATCH_UPDATED:
+            try:
+                payload = json.loads(e.payload_json or "{}")
+            except (TypeError, ValueError):
+                payload = {}
+            note = payload.get("note") if isinstance(payload, dict) else None
+            suffix = f" — progress data (untrusted): {note}" if note else ""
+            lines.append(f"- {e.attempt_id}: {kind}{suffix}")
+        else:
+            lines.append(f"- {e.attempt_id}: {kind}")
     return "\n".join(lines)
 
 
@@ -170,7 +247,13 @@ def compile_context_snapshot(
     """
     policy = ContextPolicy.from_contract(contract.draft)
     draft = contract.draft
-    handover = _handover_data(root, contract.contract_id)
+    # Memory-and-wiki Phase 2 + context P0: clean up any expired
+    # snapshots from prior attempts before writing the new one.
+    # The previous attempt's file declares its own expires_at; once
+    # the clock passes that, the file is dead weight on disk and a
+    # stale read for any consumer that doesn't re-check the clock.
+    _expire_old_snapshots(root, conn, contract.contract_id, now=now)
+    handover = _handover_data(root, contract.contract_id, conn=conn, now=now)
     digest = _recent_attempt_digest(conn, contract.contract_id)
     deadline_snapshot = get_latest_forecast_snapshot(conn, contract_id=contract.contract_id)
 
@@ -179,9 +262,11 @@ def compile_context_snapshot(
     # project 取 score top-N),并尊重 context.max_bytes 容量合同。
     from lhgp.memory import MemoryIndex, render_for_active_md
 
-    # 给 memory 一个独立的 budget:max_bytes 的 1/10 但下限 1.5KB 上限 4KB,
-    # 避免单次 attempt 上下文被长期记忆淹没。
-    memory_budget = max(1500, min(4000, policy.max_bytes // 10))
+    # 给 memory 一个 1/10 容量但有 40% 上限,小合同(max_bytes<10K)也
+    # 不会因为 clamp 而 memory 占整体 100%+。下限 1.5KB 保证至少能
+    # 装 1-2 条小记忆。
+    memory_budget = min(int(policy.max_bytes * 0.4), 4000)
+    memory_budget = max(memory_budget, 1500)
     mem_index = MemoryIndex(conn, budget_bytes=memory_budget)
     mem_text = render_for_active_md(
         mem_index.retrieve(draft.context if isinstance(draft.context, dict) else None)
@@ -191,7 +276,10 @@ def compile_context_snapshot(
     # 这让用户可以在 agent 工作中途改变方向而不用终止重来。
     from lhgp.persistence.messages import pending_directives
 
-    directives = pending_directives(conn, contract_id=contract.contract_id)
+    # 硬 cap:用户连发 50 条时不能让 snapshot 爆 max_bytes。每条 text
+    # 截断到 240 字,够传达意图,防止单条 1MB directive 直接打爆。
+    raw_directives = pending_directives(conn, contract_id=contract.contract_id)
+    directives = raw_directives[:_MAX_DIRECTIVES_INJECTED]
     sections: list[str] = [
         f"# Active Context: {contract.contract_id} / {attempt_id}",
         "",
@@ -200,10 +288,25 @@ def compile_context_snapshot(
         f"- contract_revision: {contract.revision}",
         "",
     ]
+    # Deadline breach warning at the very top so any tool that scans
+    # for "⚠" notices before doing anything else. (P0 verifier finding.)
+    if draft.deadline_at < now:
+        breach_minutes = int((now - draft.deadline_at).total_seconds() // 60)
+        sections.insert(
+            0,
+            f"## ⚠️ 合同已超期 {breach_minutes} 分钟 "
+            f"(deadline_at={draft.deadline_at.isoformat()}, now={now.isoformat()})",
+        )
+        sections.insert(1, "")
     if directives:
         sections += ["## ⚡ 用户指令（必须遵守）", ""]
         for d in directives:
-            sections.append(f"- **{d['text']}**")
+            text = str(d.get("text", ""))[:_DIRECTIVE_TEXT_CHARS]
+            sections.append(f"- **{text}**")
+        if len(raw_directives) > _MAX_DIRECTIVES_INJECTED:
+            sections.append(
+                f"- … ({len(raw_directives) - _MAX_DIRECTIVES_INJECTED} more directives truncated)"
+            )
         sections += [
             "",
             "以上指令来自用户，优先级高于合同中的 soft_guidance。"
@@ -305,6 +408,71 @@ def _scratch_skeleton(attempt_id: str) -> str:
         "## open_questions\n\n(待解问题)\n\n"
         "## handoff_notes\n\n(交接备注)\n"
     )
+
+
+_EXPIRES_AT_PREFIX = "- expires_at: "
+
+
+def _expire_old_snapshots(
+    root: Path,
+    conn: sqlite3.Connection,
+    contract_id: str,
+    *,
+    now: datetime,
+) -> int:
+    """Sweep expired active.md snapshots. Emits CONTEXT_SNAPSHOT_EXPIRED.
+
+    Walks ``contracts/<id>/context/attempts/*/active.md``, parses the
+    ``- expires_at:`` header line, and removes the file + emits an
+    audit event if the deadline has passed. Best-effort: a malformed
+    file is left in place (no event) so a real snapshot is never
+    lost because of a parsing error. Returns the count of expired
+    files for tests / logging.
+    """
+    attempts_root = root / "contracts" / contract_id / CONTEXT_DIR / ATTEMPTS_DIR
+    if not attempts_root.is_dir():
+        return 0
+    expired_count = 0
+    for active_path in attempts_root.glob("*/active.md"):
+        try:
+            text = active_path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        expires_at = _parse_expires_at(text)
+        if expires_at is None or expires_at >= now:
+            continue
+        attempt_id = active_path.parent.name
+        try:
+            active_path.unlink()
+        except OSError:
+            continue
+        expired_count += 1
+        with contextlib.suppress(Exception):
+            append_event(
+                conn,
+                contract_id=contract_id,
+                attempt_id=attempt_id,
+                event_type=EventType.CONTEXT_SNAPSHOT_EXPIRED,
+                payload={
+                    "active_path": str(active_path),
+                    "expired_at": expires_at.isoformat(),
+                },
+                now=now,
+                actor="daemon",
+                role="system",
+            )
+    return expired_count
+
+
+def _parse_expires_at(active_text: str) -> datetime | None:
+    """Extract the ``- expires_at:`` ISO timestamp from the header."""
+    for line in active_text.splitlines()[:8]:
+        if line.startswith(_EXPIRES_AT_PREFIX):
+            try:
+                return datetime.fromisoformat(line[len(_EXPIRES_AT_PREFIX) :].strip())
+            except ValueError:
+                return None
+    return None
 
 
 class CapacityRefusedError(Exception):

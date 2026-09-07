@@ -122,6 +122,7 @@ def get_events(
     *,
     contract_id: str | None = None,
     after_event_id: int | None = None,
+    event_types: tuple[str, ...] | None = None,
     limit: int | None = None,
 ) -> list[StoredEvent]:
     query = "SELECT " + _SELECT_LIST + " FROM events WHERE 1=1"  # noqa: S608
@@ -132,6 +133,10 @@ def get_events(
     if after_event_id is not None:
         query += " AND event_id > ?"
         params.append(after_event_id)
+    if event_types:
+        placeholders = ",".join("?" for _ in event_types)
+        query += f" AND event_type IN ({placeholders})"
+        params.extend(event_types)
     query += " ORDER BY event_id ASC"
     if limit is not None:
         query += " LIMIT ?"
@@ -143,17 +148,30 @@ def get_recent_events(
     conn: sqlite3.Connection,
     *,
     contract_id: str,
+    event_types: tuple[str, ...] | None = None,
     limit: int = 20,
 ) -> list[StoredEvent]:
-    """Return newest contract events using a database-side limit."""
+    """Return newest contract events using a database-side limit.
+
+    ``event_types`` (optional) restricts the result to a whitelist;
+    the matching happens in SQL with ``event_type IN (...)`` so a
+    contract with 100k events never returns more than ``limit`` rows.
+    """
     if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
         raise ValueError("limit must be a positive integer")
+    clauses = ["contract_id = ?"]
+    params: list[Any] = [contract_id]
+    if event_types:
+        placeholders = ",".join("?" for _ in event_types)
+        clauses.append(f"event_type IN ({placeholders})")
+        params.extend(event_types)
     query = (
         "SELECT "  # noqa: S608 — fixed internal column list
         + _SELECT_LIST
-        + (" FROM events WHERE contract_id = ? ORDER BY event_id DESC LIMIT ?")
+        + f" FROM events WHERE {' AND '.join(clauses)} ORDER BY event_id DESC LIMIT ?"
     )
-    rows = conn.execute(query, (contract_id, limit)).fetchall()
+    params.append(limit)
+    rows = conn.execute(query, params).fetchall()
     return [_row_to_stored_event(row) for row in reversed(rows)]
 
 
