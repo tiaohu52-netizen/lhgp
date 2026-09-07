@@ -35,6 +35,7 @@ from longtask.contracts.schema import (
 )
 from longtask.contracts.state_machine import TERMINAL_STATES
 from longtask.forecast.model import Forecast, build_deadline_snapshot
+from longtask.persistence.attempts import count_running_by_executor
 from longtask.persistence.decisions import set_next_decision_at
 from longtask.persistence.events import EventType
 from longtask.persistence.notifications import enqueue_notification
@@ -418,11 +419,19 @@ def run_daemon_tick(
                     _emit(f"promoter/deferred-workspace-busy:{cid}:held-by:{holder['contract_id']}")
                     continue
                 # 挑选执行器（DESIGN §8.3），逐候选尝试（§9：拒接换下一个）
+                # P1 review fix (2026-09-08): inject the per-executor running
+                # count so the registry's max_concurrent_attempts gate is
+                # actually enforced. Without this, every candidate reports
+                # running=0 and a single executor with cap=1 can still be
+                # handed two contracts in the same tick.
+                running_attempts = count_running_by_executor(conn)
                 started = _dispatch_attempt(
                     root=root,
                     conn=conn,
                     contract=c,
-                    candidates=registry.match_candidates(c.draft),
+                    candidates=registry.match_candidates(
+                        c.draft, running_attempts=running_attempts
+                    ),
                     now=now,
                     tier=decision.tier,
                     attempt_seq=cid[-4:],

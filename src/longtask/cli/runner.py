@@ -879,7 +879,18 @@ class AttemptRunner:
         # 选择候选：排除执行者本身，按执行器匹配规则排序；
         # requested_role='verifier' → 合同 authority 设了绑定时，
         # roles 不含 verifier 的执行器不入候选（§6.3 条件 2）
-        candidates = self._registry.match_candidates(contract.draft, requested_role="verifier")
+        # P1 review fix (2026-09-08): inject running_attempts so the
+        # verifier pool also respects each executor's
+        # max_concurrent_attempts; otherwise verifier dispatches could
+        # saturate an executor that's still running the executor attempt.
+        from longtask.persistence.attempts import count_running_by_executor
+
+        running_attempts = count_running_by_executor(self._conn)
+        candidates = self._registry.match_candidates(
+            contract.draft,
+            running_attempts=running_attempts,
+            requested_role="verifier",
+        )
         verifier_entry: RegistryEntry | None = None
         for entry in candidates:
             if entry.id == executor_id:

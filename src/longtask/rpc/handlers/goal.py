@@ -277,7 +277,17 @@ def handle_goal_prepare(
     # admission offer：若调用方注入了 registry，提供候选视图
     registry_view = None
     if registry is not None and hasattr(registry, "snapshot_for_admission"):
-        registry_view = registry.snapshot_for_admission(contract=draft)
+        # P1 review fix (2026-09-08): inject running_attempts so the
+        # admission snapshot reflects each executor's actual load, not
+        # always running=0. Without this, snapshot_for_admission would
+        # claim concurrency_available=True even for an executor already
+        # saturated by an in-flight attempt.
+        from longtask.persistence.attempts import count_running_by_executor
+
+        registry_view = registry.snapshot_for_admission(
+            contract=draft,
+            running_attempts=count_running_by_executor(conn),
+        )
     offer = _build_admission_offer(
         draft_dict=view.draft.to_dict(),
         registry_view=registry_view,
@@ -352,7 +362,15 @@ def handle_goal_admission_check(
 
     registry_view = None
     if registry is not None and hasattr(registry, "snapshot_for_admission"):
-        registry_view = registry.snapshot_for_admission(contract=existing.draft)
+        # P1 review fix: see the comment in handle_goal_prepare. Inject
+        # the live running count so concurrency_available reflects
+        # reality, not a frozen zero.
+        from longtask.persistence.attempts import count_running_by_executor
+
+        registry_view = registry.snapshot_for_admission(
+            contract=existing.draft,
+            running_attempts=count_running_by_executor(conn),
+        )
 
     offer = _build_admission_offer(
         draft_dict=existing.draft.to_dict(),
