@@ -89,6 +89,49 @@ def _related_memories(conn: sqlite3.Connection, contract_id: str) -> list[Memory
     return out
 
 
+def _related_contracts(conn: sqlite3.Connection, contract_id: str, limit: int = 5) -> list[str]:
+    """Contract ids whose memories share a ``topic/<domain>`` tag with this one.
+
+    Two-step: read the current contract's topic tags from its
+    memories, then find other contracts that have any of those
+    same tags. Top-``limit`` by shared-tag count; tie-break on the
+    most recent shared memory.
+    """
+    tag_rows = conn.execute(
+        "SELECT tags_json FROM memories WHERE source_contract_id = ?",
+        (contract_id,),
+    ).fetchall()
+    topic_tags: set[str] = set()
+    for (tags_json,) in tag_rows:
+        try:
+            tags = json.loads(tags_json or "[]")
+        except json.JSONDecodeError:
+            continue
+        for t in tags:
+            if isinstance(t, str) and t.startswith("topic/"):
+                topic_tags.add(t)
+    if not topic_tags:
+        return []
+
+    # Find other contracts with at least one memory sharing any of
+    # these topic tags. json_each handles the array containment.
+    placeholders = ",".join("?" for _ in topic_tags)
+    rows = conn.execute(
+        f"""
+        SELECT m.source_contract_id, COUNT(DISTINCT t.value) AS shared, MAX(m.created_at) AS newest
+        FROM memories m, json_each(m.tags_json) t
+        WHERE m.source_contract_id IS NOT NULL
+          AND m.source_contract_id != ?
+          AND t.value IN ({placeholders})
+        GROUP BY m.source_contract_id
+        ORDER BY shared DESC, newest DESC
+        LIMIT ?
+        """,  # noqa: S608 — placeholders are static "?" strings
+        (contract_id, *topic_tags, int(limit)),
+    ).fetchall()
+    return [str(r[0]) for r in rows if r[0]]
+
+
 def _handover_next_action(data_root: Path | None, contract_id: str) -> str:
     """Read the contract's latest handover and return its ``next_action``.
 
@@ -153,6 +196,7 @@ def _render_page(
     next_action: str,
     is_terminal: bool,
     now: datetime,
+    related: list[str] | None = None,
 ) -> str:
     title = view.draft.title or view.contract_id
     deadline_str = _format_iso(view.draft.deadline_at)
@@ -235,7 +279,11 @@ def _render_page(
     body.append("")
     body.append("## related")
     body.append("")
-    body.append("_(reserved for future-stream links)_")
+    if related:
+        for sibling in related:
+            body.append(f"- [[{sibling}]]")
+    else:
+        body.append("_(no related contracts)_")
     body.append("")
     return "\n".join(fm_lines) + "\n".join(body)
 
@@ -292,12 +340,14 @@ def publish_active_contracts(
             continue
         memories = _related_memories(conn, view.contract_id)
         next_action = _handover_next_action(data_root, view.contract_id)
+        related = _related_contracts(conn, view.contract_id)
         page = _render_page(
             view,
             memories,
             next_action=next_action,
             is_terminal=False,
             now=now,
+            related=related,
         )
         _atomic_write(path, page)
         written.append(path)

@@ -308,6 +308,77 @@ class TestIdempotency:
         assert not (wiki_root / "lt-iso.md").exists()
 
 
+class TestRelatedContracts:
+    """``## related`` lists other contracts that share a memory
+    ``topic/<domain>`` tag. Two contracts are linked when their
+    memories tag the same domain; the page surfaces up to 5 siblings
+    so a reader scanning one contract can pivot to peers working
+    on the same domain."""
+
+    def test_related_lists_contracts_sharing_a_topic_tag(self, tmp_path: Path) -> None:
+        from lhgp.memory import Memory, MemoryKind, MemoryScope, record_memory
+
+        conn = _open_db(tmp_path)
+        wiki_root = tmp_path / "wiki"
+        try:
+            now = datetime.now(UTC)
+            base = now - timedelta(hours=2)
+            save_contract(
+                conn, _draft(), contract_id="lt-rel-a", now=base, state=ContractState.ACTIVE
+            )
+            save_contract(
+                conn, _draft(), contract_id="lt-rel-b", now=base, state=ContractState.ACTIVE
+            )
+
+            m_a = Memory(
+                scope=MemoryScope.DOMAIN,
+                kind=MemoryKind.PATTERN,
+                title="shared-pattern",
+                body_md="x",
+                tags=("topic/foo",),
+                source_contract_id="lt-rel-a",
+                created_at=base,
+                schema_version=4,
+            )
+            m_b = Memory(
+                scope=MemoryScope.DOMAIN,
+                kind=MemoryKind.PATTERN,
+                title="shared-pattern",
+                body_md="x",
+                tags=("topic/foo",),
+                source_contract_id="lt-rel-b",
+                created_at=base,
+                schema_version=4,
+            )
+            record_memory(conn, m_a)
+            record_memory(conn, m_b)
+            conn.commit()
+            publish_active_contracts(conn, wiki_root, now=now)
+        finally:
+            conn.close()
+
+        page_a = (wiki_root / AUTO_SUBDIR / "lt-rel-a.md").read_text(encoding="utf-8")
+        page_b = (wiki_root / AUTO_SUBDIR / "lt-rel-b.md").read_text(encoding="utf-8")
+        assert "[[lt-rel-b]]" in page_a
+        assert "[[lt-rel-a]]" in page_b
+        # The two contracts do not list themselves.
+        assert "[[lt-rel-a]]" not in page_a
+        assert "[[lt-rel-b]]" not in page_b
+
+    def test_related_falls_back_to_placeholder_when_no_topic_tags(self, tmp_path: Path) -> None:
+        conn = _open_db(tmp_path)
+        wiki_root = tmp_path / "wiki"
+        try:
+            save_contract(
+                conn, _draft(), contract_id="lt-rel-empty", now=NOW, state=ContractState.ACTIVE
+            )
+            publish_active_contracts(conn, wiki_root, now=NOW)
+        finally:
+            conn.close()
+        page = (wiki_root / AUTO_SUBDIR / "lt-rel-empty.md").read_text(encoding="utf-8")
+        assert "_(no related contracts)_" in page
+
+
 class TestStateAxis:
     def test_publishes_every_non_terminal_state(self, tmp_path: Path) -> None:
         conn = _open_db(tmp_path)

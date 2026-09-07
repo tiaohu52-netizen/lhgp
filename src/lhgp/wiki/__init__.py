@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from lhgp.wiki import sync as _sync
+from lhgp.wiki.sync import publish_active_contracts
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WIKI_ROOT = REPO_ROOT / "docs" / "wiki"
@@ -248,11 +248,6 @@ def wiki_command(args: argparse.Namespace) -> int:
         return _cmd_graph(pages, args)
     print(f"wiki: unknown subcommand {args.wiki_cmd}")
     return 2
-
-
-# Re-export the sync module's primary entry point so callers that already
-# ``from lhgp.wiki import publish_active_contracts`` keep working.
-publish_active_contracts = _sync.publish_active_contracts
 
 
 __all__ = [
