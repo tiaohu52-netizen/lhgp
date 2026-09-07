@@ -28,6 +28,22 @@ from typing import Any
 from lhgp.memory.store import list_memories
 from lhgp.memory.types import Memory, MemoryScope
 
+# Constant cost of the section header, in UTF-8 bytes. Pre-computed so
+# we can budget a single-item truncation precisely without re-encoding
+# the header on every call.
+_HEADER_TEXT = "## 长期记忆（跨合同沉淀）\n\n"
+_HEADER_BYTES = len(_HEADER_TEXT.encode("utf-8"))
+
+# Bytes reserved for a single item's metadata line and the trailing
+# newline between items. The metadata line is ``- **<title>** (...)\n``
+# which varies with title/source/kind; this constant is a conservative
+# upper bound for a typical 1-2 word title and a short source string.
+_ITEM_OVERHEAD_BYTES = 200
+
+# Tag-rendering prefix used in the body section; not a budget term, kept
+# here so the renderer and the test can both reference it.
+_TRUNCATION_MARKER = "\n[…truncated…]"
+
 
 @dataclass(frozen=True, slots=True)
 class RetrievedMemory:
@@ -77,6 +93,38 @@ def _project(memory: Memory) -> RetrievedMemory:
     )
 
 
+def _truncate_to_budget(item: RetrievedMemory, budget: int) -> RetrievedMemory:
+    """Shrink a single oversize item so the rendered section fits.
+
+    Reserves room for the section header + the item's own metadata
+    line; the body is cut to whatever's left and a truncation marker
+    is appended so the reader knows the body was clipped.
+    """
+    body_budget = max(0, budget - _HEADER_BYTES - _ITEM_OVERHEAD_BYTES)
+    if len(item.body_md) <= body_budget:
+        return item
+    return RetrievedMemory(
+        title=item.title,
+        body_md=item.body_md[:body_budget] + _TRUNCATION_MARKER,
+        kind=item.kind,
+        score=item.score,
+        tags=item.tags,
+        source=item.source,
+    )
+
+
+def _render_section(memories: list[RetrievedMemory]) -> str:
+    """Compose the markdown section that ``compile_context_snapshot`` embeds."""
+    if not memories:
+        return ""
+    return _HEADER_TEXT + "\n\n".join(r.render() for r in memories) + "\n"
+
+
+def render_for_active_md(memories: list[RetrievedMemory]) -> str:
+    """Public helper for ``compile_context_snapshot`` to render a section."""
+    return _render_section(memories)
+
+
 class MemoryIndex:
     """Retrieval facade for the contract compiler.
 
@@ -102,7 +150,7 @@ class MemoryIndex:
         self,
         contract_context: dict[str, Any] | None,
         *,
-        now: datetime | None = None,
+        now: datetime | None = None,  # reserved for future expiry filter
     ) -> list[RetrievedMemory]:
         """Return the top-N memories that fit the budget.
 
@@ -111,69 +159,80 @@ class MemoryIndex:
         score. If the rendered text would overflow the budget, drops
         lowest-score items until it fits. Returns [] on empty/no-match.
         """
-        domain = _domain_of(contract_context)
-        # 1. Global: always include
-        globals_ = list_memories(self.conn, scope=MemoryScope.GLOBAL, limit=self.top_n * 2)
-        # 2. Domain: contract's domain
-        domains: list[Memory] = []
-        if domain:
-            domains = list_memories(self.conn, scope=MemoryScope.DOMAIN, limit=self.top_n * 2)
-            # Tag convention: domain-scope memories carry ``topic/<domain>``.
-            tag = f"topic/{domain}"
-            domains = [m for m in domains if tag in m.tags]
-        # 3. Project: top by score
-        projects = list_memories(self.conn, scope=MemoryScope.PROJECT, limit=self.top_n * 2)
+        candidates = self._gather_candidates(contract_context)
+        top = self._take_top_n(candidates)
+        return self._fit_to_budget(top)
 
-        # Combine and de-dup by id, then sort by score desc
+    # -- private steps (one concern each) -------------------------------
+
+    def _gather_candidates(self, contract_context: dict[str, Any] | None) -> list[Memory]:
+        """Collect the union of global, domain-matching, and project memories.
+
+        Dedups by id and sorts score-DESC, then created_at-DESC so the
+        first N are the most relevant regardless of source scope.
+        """
+        domain = _domain_of(contract_context)
+        # ``limit=self.top_n * 2`` is a soft cap; the SQL is also sorted
+        # by score DESC, so even if there are thousands of project
+        # memories we never pull more than this for one retrieval.
+        limit = self.top_n * 2
+        global_mems = list_memories(self.conn, scope=MemoryScope.GLOBAL, limit=limit)
+        domain_mems: list[Memory] = []
+        if domain:
+            tag = f"topic/{domain}"
+            domain_mems = [
+                m
+                for m in list_memories(self.conn, scope=MemoryScope.DOMAIN, limit=limit)
+                if tag in m.tags
+            ]
+        project_mems = list_memories(self.conn, scope=MemoryScope.PROJECT, limit=limit)
+
         seen: set[int] = set()
         combined: list[Memory] = []
-        for m in globals_ + domains + projects:
+        for m in (*global_mems, *domain_mems, *project_mems):
             if m.id is None or m.id in seen:
                 # None id would corrupt the seen set; skip rather than crash.
                 continue
             seen.add(m.id)
             combined.append(m)
-        combined.sort(key=lambda m: (-m.score, m.created_at or datetime.min), reverse=False)
-        combined.reverse()  # score DESC
+        # Sort score-DESC; tie-break on newer-first by created_at DESC.
+        # ``-datetime`` works because datetime supports total_ordering.
+        combined.sort(key=lambda m: (-m.score, -(m.created_at or datetime.min).timestamp()))
+        return combined
 
-        # top_n caps the initial pull. Capacity may drop further but never
-        # add — the contract is "at most top_n memories per retrieval".
-        projected = [_project(m) for m in combined[: self.top_n]]
-        projected.sort(key=lambda r: -r.score)
+    def _take_top_n(self, memories: list[Memory]) -> list[RetrievedMemory]:
+        """Project the top-N to the wire form. ``top_n`` is a hard cap."""
+        top = memories[: self.top_n]
+        projected = [_project(m) for m in top]
+        # The underlying list is already score-DESC; the projection keeps
+        # that order, so no re-sort is needed.
+        return projected
+
+    def _fit_to_budget(self, items: list[RetrievedMemory]) -> list[RetrievedMemory]:
+        """Greedy pack into the byte budget, top score first.
+
+        Iterates the items (already in score-DESC order) and accumulates
+        each item's rendered size. Stops at the first item that would
+        overflow. A single oversize item is truncated so the diagram
+        still gets one row back; otherwise we drop everything past the
+        budget boundary and return what we kept.
+        """
         selected: list[RetrievedMemory] = []
-        for r in projected:
-            tentative = [*selected, r]
-            text = _render_section(tentative)
-            if len(text.encode("utf-8")) <= self.budget_bytes:
-                selected = tentative
-            elif not selected:
-                # Single item exceeds budget. Truncate body and accept.
-                truncated = RetrievedMemory(
-                    title=r.title,
-                    body_md=r.body_md[: max(0, self.budget_bytes - 200)] + "\n[…truncated…]",
-                    kind=r.kind,
-                    score=r.score,
-                    tags=r.tags,
-                    source=r.source,
-                )
-                selected = [truncated]
-                break
+        total = _HEADER_BYTES
+        for item in items:
+            rendered = item.render()
+            # +1 accounts for the separator newline between items.
+            size = len(rendered.encode("utf-8")) + 1
+            if total + size <= self.budget_bytes:
+                selected.append(item)
+                total += size
+                continue
+            if not selected:
+                # Single oversize item: truncate so the section still
+                # surfaces a row, with a marker the reader can grep for.
+                return [_truncate_to_budget(item, self.budget_bytes)]
+            break
         return selected
-
-
-def _render_section(memories: list[RetrievedMemory]) -> str:
-    if not memories:
-        return ""
-    lines = ["## 长期记忆（跨合同沉淀）", ""]
-    for r in memories:
-        lines.append(r.render())
-        lines.append("")
-    return "\n".join(lines)
-
-
-def render_for_active_md(memories: list[RetrievedMemory]) -> str:
-    """Public helper for ``compile_context_snapshot`` to render a section."""
-    return _render_section(memories)
 
 
 __all__ = ["MemoryIndex", "RetrievedMemory", "render_for_active_md"]
