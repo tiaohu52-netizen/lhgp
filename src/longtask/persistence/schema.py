@@ -25,7 +25,8 @@ from longtask.persistence.types import StoreConfig
 
 # P1=v2: goal/deadline/acceptance columns added
 # P6=v3: user_evaluations + acceptance_diffs tables added
-STORE_SCHEMA_VERSION = 3
+# memory-and-wiki Phase 2=v4: memories table added
+STORE_SCHEMA_VERSION = 4
 
 
 def connect(config: StoreConfig) -> sqlite3.Connection:
@@ -311,6 +312,9 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     # 新表用 IF NOT EXISTS 幂等创建；旧库不需数据回填。
     _migrate_v2_to_v3(conn)
 
+    # ── 迁移：v3 → v4（memory-and-wiki Phase 2 memories 表）──
+    _migrate_v3_to_v4(conn)
+
     # events(goal_id / request_id) 列由上面的迁移物化（v1 库 ALTER TABLE
     # 后才存在），因此这两个 partial index 只能在迁移之后建——否则真实
     # v1 库在 ensure_schema 阶段直接 OperationalError（安全审查 持久化-C1）。
@@ -430,6 +434,47 @@ def _migrate_v2_to_v3(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_acceptance_diffs_contract
         ON acceptance_diffs(contract_id, computed_at)
         """
+    )
+
+
+def _migrate_v3_to_v4(conn: sqlite3.Connection) -> None:
+    """v3 → v4 原地迁移：新增 memories 表（memory-and-wiki Phase 2）。
+
+    memories 是协议级长期记忆,跨合同 / 跨项目;与 user_evaluations(per-contract
+    human rating)、acceptance_diffs(per-attempt 产物 diff)、templates/(per-pattern
+    auto-evolved 模板)正交。本表是 system-mined / human-curated 的混合,容量合同
+    走 context.py.max_bytes(fail-closed)。
+    """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS memories (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scope TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            title TEXT NOT NULL,
+            body_md TEXT NOT NULL,
+            tags_json TEXT NOT NULL DEFAULT '[]',
+            source_contract_id TEXT,
+            source_event_id INTEGER,
+            source_actor TEXT,
+            score REAL NOT NULL DEFAULT 0.0,
+            created_at TEXT NOT NULL,
+            expires_at TEXT,
+            schema_version INTEGER NOT NULL DEFAULT 4
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_memories_scope_kind "
+        "ON memories(scope, kind, created_at DESC)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_memories_expires "
+        "ON memories(expires_at) WHERE expires_at IS NOT NULL"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_memories_source "
+        "ON memories(source_contract_id) WHERE source_contract_id IS NOT NULL"
     )
 
 

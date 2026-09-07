@@ -345,6 +345,50 @@ def build_parser() -> argparse.ArgumentParser:
     wiki_graph = wiki_sub.add_parser("show-graph", help="print outgoing + backlinks for one page")
     wiki_graph.add_argument("page", type=str)
 
+    # ── P6+1 / memory-and-wiki Phase 2：memory 长期记忆
+    from lhgp.memory import MemoryKind, MemoryScope
+
+    mem_p = sub.add_parser(
+        "memory",
+        help="long-term protocol memory (system-mined / human-curated)",
+    )
+    mem_sub = mem_p.add_subparsers(dest="memory_cmd", required=True)
+    mem_add = mem_sub.add_parser("add", help="record a new memory")
+    mem_add.add_argument("--title", required=True, type=str)
+    mem_add.add_argument("--body", type=str, default=None, help="markdown; reads stdin if omitted")
+    mem_add.add_argument(
+        "--scope",
+        choices=[s.value for s in MemoryScope],
+        default=MemoryScope.PROJECT.value,
+    )
+    mem_add.add_argument(
+        "--kind",
+        choices=[k.value for k in MemoryKind],
+        default=MemoryKind.PATTERN.value,
+    )
+    mem_add.add_argument("--tags", type=str, default="", help="comma-separated")
+    mem_add.add_argument("--score", type=float, default=0.5)
+    mem_add.add_argument("--source-contract", type=str, default=None)
+    mem_add.add_argument("--source-event-id", type=int, default=None)
+    mem_add.add_argument("--actor", type=str, default="user")
+    mem_add.add_argument("--expires-in-days", type=int, default=180)
+    mem_add.add_argument("--no-expire", action="store_true")
+    mem_list = mem_sub.add_parser("list", help="list memories (score-desc)")
+    mem_list.add_argument("--scope", type=str, default=None)
+    mem_list.add_argument("--kind", type=str, default=None)
+    mem_list.add_argument("--tags-any", type=str, default=None, help="comma-separated")
+    mem_list.add_argument("--include-expired", action="store_true")
+    mem_list.add_argument("--limit", type=int, default=50)
+    mem_list.add_argument("--json", action="store_true")
+    mem_search = mem_sub.add_parser("search", help="full-text search")
+    mem_search.add_argument("keyword", type=str)
+    mem_search.add_argument("--scope", type=str, default=None)
+    mem_search.add_argument("--limit", type=int, default=20)
+    mem_search.add_argument("--json", action="store_true")
+    mem_show = mem_sub.add_parser("show", help="show one memory by id")
+    mem_show.add_argument("--id", type=int, required=True)
+    mem_sub.add_parser("expire", help="delete expired memories")
+
     # insights：接手包 / 看板 / 成本台账
     brief_p = sub.add_parser("brief", help="接手包：一份合同的状态/风险/最近失败/下一步")
     brief_p.add_argument("contract_id", type=str)
@@ -913,6 +957,18 @@ def main(argv: list[str] | None = None) -> int:
         from lhgp.wiki import wiki_command
 
         return wiki_command(args)
+
+    if args.command == "memory":
+        from lhgp.memory.cli import memory_command
+
+        root = Path(args.data_dir).expanduser().resolve() if args.data_dir else default_data_root()
+        db_path = root / "state.db"
+        conn = connect(StoreConfig(db_path=db_path))
+        try:
+            ensure_schema(conn)
+            return memory_command(conn, args)
+        finally:
+            conn.close()
 
     if args.command == "board":
         from lhgp.persistence.insights import build_board

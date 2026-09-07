@@ -174,6 +174,19 @@ def compile_context_snapshot(
     digest = _recent_attempt_digest(conn, contract.contract_id)
     deadline_snapshot = get_latest_forecast_snapshot(conn, contract_id=contract.contract_id)
 
+    # Memory-and-wiki Phase 2: 跨合同长期记忆检索。
+    # 按 contract.context 选域(global 总是带,domain 按 contract 域名,
+    # project 取 score top-N),并尊重 context.max_bytes 容量合同。
+    from lhgp.memory import MemoryIndex, render_for_active_md
+
+    # 给 memory 一个独立的 budget:max_bytes 的 1/10 但下限 1.5KB 上限 4KB,
+    # 避免单次 attempt 上下文被长期记忆淹没。
+    memory_budget = max(1500, min(4000, policy.max_bytes // 10))
+    mem_index = MemoryIndex(conn, budget_bytes=memory_budget)
+    mem_text = render_for_active_md(
+        mem_index.retrieve(draft.context if isinstance(draft.context, dict) else None)
+    )
+
     # Agent messaging：用户的 directive 消息注入到 agent 上下文最前面——
     # 这让用户可以在 agent 工作中途改变方向而不用终止重来。
     from lhgp.persistence.messages import pending_directives
@@ -215,6 +228,9 @@ def compile_context_snapshot(
             "```",
             "",
         ]
+    if mem_text:
+        # 跨合同沉淀,放 deadline 之后、handover 之前 —— 风险感知 > 历史现场
+        sections += [mem_text, ""]
     if handover:
         sections += [
             "## 交接（上一 attempt 留下的现场）",
