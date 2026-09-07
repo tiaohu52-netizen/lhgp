@@ -1,0 +1,800 @@
+{
+  "schema_version": 1,
+  "generated_by": "scripts/build_wiki_index.py",
+  "wiki_root": "docs\\wiki",
+  "page_count": 11,
+  "by_type": {
+    "glossary": 1,
+    "moc": 2,
+    "playbook": 8
+  },
+  "pages": [
+    {
+      "path": "glossary.md",
+      "title": "LHGP Glossary",
+      "type": "glossary",
+      "status": "permanent",
+      "tags": [
+        "audience/ai",
+        "audience/human",
+        "type/reference"
+      ],
+      "audience": [
+        "human",
+        "ai"
+      ],
+      "requires": [],
+      "related": [],
+      "outgoing": [
+        "glossary.md"
+      ],
+      "outgoing_raw": [
+        "glossary"
+      ],
+      "backlinks": [
+        "glossary.md",
+        "index.md"
+      ],
+      "block_ids": [],
+      "headings": [
+        {
+          "level": 1,
+          "text": "Glossary"
+        },
+        {
+          "level": 2,
+          "text": "协议层"
+        },
+        {
+          "level": 3,
+          "text": "Contract / 合同"
+        },
+        {
+          "level": 3,
+          "text": "Attempt / 执行尝试"
+        },
+        {
+          "level": 3,
+          "text": "Lease / 租约"
+        },
+        {
+          "level": 3,
+          "text": "Acceptance / 验收"
+        },
+        {
+          "level": 3,
+          "text": "Context / 临时上下文"
+        },
+        {
+          "level": 3,
+          "text": "Handover / 交接"
+        },
+        {
+          "level": 2,
+          "text": "数据层"
+        },
+        {
+          "level": 3,
+          "text": "Event / 事件"
+        },
+        {
+          "level": 3,
+          "text": "Schema Version / 架构版本"
+        },
+        {
+          "level": 3,
+          "text": "EventType / 事件类型"
+        },
+        {
+          "level": 2,
+          "text": "调度层"
+        },
+        {
+          "level": 3,
+          "text": "Deadline Level / 死线级别"
+        },
+        {
+          "level": 3,
+          "text": "Daemon Tick / 调度心跳"
+        },
+        {
+          "level": 2,
+          "text": "P6 概念(反馈回路 / 多合同 / 自动演化)"
+        },
+        {
+          "level": 3,
+          "text": "User Evaluation / 用户评价"
+        },
+        {
+          "level": 3,
+          "text": "Acceptance Diff / 验收态 diff"
+        },
+        {
+          "level": 3,
+          "text": "Template Signal / 模板信号"
+        },
+        {
+          "level": 3,
+          "text": "Auto-Evolve / 自动演化"
+        },
+        {
+          "level": 3,
+          "text": "Portfolio Snapshot / 多合同聚合"
+        },
+        {
+          "level": 3,
+          "text": "Trace / 单合同时间轴"
+        }
+      ]
+    },
+    {
+      "path": "index.md",
+      "title": "LHGP Wiki — Index",
+      "type": "moc",
+      "status": "permanent",
+      "tags": [
+        "moc",
+        "audience/ai",
+        "audience/human"
+      ],
+      "audience": [
+        "human",
+        "ai"
+      ],
+      "requires": [],
+      "related": [],
+      "outgoing": [
+        "glossary.md",
+        "playbook/index.md"
+      ],
+      "outgoing_raw": [
+        "page",
+        "glossary",
+        "playbook/index",
+        "case-studies/index",
+        "topics/index"
+      ],
+      "backlinks": [],
+      "block_ids": [
+        "blockid"
+      ],
+      "headings": [
+        {
+          "level": 1,
+          "text": "LHGP Wiki"
+        },
+        {
+          "level": 2,
+          "text": "设计原则(参考 Obsidian 守则)"
+        },
+        {
+          "level": 2,
+          "text": "目录"
+        },
+        {
+          "level": 2,
+          "text": "与 docs/ 的关系"
+        },
+        {
+          "level": 2,
+          "text": "AI 消费指南"
+        }
+      ]
+    },
+    {
+      "path": "playbook/add-cli-subcommand.md",
+      "title": "Adding a CLI Subcommand",
+      "type": "playbook",
+      "status": "permanent",
+      "tags": [
+        "topic/cli",
+        "type/howto",
+        "audience/ai"
+      ],
+      "audience": [
+        "human",
+        "ai"
+      ],
+      "requires": [
+        "python",
+        "longtask.cli.main"
+      ],
+      "related": [
+        "add-mcp-tool"
+      ],
+      "outgoing": [],
+      "outgoing_raw": [],
+      "backlinks": [
+        "playbook/index.md"
+      ],
+      "block_ids": [],
+      "headings": [
+        {
+          "level": 1,
+          "text": "Adding a CLI Subcommand"
+        },
+        {
+          "level": 2,
+          "text": "三处必填"
+        },
+        {
+          "level": 3,
+          "text": "1. 在 main() 里加 sub-parser"
+        },
+        {
+          "level": 1,
+          "text": "找到合适的位置(按字母或逻辑顺序),加:"
+        },
+        {
+          "level": 3,
+          "text": "2. dispatch 链"
+        },
+        {
+          "level": 1,
+          "text": "在 main() 末尾 if-else 链加:"
+        },
+        {
+          "level": 3,
+          "text": "3. 测试"
+        },
+        {
+          "level": 2,
+          "text": "反模式"
+        },
+        {
+          "level": 2,
+          "text": "验证清单"
+        }
+      ]
+    },
+    {
+      "path": "playbook/add-event-type.md",
+      "title": "Adding a New Event Type",
+      "type": "playbook",
+      "status": "permanent",
+      "tags": [
+        "topic/persistence",
+        "type/howto",
+        "audience/ai"
+      ],
+      "audience": [
+        "human",
+        "ai"
+      ],
+      "requires": [
+        "python",
+        "lhgp.persistence.events"
+      ],
+      "related": [
+        "add-mcp-tool",
+        "schema-migration",
+        "sql-binding"
+      ],
+      "outgoing": [],
+      "outgoing_raw": [
+        "sql-binding",
+        "schema-migration",
+        "daemon-tick-hook"
+      ],
+      "backlinks": [
+        "playbook/index.md"
+      ],
+      "block_ids": [],
+      "headings": [
+        {
+          "level": 1,
+          "text": "Adding a New Event Type"
+        },
+        {
+          "level": 2,
+          "text": "步骤"
+        },
+        {
+          "level": 3,
+          "text": "1. 在 `lhgp.persistence.events.EventType` 加枚举"
+        },
+        {
+          "level": 3,
+          "text": "2. 触发点:`append_event` 用枚举值,**不写字符串**"
+        },
+        {
+          "level": 1,
+          "text": "WRONG: 写死字符串,改名后静默失配"
+        },
+        {
+          "level": 1,
+          "text": "WRONG: f-string 拼 SQL"
+        },
+        {
+          "level": 3,
+          "text": "3. 测试:事件能落 + 能被 consumer 读到"
+        },
+        {
+          "level": 3,
+          "text": "4. 文档同步"
+        },
+        {
+          "level": 2,
+          "text": "反模式"
+        },
+        {
+          "level": 2,
+          "text": "验证清单"
+        },
+        {
+          "level": 2,
+          "text": "相关"
+        }
+      ]
+    },
+    {
+      "path": "playbook/add-mcp-tool.md",
+      "title": "Adding an MCP Tool",
+      "type": "playbook",
+      "status": "permanent",
+      "tags": [
+        "topic/mcp",
+        "topic/cli",
+        "type/howto",
+        "audience/ai"
+      ],
+      "audience": [
+        "human",
+        "ai"
+      ],
+      "requires": [
+        "python",
+        "longtask.mcp_server"
+      ],
+      "related": [
+        "add-cli-subcommand",
+        "add-event-type"
+      ],
+      "outgoing": [],
+      "outgoing_raw": [],
+      "backlinks": [
+        "playbook/index.md"
+      ],
+      "block_ids": [],
+      "headings": [
+        {
+          "level": 1,
+          "text": "Adding an MCP Tool"
+        },
+        {
+          "level": 2,
+          "text": "签名(强制)"
+        },
+        {
+          "level": 2,
+          "text": "注册三处必填"
+        },
+        {
+          "level": 1,
+          "text": "1. 工具面:TOOL_CATALOG 或 _TOOL_DISPATCHERS"
+        },
+        {
+          "level": 1,
+          "text": "2. 注解:READ_ONLY_TOOLS 或 DESTRUCTIVE_TOOLS 二选一"
+        },
+        {
+          "level": 1,
+          "text": "或"
+        },
+        {
+          "level": 1,
+          "text": "3. CHANGELOG / 文档"
+        },
+        {
+          "level": 2,
+          "text": "测试"
+        },
+        {
+          "level": 2,
+          "text": "反模式"
+        },
+        {
+          "level": 2,
+          "text": "验证清单"
+        }
+      ]
+    },
+    {
+      "path": "playbook/daemon-tick-hook.md",
+      "title": "Adding a Daemon Tick Hook",
+      "type": "playbook",
+      "status": "permanent",
+      "tags": [
+        "topic/daemon",
+        "type/howto",
+        "audience/ai"
+      ],
+      "audience": [
+        "human",
+        "ai"
+      ],
+      "requires": [
+        "python",
+        "longtask.cli.daemon_loop"
+      ],
+      "related": [
+        "add-event-type"
+      ],
+      "outgoing": [],
+      "outgoing_raw": [
+        "sql-binding"
+      ],
+      "backlinks": [
+        "playbook/index.md"
+      ],
+      "block_ids": [],
+      "headings": [
+        {
+          "level": 1,
+          "text": "Adding a Daemon Tick Hook"
+        },
+        {
+          "level": 2,
+          "text": "钩子模式"
+        },
+        {
+          "level": 2,
+          "text": "挂载位置"
+        },
+        {
+          "level": 2,
+          "text": "验证清单"
+        }
+      ]
+    },
+    {
+      "path": "playbook/index.md",
+      "title": "Playbook — Index",
+      "type": "moc",
+      "status": "permanent",
+      "tags": [
+        "moc",
+        "audience/ai",
+        "audience/human",
+        "type/howto"
+      ],
+      "audience": [
+        "human",
+        "ai"
+      ],
+      "requires": [],
+      "related": [],
+      "outgoing": [
+        "playbook/add-event-type.md",
+        "playbook/schema-migration.md",
+        "playbook/sql-binding.md",
+        "playbook/add-mcp-tool.md",
+        "playbook/add-cli-subcommand.md",
+        "playbook/write-test-first.md",
+        "playbook/quality-gate.md",
+        "playbook/daemon-tick-hook.md"
+      ],
+      "outgoing_raw": [
+        "playbook/add-event-type",
+        "playbook/schema-migration",
+        "playbook/sql-binding",
+        "playbook/add-mcp-tool",
+        "playbook/add-cli-subcommand",
+        "playbook/write-test-first",
+        "playbook/quality-gate",
+        "playbook/daemon-tick-hook"
+      ],
+      "backlinks": [
+        "index.md"
+      ],
+      "block_ids": [],
+      "headings": [
+        {
+          "level": 1,
+          "text": "Playbook"
+        },
+        {
+          "level": 2,
+          "text": "Persistence"
+        },
+        {
+          "level": 2,
+          "text": "MCP / CLI / 工具"
+        },
+        {
+          "level": 2,
+          "text": "Quality"
+        },
+        {
+          "level": 2,
+          "text": "Daemon"
+        }
+      ]
+    },
+    {
+      "path": "playbook/quality-gate.md",
+      "title": "Quality Gate",
+      "type": "playbook",
+      "status": "permanent",
+      "tags": [
+        "topic/quality",
+        "type/howto",
+        "audience/ai"
+      ],
+      "audience": [
+        "human",
+        "ai"
+      ],
+      "requires": [],
+      "related": [
+        "write-test-first"
+      ],
+      "outgoing": [],
+      "outgoing_raw": [],
+      "backlinks": [
+        "playbook/index.md"
+      ],
+      "block_ids": [],
+      "headings": [
+        {
+          "level": 1,
+          "text": "Quality Gate"
+        },
+        {
+          "level": 2,
+          "text": "7 门顺序"
+        },
+        {
+          "level": 2,
+          "text": "本地运行"
+        },
+        {
+          "level": 1,
+          "text": "完整(同 CI)"
+        },
+        {
+          "level": 1,
+          "text": "单门快查"
+        },
+        {
+          "level": 2,
+          "text": "fail-closed 语义"
+        },
+        {
+          "level": 2,
+          "text": "反模式"
+        },
+        {
+          "level": 2,
+          "text": "与 CLAIMS 的关系"
+        },
+        {
+          "level": 2,
+          "text": "验证清单(改完代码后自检)"
+        }
+      ]
+    },
+    {
+      "path": "playbook/schema-migration.md",
+      "title": "Schema Migration",
+      "type": "playbook",
+      "status": "permanent",
+      "tags": [
+        "topic/persistence",
+        "type/howto",
+        "audience/ai"
+      ],
+      "audience": [
+        "human",
+        "ai"
+      ],
+      "requires": [
+        "python",
+        "sqlite3",
+        "lhgp.persistence"
+      ],
+      "related": [
+        "add-event-type",
+        "sql-binding"
+      ],
+      "outgoing": [],
+      "outgoing_raw": [
+        "add-event-type",
+        "sql-binding"
+      ],
+      "backlinks": [
+        "playbook/index.md"
+      ],
+      "block_ids": [],
+      "headings": [
+        {
+          "level": 1,
+          "text": "Schema Migration"
+        },
+        {
+          "level": 2,
+          "text": "步骤"
+        },
+        {
+          "level": 3,
+          "text": "1. Bump `STORE_SCHEMA_VERSION` + 加 `_migrate_vN_to_vN+1`"
+        },
+        {
+          "level": 3,
+          "text": "2. 加表 + 索引到 `ensure_schema` 的 v4 终态建表段"
+        },
+        {
+          "level": 3,
+          "text": "3. 写 `StoreConfig.schema_version` 默认值"
+        },
+        {
+          "level": 3,
+          "text": "4. 集成测试"
+        },
+        {
+          "level": 2,
+          "text": "反模式"
+        },
+        {
+          "level": 2,
+          "text": "验证清单"
+        },
+        {
+          "level": 2,
+          "text": "相关"
+        }
+      ]
+    },
+    {
+      "path": "playbook/sql-binding.md",
+      "title": "SQL Binding & No Hardcoded Event Names",
+      "type": "playbook",
+      "status": "permanent",
+      "tags": [
+        "topic/persistence",
+        "type/howto",
+        "audience/ai",
+        "type/pitfall"
+      ],
+      "audience": [
+        "human",
+        "ai"
+      ],
+      "requires": [
+        "python",
+        "sqlite3"
+      ],
+      "related": [
+        "add-event-type",
+        "schema-migration"
+      ],
+      "outgoing": [],
+      "outgoing_raw": [
+        "add-event-type",
+        "schema-migration"
+      ],
+      "backlinks": [
+        "playbook/index.md"
+      ],
+      "block_ids": [],
+      "headings": [
+        {
+          "level": 1,
+          "text": "SQL Binding & No Hardcoded Event Names"
+        },
+        {
+          "level": 2,
+          "text": "规则"
+        },
+        {
+          "level": 3,
+          "text": "1. SQL 字符串里**不写死**事件名 / 表名 / 列名"
+        },
+        {
+          "level": 1,
+          "text": "WRONG: 改名后零命中"
+        },
+        {
+          "level": 1,
+          "text": "RIGHT: 枚举值 + 参数绑定"
+        },
+        {
+          "level": 3,
+          "text": "2. Cursor 返回的可能是 `Row` 也可能是 `tuple` —— 双兼容"
+        },
+        {
+          "level": 1,
+          "text": "WRONG: 假设是 Row"
+        },
+        {
+          "level": 1,
+          "text": "RIGHT: 双兼容"
+        },
+        {
+          "level": 3,
+          "text": "3. **不要** `except Exception: continue` 吞掉所有错"
+        },
+        {
+          "level": 1,
+          "text": "WRONG"
+        },
+        {
+          "level": 1,
+          "text": "RIGHT"
+        },
+        {
+          "level": 1,
+          "text": "编程 bug(AttributeError/KeyError/NameError)仍能 raise → 立刻被测到"
+        },
+        {
+          "level": 2,
+          "text": "反模式"
+        },
+        {
+          "level": 2,
+          "text": "验证清单"
+        },
+        {
+          "level": 2,
+          "text": "相关"
+        }
+      ]
+    },
+    {
+      "path": "playbook/write-test-first.md",
+      "title": "Writing Tests for the Protocol",
+      "type": "playbook",
+      "status": "permanent",
+      "tags": [
+        "topic/quality",
+        "type/howto",
+        "audience/ai"
+      ],
+      "audience": [
+        "human",
+        "ai"
+      ],
+      "requires": [],
+      "related": [
+        "quality-gate",
+        "add-event-type"
+      ],
+      "outgoing": [],
+      "outgoing_raw": [],
+      "backlinks": [
+        "playbook/index.md"
+      ],
+      "block_ids": [],
+      "headings": [
+        {
+          "level": 1,
+          "text": "Writing Tests for the Protocol"
+        },
+        {
+          "level": 2,
+          "text": "三个层级"
+        },
+        {
+          "level": 2,
+          "text": "fixture 模式"
+        },
+        {
+          "level": 2,
+          "text": "写之前要问的三个问题"
+        },
+        {
+          "level": 2,
+          "text": "反模式(P6 一轮全遇过)"
+        },
+        {
+          "level": 2,
+          "text": "集成测试标准模式"
+        },
+        {
+          "level": 2,
+          "text": "验证清单"
+        }
+      ]
+    }
+  ]
+}

@@ -330,6 +330,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     dl_p.add_argument("--limit", type=int, default=500)
 
+    # ── P6 后续：wiki ── 工作方法 wiki
+    wiki_p = sub.add_parser(
+        "wiki",
+        help="protocol-internal wiki: playbook / case-study / glossary",
+    )
+    wiki_sub = wiki_p.add_subparsers(dest="wiki_cmd", required=True)
+    wiki_sub.add_parser("list", help="list all wiki pages")
+    wiki_read = wiki_sub.add_parser("read", help="print a single page")
+    wiki_read.add_argument("page", type=str, help="page path or stem (e.g. glossary)")
+    wiki_search = wiki_sub.add_parser("search", help="search pages by keyword")
+    wiki_search.add_argument("keyword", type=str)
+    wiki_search.add_argument("--type", type=str, default=None)
+    wiki_graph = wiki_sub.add_parser("show-graph", help="print outgoing + backlinks for one page")
+    wiki_graph.add_argument("page", type=str)
+
     # insights：接手包 / 看板 / 成本台账
     brief_p = sub.add_parser("brief", help="接手包：一份合同的状态/风险/最近失败/下一步")
     brief_p.add_argument("contract_id", type=str)
@@ -893,6 +908,11 @@ def main(argv: list[str] | None = None) -> int:
             conn.close()
         print(json.dumps(brief, ensure_ascii=False, indent=2, default=str))
         return 0
+
+    if args.command == "wiki":
+        from lhgp.wiki import wiki_command
+
+        return wiki_command(args)
 
     if args.command == "board":
         from lhgp.persistence.insights import build_board
