@@ -16,6 +16,7 @@ class EventType(StrEnum):
     CONTRACT_CANCELLED = "contract/cancelled"
     CONTRACT_EXPIRED = "contract/expired"
     CONTRACT_BLOCKED = "contract/blocked"
+    CONTRACT_UNBLOCKED = "contract/unblocked"
     CONTRACT_COMPLETED = "contract/completed"
     CONTRACT_SATISFIED = "contract/satisfied"
     CONTRACT_ARBITRATED = "contract/arbitrated"
