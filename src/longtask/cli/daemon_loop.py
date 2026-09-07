@@ -204,6 +204,10 @@ def run_daemon_loop(
             # 不重复落事件；breached 立即落 DEADLINE_BREACH_LOCKED，
             # 阻断 run_daemon_tick 后续派发新 attempt）。
             _enforce_deadlines(root, conn, now_val, emit_fn)
+            # memory-and-wiki Phase 2：自动清掉过期的长期记忆（180/365 天
+            # 衰减是 contract，没这条 sweep 就只是纸面承诺）。廉价
+            # DELETE，命中 idx_memories_expires，无行就 no-op。
+            _expire_due_memories(conn, now_val, emit_fn)
             # 消费由本机计划任务经 daemon/wake 投递的一次性 fired 信号；
             # 先解除旧登记，再由本轮 tick 计算并重新 arm 下一决策点。
             while True:
@@ -300,6 +304,51 @@ def run_daemon_loop(
         "spawned": runner.spawned_count,
         "finished": runner.finished_count,
     }
+
+
+def _expire_due_memories(
+    conn: sqlite3.Connection,
+    now: datetime,
+    emit_fn: Callable[[str], None] | None,
+) -> int:
+    """Sweep expired long-term memories. Best-effort; failures are logged.
+
+    ``emit_fn`` is called with a one-line summary iff rows were dropped.
+    The corresponding event is also appended to the events table for
+    auditability (verifier P0 fix 2026-09-07).
+    """
+    try:
+        from lhgp.memory import expire_due
+    except ImportError:
+        return 0
+    try:
+        n = int(expire_due(conn, now=now))
+    except Exception as exc:
+        if emit_fn is not None:
+            emit_fn(f"memory/expire: sweep failed: {exc}")
+        return 0
+    if n <= 0:
+        return 0
+    if emit_fn is not None:
+        emit_fn(f"memory/expire: dropped {n} due memories")
+    try:
+        from longtask.persistence.events import EventType
+        from longtask.persistence.store import append_event
+
+        append_event(
+            conn,
+            contract_id=None,
+            goal_id=None,
+            event_type=EventType.MEMORY_EXPIRED,
+            payload={"expired_count": n},
+            now=now,
+            actor="daemon",
+            role="system",
+        )
+    except Exception as exc:
+        if emit_fn is not None:
+            emit_fn(f"memory/expire: event append failed: {exc}")
+    return n
 
 
 def _dispatch_verifiers_for_reconciled(

@@ -82,6 +82,7 @@ class EventType(StrEnum):
     DEADLINE_BREACH_LOCKED = "deadline/breach-locked"
     PORTFOLIO_SUMMARY_VIEWED = "portfolio/summary-viewed"
     TEMPLATE_EVOLVED = "template/evolved"
+    MEMORY_EXPIRED = "memory/expired"
 
 
 __all__ = ["EventType"]

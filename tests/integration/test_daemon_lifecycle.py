@@ -82,6 +82,75 @@ def test_rpc_unavailable_is_audited_without_thread_traceback(
     assert any(message.startswith("rpc/degraded:") for message in messages)
 
 
+def test_memory_expire_sweep_runs_each_cycle(tmp_path: Path) -> None:
+    """P2 verifier P0 fix: each daemon cycle sweeps expired memories.
+
+    A memory past its ``expires_at`` must be removed and a
+    ``memory/expired`` event appended. With no due rows, the sweep is a
+    silent no-op (no event, no emit line).
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from lhgp.memory import Memory, MemoryKind, MemoryScope, record_memory
+    from lhgp.persistence.events import EventType
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    conn = connect(StoreConfig(db_path=data_dir / "state.db"))
+    ensure_schema(conn)
+    # One stale memory (already expired) + one fresh memory.
+    stale = Memory(
+        scope=MemoryScope.PROJECT,
+        kind=MemoryKind.PATTERN,
+        title="stale-pattern",
+        body_md="too old to keep",
+        created_at=datetime(2024, 1, 1, tzinfo=UTC),
+        expires_at=datetime(2024, 6, 1, tzinfo=UTC),
+        score=0.5,
+        schema_version=4,
+    )
+    record_memory(conn, stale)
+    fresh = Memory(
+        scope=MemoryScope.PROJECT,
+        kind=MemoryKind.PATTERN,
+        title="fresh-pattern",
+        body_md="still valid",
+        created_at=datetime.now(UTC),
+        expires_at=datetime.now(UTC) + timedelta(days=180),
+        score=0.5,
+        schema_version=4,
+    )
+    record_memory(conn, fresh)
+    conn.close()
+
+    (data_dir / TOKEN_FILE).write_text("test-token\n", encoding="utf-8")
+    messages: list[str] = []
+    # Pin ``now`` so the 2024-06-01 expiry is firmly in the past.
+    fixed_now = datetime(2026, 9, 7, tzinfo=UTC)
+    result = run_daemon_loop(
+        data_dir,
+        interval_seconds=0,
+        max_cycles=1,
+        emit_fn=messages.append,
+        now_fn=lambda: fixed_now,
+    )
+    assert result["ok"] is True
+    assert any("memory/expire: dropped 1 due memories" in m for m in messages), messages
+
+    conn = connect(StoreConfig(db_path=data_dir / "state.db"))
+    try:
+        titles = [r[0] for r in conn.execute("SELECT title FROM memories").fetchall()]
+        assert "stale-pattern" not in titles
+        assert "fresh-pattern" in titles
+        evt = conn.execute(
+            "SELECT event_type FROM events WHERE event_type = ?",
+            (EventType.MEMORY_EXPIRED.value,),
+        ).fetchone()
+        assert evt is not None
+    finally:
+        conn.close()
+
+
 def test_start_rejects_when_already_running(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

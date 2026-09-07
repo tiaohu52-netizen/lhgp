@@ -216,3 +216,80 @@ class TestEvaluationWriteAlwaysSucceeds:
             assert len(mems) == 1
         finally:
             conn.close()
+
+
+class TestTopicScopeFlips:
+    """P2 verifier P0 fix: ``topic: <domain>`` must also tag the memory
+    with ``topic/<domain>`` so MemoryIndex.retrieve can find it.
+
+    Without the tag, the index's domain filter drops DOMAIN memories
+    whose tag set lacks ``topic/<domain>`` — i.e. every auto-mined
+    DOMAIN memory becomes a dead letter.
+    """
+
+    def test_topic_prefix_flips_scope_and_tags(self, tmp_path: Path) -> None:
+        conn = _setup(tmp_path)
+        try:
+            _eval(
+                conn,
+                EvaluationRating.GOOD,
+                EvaluationVerdict.ACCEPT,
+                "topic: persistence — restart-safe writes work as expected",
+            )
+        finally:
+            conn.close()
+        conn = connect(StoreConfig(db_path=tmp_path / "state.db"))
+        try:
+            mems = _memories(conn)
+        finally:
+            conn.close()
+        assert len(mems) == 1
+        m = mems[0]
+        assert m.scope is MemoryScope.DOMAIN
+        assert "topic/persistence" in m.tags
+
+    def test_topic_mined_memory_is_retrievable_by_domain(self, tmp_path: Path) -> None:
+        from lhgp.memory.index import MemoryIndex
+
+        conn = _setup(tmp_path)
+        try:
+            _eval(
+                conn,
+                EvaluationRating.GOOD,
+                EvaluationVerdict.ACCEPT,
+                "topic: sql — JSON binding correctly escapes identifiers",
+            )
+        finally:
+            conn.close()
+        conn = connect(StoreConfig(db_path=tmp_path / "state.db"))
+        try:
+            idx = MemoryIndex(conn, top_n=5, budget_bytes=4000)
+            out = idx.retrieve({"domain": "sql"})
+        finally:
+            conn.close()
+        # The auto-mined DOMAIN memory must surface; pre-fix it was
+        # filtered out and the result was empty.
+        assert len(out) == 1
+        assert "topic/sql" in out[0].tags
+
+    def test_mid_prose_topic_mention_does_not_flip(self, tmp_path: Path) -> None:
+        # Anchored regex: a "topic: choice is yours" comment in the
+        # middle of prose must NOT trigger the scope flip.
+        conn = _setup(tmp_path)
+        try:
+            _eval(
+                conn,
+                EvaluationRating.GOOD,
+                EvaluationVerdict.ACCEPT,
+                "the topic: choice is yours, but mine worked fine",
+            )
+        finally:
+            conn.close()
+        conn = connect(StoreConfig(db_path=tmp_path / "state.db"))
+        try:
+            mems = _memories(conn)
+        finally:
+            conn.close()
+        assert len(mems) == 1
+        assert mems[0].scope is MemoryScope.PROJECT
+        assert not any(t.startswith("topic/") for t in mems[0].tags)

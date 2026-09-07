@@ -484,6 +484,85 @@ def test_p6_enforcement_namespace_reexports_single_implementation() -> None:
     assert CanonicalDeadlineLevel.BREACHED.value == "breached"
 
 
+def test_p2_memory_and_p3_flow_namespace_reexport_single_implementation() -> None:
+    """P2/P3 facade: ``longtask.memory`` / ``longtask.flow`` must mirror
+    their ``lhgp.*`` canonicals so the same class instance is visible
+    to the daemon, the CLI, and any external caller (e.g. an MCP
+    client) that imports from either path."""
+
+    from lhgp.flow import (
+        Flow as CanonicalFlow,
+    )
+    from lhgp.flow import (
+        render_excalidraw as canonical_render_excalidraw,
+    )
+    from lhgp.flow import (
+        render_mermaid as canonical_render_mermaid,
+    )
+    from lhgp.flow import (
+        walk_source as canonical_walk_source,
+    )
+    from lhgp.memory import (
+        Memory as CanonicalMemory,
+    )
+    from lhgp.memory import (
+        MemoryIndex as CanonicalMemoryIndex,
+    )
+    from lhgp.memory import (
+        MemoryKind as CanonicalMemoryKind,
+    )
+    from lhgp.memory import (
+        MemoryScope as CanonicalMemoryScope,
+    )
+    from lhgp.memory import (
+        make_pattern_memory as canonical_make_pattern_memory,
+    )
+    from lhgp.memory import (
+        record_memory as canonical_record_memory,
+    )
+    from longtask.flow import (
+        Flow as LegacyFlow,
+    )
+    from longtask.flow import (
+        render_excalidraw as legacy_render_excalidraw,
+    )
+    from longtask.flow import (
+        render_mermaid as legacy_render_mermaid,
+    )
+    from longtask.flow import (
+        walk_source as legacy_walk_source,
+    )
+    from longtask.memory import (
+        Memory as LegacyMemory,
+    )
+    from longtask.memory import (
+        MemoryIndex as LegacyMemoryIndex,
+    )
+    from longtask.memory import (
+        MemoryKind as LegacyMemoryKind,
+    )
+    from longtask.memory import (
+        MemoryScope as LegacyMemoryScope,
+    )
+    from longtask.memory import (
+        make_pattern_memory as legacy_make_pattern_memory,
+    )
+    from longtask.memory import (
+        record_memory as legacy_record_memory,
+    )
+
+    assert CanonicalMemory is LegacyMemory
+    assert CanonicalMemoryIndex is LegacyMemoryIndex
+    assert CanonicalMemoryKind is LegacyMemoryKind
+    assert CanonicalMemoryScope is LegacyMemoryScope
+    assert canonical_record_memory is legacy_record_memory
+    assert canonical_make_pattern_memory is legacy_make_pattern_memory
+    assert CanonicalFlow is LegacyFlow
+    assert canonical_walk_source is legacy_walk_source
+    assert canonical_render_mermaid is legacy_render_mermaid
+    assert canonical_render_excalidraw is legacy_render_excalidraw
+
+
 def test_entry_help_survives_non_utf8_console() -> None:
     """--help must not crash on consoles that cannot encode CJK (cp1252).
 

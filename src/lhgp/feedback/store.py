@@ -6,10 +6,16 @@ and read by :mod:`lhgp.learning` to extract improvement signals.
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from typing import Any
 
 from lhgp.feedback.types import AcceptanceDiff, EvaluationVerdict, UserEvaluation
+
+# Anchored form: ``topic: <domain>`` at the start of the comment (after
+# optional whitespace). The leading anchor stops the heuristic from
+# firing on mid-prose mentions like "the topic: choice is yours".
+_TOPIC_PATTERN = re.compile(r"^\s*topic:\s*([a-zA-Z][\w\-]+)")
 
 
 def _maybe_record_memory_from_evaluation(
@@ -56,15 +62,20 @@ def _maybe_record_memory_from_evaluation(
         expires_in_days=365 if kind == MemoryKind.GOTCHA else 180,
         kind=kind,
     )
-    # Scope: project-level by default; if comments mention a specific
-    # domain tag like "topic: persistence" we put it on domain scope.
-    if "topic:" in evaluation.comments:
+    # Scope: project-level by default; if the comment starts with
+    # ``topic: <domain>`` (anchored) we put it on domain scope AND add
+    # the ``topic/<domain>`` tag so ``MemoryIndex.retrieve()`` can find
+    # it. Without the tag, the index filter would drop the memory and
+    # the auto-mine would write to a dead-letter box.
+    topic_match = _TOPIC_PATTERN.match(evaluation.comments)
+    if topic_match is not None:
+        domain = topic_match.group(1).lower()
         memory = memory.__class__(
             scope=MemoryScope.DOMAIN,
             kind=memory.kind,
             title=memory.title,
             body_md=memory.body_md,
-            tags=memory.tags,
+            tags=(*memory.tags, f"topic/{domain}"),
             source_contract_id=memory.source_contract_id,
             source_event_id=memory.source_event_id,
             source_actor=memory.source_actor,
