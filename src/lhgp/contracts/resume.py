@@ -15,11 +15,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from lhgp.persistence.events import EventType
 from lhgp.persistence.events_query import append_event
 
-# TODO: use EventType.ATTEMPT_RESUMED once the events.py consolidation
-# commit lands.  The wire string is the source of truth until then.
-_RESUMED_EVENT_TYPE = "attempt/resumed"
+_RESUMED_EVENT_TYPE = EventType.ATTEMPT_RESUMED
 
 _CONTRACT_DIR = "contracts"
 _CONTEXT_DIR = "context"

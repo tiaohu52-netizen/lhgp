@@ -618,6 +618,7 @@ def tool_submit_plan(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any
     from datetime import UTC, datetime
 
     from lhgp.contracts.plan import Plan, PlanStep
+    from lhgp.persistence.events import EventType
     from lhgp.persistence.events_query import append_event
     from lhgp.persistence.store import get_contract
 
@@ -661,14 +662,11 @@ def tool_submit_plan(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any
     )
     validation = plan.validate(view)
 
-    # TODO: use EventType.PLAN_SUBMITTED / PLAN_APPROVED / PLAN_REJECTED
-    # once the events.py consolidation commit lands.  String literals are
-    # pinned here to avoid a circular import on the old EventType enum.
     conn = ctx["conn"]
     append_event(
         conn,
         contract_id=contract_id,
-        event_type="plan/submitted",  # TODO: use EventType.PLAN_SUBMITTED
+        event_type=EventType.PLAN_SUBMITTED,
         payload={
             "submitted_by": submitted_by,
             "step_count": len(steps),
@@ -681,7 +679,7 @@ def tool_submit_plan(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any
         append_event(
             conn,
             contract_id=contract_id,
-            event_type="plan/approved",  # TODO: use EventType.PLAN_APPROVED
+            event_type=EventType.PLAN_APPROVED,
             payload={"submitted_by": submitted_by, "step_count": len(steps)},
             now=now,
             actor="daemon",
@@ -690,7 +688,7 @@ def tool_submit_plan(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any
         append_event(
             conn,
             contract_id=contract_id,
-            event_type="plan/rejected",  # TODO: use EventType.PLAN_REJECTED
+            event_type=EventType.PLAN_REJECTED,
             payload={
                 "submitted_by": submitted_by,
                 "rejection_reasons": list(validation.rejection_reasons),

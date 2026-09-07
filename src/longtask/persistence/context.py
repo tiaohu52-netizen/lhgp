@@ -614,7 +614,7 @@ def handover_prompt_addendum(root: Path, contract_id: str) -> str:
 # ``src/lhgp/persistence/events.py``; until then we hardcode the literal so the
 # new event is still observable end-to-end and the events table has a stable
 # audit trail.
-HANDOVER_DUE_EVENT_TYPE = "handover/due"  # TODO: use EventType.HANDOVER_DUE
+HANDOVER_DUE_EVENT_TYPE = EventType.HANDOVER_DUE
 
 # Debounce window for the warm-warning branch: once we fire a HANDOVER_DUE
 # we won't re-fire for the same attempt within this many seconds. A re-check
@@ -705,7 +705,7 @@ def check_handover_due(
             conn,
             contract_id=contract_id,
             attempt_id=attempt_id,
-            event_type=HANDOVER_DUE_EVENT_TYPE,  # TODO: use EventType.HANDOVER_DUE
+            event_type=HANDOVER_DUE_EVENT_TYPE,
             payload={
                 "size": size,
                 "max_bytes": policy.max_bytes,

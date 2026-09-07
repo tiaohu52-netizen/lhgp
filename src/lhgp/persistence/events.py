@@ -28,6 +28,7 @@ class EventType(StrEnum):
     ATTEMPT_STALE = "attempt/stale"
     ATTEMPT_ORPHANED = "attempt/orphaned"
     ATTEMPT_WRITE_BACK = "attempt/write-back"
+    ATTEMPT_RESUMED = "attempt/resumed"
     DEADLINE_STATUS_CHANGED = "deadline/status-changed"
     ACCEPTANCE_STATUS_CHANGED = "acceptance/status-changed"
     ACCEPTANCE_CALIBRATED = "acceptance/calibrated"
@@ -48,6 +49,7 @@ class EventType(StrEnum):
     CONTEXT_CAPACITY_REFUSED = "context/capacity-refused"
     CONTEXT_REBUILT = "context/rebuilt"
     HANDOVER_INCOMPLETE = "handover/incomplete"
+    HANDOVER_DUE = "handover/due"
     PROJECTION_REBUILT = "projection/rebuilt"
     PROJECTION_DIRTY = "projection/dirty"
     STORE_TAMPERED = "store/tampered"
@@ -86,6 +88,11 @@ class EventType(StrEnum):
     MEMORY_AUTO_MINED = "memory/auto-mined"
     MEMORY_AUTO_MINE_FAILED = "memory/auto-mine-failed"
     MEMORY_LESSON_MINED = "memory/lesson-mined"
+    # ── Resilient contract execution ──
+    RETRY_ATTEMPTED = "retry/attempted"
+    PLAN_SUBMITTED = "plan/submitted"
+    PLAN_APPROVED = "plan/approved"
+    PLAN_REJECTED = "plan/rejected"
 
 
 __all__ = ["EventType"]

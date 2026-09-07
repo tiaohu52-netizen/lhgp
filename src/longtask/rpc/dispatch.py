@@ -27,10 +27,9 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, TypeVar
 
-# TODO: use EventType.RETRY_ATTEMPTED once the events.py consolidation
-# commit lands. The hardcoded wire string keeps this stream conflict-free
-# against the parallel streams that also touch persistence.
-RETRY_EVENT_TYPE = "retry/attempted"
+from lhgp.persistence.events import EventType
+
+RETRY_EVENT_TYPE = EventType.RETRY_ATTEMPTED
 
 T = TypeVar("T")
 

@@ -1041,6 +1041,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "plan":
         if args.plan_cmd == "submit":
             from lhgp.contracts.plan import Plan, PlanStep
+            from lhgp.persistence.events import EventType
             from lhgp.persistence.events_query import append_event
             from lhgp.persistence.schema import transaction as _tx
             from lhgp.persistence.store import get_contract
@@ -1096,14 +1097,10 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 plan_validation = new_plan.validate(view)
                 with _tx(conn):
-                    # TODO: use EventType.PLAN_SUBMITTED / PLAN_APPROVED /
-                    # PLAN_REJECTED once the events.py consolidation commit
-                    # lands.  String literals are pinned here to avoid a
-                    # circular import on the old EventType enum.
                     append_event(
                         conn,
                         contract_id=args.contract_id,
-                        event_type="plan/submitted",
+                        event_type=EventType.PLAN_SUBMITTED,
                         payload={
                             "submitted_by": args.submitted_by,
                             "step_count": len(steps),
@@ -1116,7 +1113,7 @@ def main(argv: list[str] | None = None) -> int:
                         append_event(
                             conn,
                             contract_id=args.contract_id,
-                            event_type="plan/approved",
+                            event_type=EventType.PLAN_APPROVED,
                             payload={
                                 "submitted_by": args.submitted_by,
                                 "step_count": len(steps),
@@ -1128,7 +1125,7 @@ def main(argv: list[str] | None = None) -> int:
                         append_event(
                             conn,
                             contract_id=args.contract_id,
-                            event_type="plan/rejected",
+                            event_type=EventType.PLAN_REJECTED,
                             payload={
                                 "submitted_by": args.submitted_by,
                                 "rejection_reasons": list(plan_validation.rejection_reasons),
