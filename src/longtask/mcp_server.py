@@ -326,6 +326,11 @@ def tool_resume_attempt(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, 
 
     会落 attempt/resumed 审计事件（EventType.ATTEMPT_RESUMED）。
     返回的 body 字段直接给模型当上下文。
+
+    P1 review fix: the audit event's actor is the actual MCP caller
+    (``agent:mcp``) — not the hard-coded ``"user"`` that the resume
+    helper used to default to.  Forensics distinguishes a real user
+    keystroke from an agent-initiated resume.
     """
     from lhgp.contracts import build_resume_brief
 
@@ -336,6 +341,7 @@ def tool_resume_attempt(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, 
         next_attempt_id=args.get("next_attempt_id"),
         conn=ctx["conn"],
         now=_now(),
+        actor="agent:mcp",
     )
     return {
         "contract_id": brief.contract_id,
@@ -630,11 +636,17 @@ def tool_submit_plan(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any
         raise ValueError("steps must be a non-empty array")
     submitted_by = str(args.get("submitted_by") or "agent:mcp").strip()
 
+    # Capture the current accepted check IDs and revision so the runner
+    # can reject a stale PLAN_APPROVED after acceptance criteria change
+    # or after the contract gets a new revision.
+    from lhgp.contracts.plan import _extract_check_identifiers
+
     view = get_contract(ctx["conn"], contract_id)
     if view is None:
         from longtask.rpc.errors import ErrorCode, RpcError
 
         raise RpcError(code=ErrorCode.UNKNOWN_CONTRACT, message=f"contract {contract_id} not found")
+    accepted_check_ids = list(_extract_check_identifiers(view))
 
     steps: list[PlanStep] = []
     for index, raw in enumerate(steps_raw, start=1):
@@ -680,10 +692,24 @@ def tool_submit_plan(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any
             conn,
             contract_id=contract_id,
             event_type=EventType.PLAN_APPROVED,
-            payload={"submitted_by": submitted_by, "step_count": len(steps)},
+            payload={
+                "submitted_by": submitted_by,
+                "step_count": len(steps),
+                "contract_revision": view.revision,
+                "content_hash": plan.content_hash,
+                "accepted_check_ids": list(accepted_check_ids),
+            },
             now=now,
             actor="daemon",
         )
+        # P1 review fix: a contract that was BLOCKED(NO_EXECUTOR) because
+        # the gate refused the previous dispatch must be re-activated so
+        # the next daemon tick re-runs _dispatch_attempt against the now-
+        # valid approval. Without this, the contract would sit BLOCKED
+        # until the user manually patched it.
+        from longtask.cli.dispatch import wake_blocked_after_plan_approval
+
+        wake_blocked_after_plan_approval(conn, contract_id, now)
     else:
         append_event(
             conn,

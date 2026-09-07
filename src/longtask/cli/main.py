@@ -1110,6 +1110,11 @@ def main(argv: list[str] | None = None) -> int:
                         actor=args.submitted_by,
                     )
                     if plan_validation.approved:
+                        from lhgp.contracts.plan import _extract_check_identifiers
+                        from longtask.cli.dispatch import (
+                            wake_blocked_after_plan_approval,
+                        )
+
                         append_event(
                             conn,
                             contract_id=args.contract_id,
@@ -1117,10 +1122,17 @@ def main(argv: list[str] | None = None) -> int:
                             payload={
                                 "submitted_by": args.submitted_by,
                                 "step_count": len(steps),
+                                "contract_revision": view.revision,
+                                "content_hash": new_plan.content_hash,
+                                "accepted_check_ids": list(_extract_check_identifiers(view)),
                             },
                             now=now,
                             actor="daemon",
                         )
+                        # Same P1 review fix as tool_submit_plan: re-activate
+                        # contracts that were BLOCKED(NO_EXECUTOR) waiting
+                        # for this plan.
+                        wake_blocked_after_plan_approval(conn, args.contract_id, now)
                     else:
                         append_event(
                             conn,
@@ -1581,6 +1593,7 @@ def main(argv: list[str] | None = None) -> int:
                 next_attempt_id=args.next_attempt_id,
                 conn=conn,
                 now=datetime.now(UTC),
+                actor="user:cli",
             )
         finally:
             conn.close()

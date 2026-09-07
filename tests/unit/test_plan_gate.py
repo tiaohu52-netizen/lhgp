@@ -43,6 +43,7 @@ from longtask.cli.dispatch import (
     _dispatch_attempt,
     _has_recent_plan_approval,
     _plan_gate_required,
+    wake_blocked_after_plan_approval,
 )
 from longtask.contracts.contract_view import ContractState
 from longtask.contracts.schema import (
@@ -202,7 +203,7 @@ class TestHasRecentPlanApproval:
     def test_no_events_returns_false(self, tmp_path: Path) -> None:
         conn = _open_store(tmp_path)
         try:
-            assert _has_recent_plan_approval(conn, "lt-no-events", NOW) is False
+            assert _has_recent_plan_approval(conn, "lt-no-events", 1, ["ok"], NOW) is False
         finally:
             conn.close()
 
@@ -213,11 +214,15 @@ class TestHasRecentPlanApproval:
                 conn,
                 contract_id="lt-app",
                 event_type=EventType.PLAN_APPROVED,
-                payload={"step_count": 3},
+                payload={
+                    "step_count": 3,
+                    "contract_revision": 1,
+                    "accepted_check_ids": ["ok"],
+                },
                 now=NOW,
                 actor="daemon",
             )
-            assert _has_recent_plan_approval(conn, "lt-app", NOW) is True
+            assert _has_recent_plan_approval(conn, "lt-app", 1, ["ok"], NOW) is True
         finally:
             conn.close()
 
@@ -228,7 +233,11 @@ class TestHasRecentPlanApproval:
                 conn,
                 contract_id="lt-rej",
                 event_type=EventType.PLAN_APPROVED,
-                payload={},
+                payload={
+                    "step_count": 2,
+                    "contract_revision": 1,
+                    "accepted_check_ids": ["ok"],
+                },
                 now=NOW - timedelta(minutes=5),
                 actor="daemon",
             )
@@ -240,7 +249,7 @@ class TestHasRecentPlanApproval:
                 now=NOW,
                 actor="daemon",
             )
-            assert _has_recent_plan_approval(conn, "lt-rej", NOW) is False
+            assert _has_recent_plan_approval(conn, "lt-rej", 1, ["ok"], NOW) is False
         finally:
             conn.close()
 
@@ -259,11 +268,15 @@ class TestHasRecentPlanApproval:
                 conn,
                 contract_id="lt-fix",
                 event_type=EventType.PLAN_APPROVED,
-                payload={},
+                payload={
+                    "step_count": 2,
+                    "contract_revision": 1,
+                    "accepted_check_ids": ["ok"],
+                },
                 now=NOW,
                 actor="daemon",
             )
-            assert _has_recent_plan_approval(conn, "lt-fix", NOW) is True
+            assert _has_recent_plan_approval(conn, "lt-fix", 1, ["ok"], NOW) is True
         finally:
             conn.close()
 
@@ -275,11 +288,68 @@ class TestHasRecentPlanApproval:
                 conn,
                 contract_id="lt-stale",
                 event_type=EventType.PLAN_APPROVED,
-                payload={},
+                payload={
+                    "contract_revision": 1,
+                    "accepted_check_ids": ["ok"],
+                },
                 now=stale,
                 actor="daemon",
             )
-            assert _has_recent_plan_approval(conn, "lt-stale", NOW) is False
+            assert _has_recent_plan_approval(conn, "lt-stale", 1, ["ok"], NOW) is False
+        finally:
+            conn.close()
+
+    def test_approval_with_mismatched_revision_returns_false(self, tmp_path: Path) -> None:
+        """A PLAN_APPROVED for an older contract revision must not satisfy
+        the gate once the contract has been revised. Pins the P1 fix for
+        "old plan still valid after acceptance criteria change"."""
+
+        conn = _open_store(tmp_path)
+        try:
+            append_event(
+                conn,
+                contract_id="lt-rev-mismatch",
+                event_type=EventType.PLAN_APPROVED,
+                payload={
+                    "contract_revision": 1,
+                    "accepted_check_ids": ["ok"],
+                },
+                now=NOW,
+                actor="daemon",
+            )
+            assert _has_recent_plan_approval(conn, "lt-rev-mismatch", 2, ["ok"], NOW) is False
+        finally:
+            conn.close()
+
+    def test_approval_with_mismatched_check_ids_returns_false(self, tmp_path: Path) -> None:
+        """A PLAN_APPROVED whose accepted_check_ids no longer match the
+        current contract acceptance set must not satisfy the gate.
+        Pins the P1 fix for "old plan still valid after acceptance
+        criteria change"."""
+
+        conn = _open_store(tmp_path)
+        try:
+            append_event(
+                conn,
+                contract_id="lt-check-mismatch",
+                event_type=EventType.PLAN_APPROVED,
+                payload={
+                    "contract_revision": 1,
+                    "accepted_check_ids": ["ok"],
+                },
+                now=NOW,
+                actor="daemon",
+            )
+            assert (
+                _has_recent_plan_approval(
+                    conn,
+                    "lt-check-mismatch",
+                    1,
+                    ["ok", "file-exists:dist/app.js"],
+                    NOW,
+                )
+                is False
+            )
         finally:
             conn.close()
 
@@ -332,6 +402,8 @@ class TestDispatchGateEnforcement:
             conn.close()
 
     def test_gate_on_with_approval_proceeds(self, tmp_path: Path) -> None:
+        from lhgp.contracts.plan import _extract_check_identifiers
+
         conn = _open_store(tmp_path)
         try:
             view = _save_active(conn, "lt-d-ok", gate="plan", root=tmp_path)
@@ -339,7 +411,11 @@ class TestDispatchGateEnforcement:
                 conn,
                 contract_id="lt-d-ok",
                 event_type=EventType.PLAN_APPROVED,
-                payload={"step_count": 3},
+                payload={
+                    "step_count": 3,
+                    "contract_revision": view.revision,
+                    "accepted_check_ids": list(_extract_check_identifiers(view)),
+                },
                 now=NOW - timedelta(seconds=30),
                 actor="daemon",
             )
@@ -394,5 +470,82 @@ class TestDispatchGateEnforcement:
             )
             assert started is None
             assert adapter.prepare_calls == 0
+        finally:
+            conn.close()
+
+
+class TestWakeBlockedAfterPlanApproval:
+    """P1 review fix: a contract stuck in BLOCKED(NO_EXECUTOR) because the
+    plan gate refused dispatch must be re-activated when a plan is later
+    approved. Otherwise the next daemon tick (which only walks ACTIVE
+    contracts) never re-tries the dispatch and the contract sits blocked
+    forever."""
+
+    def test_no_contract_returns_false(self, tmp_path: Path) -> None:
+        conn = _open_store(tmp_path)
+        try:
+            assert wake_blocked_after_plan_approval(conn, "lt-missing", NOW) is False
+        finally:
+            conn.close()
+
+    def test_active_contract_left_alone(self, tmp_path: Path) -> None:
+        conn = _open_store(tmp_path)
+        try:
+            _save_active(conn, "lt-stay-active", gate="plan", root=tmp_path)
+            assert wake_blocked_after_plan_approval(conn, "lt-stay-active", NOW) is False
+        finally:
+            conn.close()
+
+    def test_blocked_no_executor_is_woken(self, tmp_path: Path) -> None:
+        from lhgp.contracts.contract_view import BlockReason
+
+        conn = _open_store(tmp_path)
+        try:
+            view = _save_active(conn, "lt-wake", gate="plan", root=tmp_path)
+            update_contract_state(
+                conn,
+                contract_id=view.contract_id,
+                new_state=ContractState.BLOCKED,
+                now=NOW,
+                blocked_reason=BlockReason.NO_EXECUTOR,
+            )
+
+            woken = wake_blocked_after_plan_approval(conn, "lt-wake", NOW)
+            assert woken is True
+
+            after = get_contract(conn, "lt-wake")
+            assert after is not None
+            assert after.state == ContractState.ACTIVE
+            assert after.blocked_reason is None
+            assert after.next_decision_at is not None
+            assert after.next_decision_at <= NOW
+            types = _event_types(conn, "lt-wake")
+            assert EventType.CONTRACT_UNBLOCKED in types
+        finally:
+            conn.close()
+
+    def test_blocked_for_other_reason_left_alone(self, tmp_path: Path) -> None:
+        """A plan approval must not rescue a contract blocked for reasons
+        that have nothing to do with the plan gate (e.g. budget exhausted
+        or need-user). Pin the safety boundary of the wake-up helper."""
+
+        from lhgp.contracts.contract_view import BlockReason
+
+        conn = _open_store(tmp_path)
+        try:
+            view = _save_active(conn, "lt-bad-block", gate="plan", root=tmp_path)
+            update_contract_state(
+                conn,
+                contract_id=view.contract_id,
+                new_state=ContractState.BLOCKED,
+                now=NOW,
+                blocked_reason=BlockReason.BUDGET_EXHAUSTED,
+            )
+            woken = wake_blocked_after_plan_approval(conn, "lt-bad-block", NOW)
+            assert woken is False
+            after = get_contract(conn, "lt-bad-block")
+            assert after is not None
+            assert after.state == ContractState.BLOCKED
+            assert after.blocked_reason == BlockReason.BUDGET_EXHAUSTED
         finally:
             conn.close()

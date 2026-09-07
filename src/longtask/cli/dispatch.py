@@ -10,6 +10,12 @@ PLAN_APPROVED 事件（且该事件晚于最新一次 PLAN_REJECTED）才放行
 DISPATCHING -> RUNNING。这条强制让任何绕过 ``plan submit`` /
 ``tool_submit_plan`` 的派发路径在 runner 边界被拦住，避免 gate
 被旁路。
+
+P1 fix（2026-09-08 review）：``wake_blocked_after_plan_approval`` 让
+曾经因为 gate 拒接而陷入 BLOCKED(NO_EXECUTOR) 的合同，在计划被接
+受后立刻重新转 ACTIVE 并把 next_decision_at 拉到当前时刻；否则
+下次 tick 仍会因 state=BLOCKED 跳过它（tick 只处理 ACTIVE 状态
+的合同）。
 """
 
 from __future__ import annotations
@@ -19,13 +25,21 @@ from collections.abc import Callable
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from lhgp.contracts.contract_view import ContractState
+from lhgp.contracts.plan import _extract_check_identifiers
 from longtask.adapters.base import ExecutorAdapter, PrepareRefusedError
 from longtask.adapters.registry import RegistryEntry
 from longtask.cli.runner import build_attempt_input
 from longtask.contracts.schema import ContractView
 from longtask.persistence.events import EventType
 from longtask.persistence.projections import rebuild_projection
-from longtask.persistence.store import acquire_lease, append_event, get_lease, reclaim_lease
+from longtask.persistence.store import (
+    acquire_lease,
+    append_event,
+    get_contract,
+    get_lease,
+    reclaim_lease,
+)
 from longtask.promoter.records import _record_attempt
 from longtask.promoter.urgency import UrgencyTier
 
@@ -35,24 +49,108 @@ from longtask.promoter.urgency import UrgencyTier
 PLAN_GATE_LOOKBACK_SECONDS = 24 * 60 * 60
 
 
-def _has_recent_plan_approval(
+def wake_blocked_after_plan_approval(
     conn: sqlite3.Connection,
     contract_id: str,
     now: datetime,
 ) -> bool:
+    """Re-activate a contract that was blocked waiting for a plan.
+
+    Returns True iff a state transition was actually performed. The
+    contract is only woken when:
+
+    - it currently sits in :data:`ContractState.BLOCKED`
+    - and its ``blocked_reason`` is :data:`BlockReason.NO_EXECUTOR`
+      (set by the gate refusal path: "plan gate: no recent
+      PLAN_APPROVED event"). Other blocked reasons (lease-dead,
+      budget-exhausted, need-user, etc.) are out of scope — a plan
+      approval cannot rescue them.
+
+    On wake-up the contract is moved back to ACTIVE (clearing the
+    blocked_reason) and ``next_decision_at`` is pinned to ``now`` so
+    the next tick picks it up immediately instead of waiting for the
+    old scheduling point. A dedicated ``CONTRACT_UNBLOCKED`` event is
+    appended for audit so the transition is visible in the event log
+    alongside the PLAN_APPROVED that triggered it.
+    """
+    from lhgp.contracts.contract_view import BlockReason
+
+    view = get_contract(conn, contract_id)
+    if view is None:
+        return False
+    if view.state != ContractState.BLOCKED:
+        return False
+    if view.blocked_reason != BlockReason.NO_EXECUTOR:
+        return False
+
+    # Direct UPDATE rather than update_contract_state: the wake is a
+    # bookkeeping transition, not a contract-content change. Bumping
+    # the revision here would invalidate the just-recorded
+    # PLAN_APPROVED's contract_revision binding (the gate checks
+    # revision equality between the event and the current contract).
+    # We still record a dedicated event for audit so the transition
+    # is visible in the event log.
+    from lhgp.persistence.schema import transaction
+
+    with transaction(conn):
+        conn.execute(
+            "UPDATE contracts SET state = ?, blocked_reason = NULL, "
+            "next_decision_at = ?, updated_at = ? "
+            "WHERE contract_id = ?",
+            (
+                ContractState.ACTIVE.value,
+                now.isoformat(),
+                now.isoformat(),
+                contract_id,
+            ),
+        )
+        append_event(
+            conn,
+            contract_id=contract_id,
+            event_type=EventType.CONTRACT_UNBLOCKED,
+            payload={
+                "reason": "plan gate cleared by PLAN_APPROVED",
+                "previous_state": view.state.value,
+                "new_state": ContractState.ACTIVE.value,
+            },
+            now=now,
+            actor="daemon",
+            goal_id=view.goal_id,
+            contract_revision=view.revision,
+            role="promoter",
+        )
+    return True
+
+
+def _has_recent_plan_approval(
+    conn: sqlite3.Connection,
+    contract_id: str,
+    contract_revision: int,
+    accepted_check_ids: list[str],
+    now: datetime,
+) -> bool:
     """Return True iff the contract has a PLAN_APPROVED event in the
     last :data:`PLAN_GATE_LOOKBACK_SECONDS` that is not superseded by a
-    later PLAN_REJECTED.
+    later PLAN_REJECTED **and is still binding to the current contract
+    state**.
 
-    The check is pure SQL: we look up the most recent plan verdict
-    (approved or rejected) in the lookback window and require it to be
-    ``plan/approved``. If there is no plan verdict at all in the
-    window, the gate is not satisfied — the writer side (``plan
-    submit`` / ``tool_submit_plan``) must have been called first.
+    The check is pure SQL plus a payload inspection:
+    - The most recent plan verdict (approved or rejected) within the
+      lookback window must be ``PLAN_APPROVED``.
+    - Its ``contract_revision`` must equal the current contract's
+      revision; otherwise a contract revision bump has invalidated
+      the prior approval.
+    - Its ``accepted_check_ids`` must equal the current set; otherwise
+      acceptance criteria were edited after the plan was approved and
+      the plan is no longer guaranteed to cover the new criteria.
+
+    Without these three checks, an old approval would silently let
+    new acceptance criteria through.  See the P1 review of
+    2026-09-08: "old plan still valid after acceptance criteria change".
     """
     cutoff_iso = (now - timedelta(seconds=PLAN_GATE_LOOKBACK_SECONDS)).isoformat()
     row = conn.execute(
-        "SELECT event_type FROM events "
+        "SELECT event_type, payload_json FROM events "
         "WHERE contract_id = ? "
         "AND event_type IN (?, ?) "
         "AND created_at >= ? "
@@ -66,7 +164,33 @@ def _has_recent_plan_approval(
     ).fetchone()
     if row is None:
         return False
-    return str(row[0]) == EventType.PLAN_APPROVED
+    event_type, payload_json = row
+    if str(event_type) != EventType.PLAN_APPROVED:
+        return False
+    payload = _parse_plan_payload(payload_json)
+    if payload.get("contract_revision") != contract_revision:
+        return False
+    stored_checks = payload.get("accepted_check_ids")
+    if not isinstance(stored_checks, list):
+        return False
+    return list(stored_checks) == list(accepted_check_ids)
+
+
+def _parse_plan_payload(payload_json: str | None) -> dict[str, object]:
+    """Parse the JSON payload of a plan verdict event, returning an empty
+    dict on any error.  Older events may have been written before the
+    binding fields were added; the gate must treat them as stale
+    (missing ``contract_revision`` fails the match), not crash.
+    """
+    import json
+
+    if not payload_json:
+        return {}
+    try:
+        decoded = json.loads(payload_json)
+    except (TypeError, ValueError):
+        return {}
+    return decoded if isinstance(decoded, dict) else {}
 
 
 def _plan_gate_required(contract: ContractView) -> bool:
@@ -107,7 +231,13 @@ def _dispatch_attempt(
     # executor is contacted. Without this, the gate could be bypassed
     # by any path that doesn't go through ``plan submit`` /
     # ``tool_submit_plan``.
-    if _plan_gate_required(contract) and not _has_recent_plan_approval(conn, cid, now):
+    if _plan_gate_required(contract) and not _has_recent_plan_approval(
+        conn,
+        cid,
+        contract.revision,
+        list(_extract_check_identifiers(contract)),
+        now,
+    ):
         append_event(
             conn,
             contract_id=cid,
