@@ -1,8 +1,8 @@
 """P0 / P1 fixes from the 4-agent review of compile_context_snapshot.
 
 Each test class is a single ship-block:
-  - TestDeadlineBreachWarning      deadline > now → ⚠️ in header
-  - TestHandoverIncompleteEvent    corrupt handover → HANDOVER_INCOMPLETE
+  - TestDeadlineBreachWarning      deadline > now ⚠️ in header
+  - TestHandoverIncompleteEvent    corrupt handover HANDOVER_INCOMPLETE
   - TestExpiredSnapshotCleanup     CONTEXT_SNAPSHOT_EXPIRED emitter + sweep
   - TestDirectiveCap               pending_directives() hard cap
   - TestMemoryBudgetFormula        small contracts no longer blow up
@@ -28,6 +28,7 @@ from longtask.persistence.context import (
 from longtask.persistence.events import EventType
 from longtask.persistence.store import (
     StoreConfig,
+    append_event,
     connect,
     ensure_schema,
     save_contract,
@@ -243,7 +244,7 @@ class TestDirectiveCap:
         assert view is not None
         active, _ = compile_context_snapshot(data_dir, conn, view, "att-cap", now=datetime.now(UTC))
         text = active.read_text(encoding="utf-8")
-        section = text.split("## ⚡ 用户指令", 1)[1].split("## 合同锚点", 1)[0]
+        section = text.split("## ⚡ 用户指令（必须遵守）", 1)[1].split("## 合同锚点", 1)[0]
         bullet_lines = [ln for ln in section.splitlines() if ln.startswith("- **")]
         assert len(bullet_lines) == _MAX_DIRECTIVES_INJECTED
         assert "more directives truncated" in section
@@ -280,7 +281,7 @@ class TestDirectiveCap:
         text = active.read_text(encoding="utf-8")
         # The long directive's bullet is truncated to _DIRECTIVE_TEXT_CHARS
         # chars of x; the bullet wrapper "- **" + "**" adds 6 chars.
-        section = text.split("## ⚡ 用户指令", 1)[1].split("## 合同锚点", 1)[0]
+        section = text.split("## ⚡ 用户指令（必须遵守）", 1)[1].split("## 合同锚点", 1)[0]
         bullet = next(ln for ln in section.splitlines() if ln.startswith("- **"))
         assert len(bullet) <= _DIRECTIVE_TEXT_CHARS + 6
         # Specifically the text content (after "- **" and before "**")
@@ -374,4 +375,106 @@ class TestDigestLimit:
         assert 1 <= len(lines) <= 3
         # The most recent event id is in the result.
         assert "att-0199" in result
+        conn.close()
+
+
+class TestDirectiveCursorAdvance:
+    """P0 verifier finding: pending_directives() was unbounded.
+    The user could fire 50 directives and each attempt re-injected
+    all 50. The fix is a per-contract cursor stored in
+    ``continuity_json`` that advances to the max consumed event id
+    after each compile_context_snapshot call."""
+
+    def test_cursor_starts_at_zero_for_fresh_contract(self, tmp_path: Path) -> None:
+        from longtask.persistence.context import _read_directive_cursor
+
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        conn = connect(StoreConfig(db_path=data_dir / "state.db"))
+        ensure_schema(conn)
+        deadline = datetime(2099, 1, 1, tzinfo=UTC)
+        draft = _make_draft(deadline_at=deadline)
+        save_contract(conn, draft, contract_id="lt-cursor-0", now=datetime.now(UTC))
+        assert _read_directive_cursor(conn, "lt-cursor-0") == 0
+        conn.close()
+
+    def test_second_attempt_only_sees_new_directives(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from lhgp.persistence import messages as msg_module
+        from lhgp.persistence.events import EventType
+        from longtask.persistence.context import _read_directive_cursor
+
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        conn = connect(StoreConfig(db_path=data_dir / "state.db"))
+        ensure_schema(conn)
+        deadline = datetime(2099, 1, 1, tzinfo=UTC)
+        draft = _make_draft(deadline_at=deadline)
+        save_contract(conn, draft, contract_id="lt-cursor-1", now=datetime.now(UTC))
+
+        base = datetime(2026, 1, 1, tzinfo=UTC)
+        max_event_id = 0
+        for i in range(3):
+            ev_obj = append_event(
+                conn,
+                contract_id="lt-cursor-1",
+                goal_id=None,
+                event_type=EventType.AGENT_MESSAGE,
+                payload={"kind": "directive", "text": f"do thing {i}"},
+                now=base + timedelta(seconds=i),
+                actor="user",
+                role="user",
+            )
+            max_event_id = max(max_event_id, ev_obj.event_id)
+        conn.commit()
+
+        from longtask.persistence.store import get_contract
+
+        view = get_contract(conn, "lt-cursor-1")
+        assert view is not None
+        compile_context_snapshot(data_dir, conn, view, "att-1", now=datetime.now(UTC))
+        assert _read_directive_cursor(conn, "lt-cursor-1") == max_event_id
+
+        new_obj = append_event(
+            conn,
+            contract_id="lt-cursor-1",
+            goal_id=None,
+            event_type=EventType.AGENT_MESSAGE,
+            payload={"kind": "directive", "text": "do thing 3 (NEW)"},
+            now=datetime.now(UTC),
+            actor="user",
+            role="user",
+        )
+        conn.commit()
+
+        seen_after: list[int] = []
+        real_fn = msg_module.pending_directives
+
+        def _spy(*args: object, **kwargs: object) -> list[dict[str, object]]:
+            seen_after.append(int(kwargs.get("after_event_id", 0)))
+            return real_fn(*args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(msg_module, "pending_directives", _spy)
+        compile_context_snapshot(data_dir, conn, view, "att-2", now=datetime.now(UTC))
+        assert seen_after[0] == max_event_id
+        assert _read_directive_cursor(conn, "lt-cursor-1") == new_obj.event_id
+        conn.close()
+
+    def test_cursor_never_rewinds(self, tmp_path: Path) -> None:
+        from longtask.persistence.context import (
+            _bump_directive_cursor,
+            _read_directive_cursor,
+        )
+
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        conn = connect(StoreConfig(db_path=data_dir / "state.db"))
+        ensure_schema(conn)
+        deadline = datetime(2099, 1, 1, tzinfo=UTC)
+        draft = _make_draft(deadline_at=deadline)
+        save_contract(conn, draft, contract_id="lt-rewind", now=datetime.now(UTC))
+        _bump_directive_cursor(conn, "lt-rewind", 100)
+        _bump_directive_cursor(conn, "lt-rewind", 50)
+        assert _read_directive_cursor(conn, "lt-rewind") == 100
         conn.close()

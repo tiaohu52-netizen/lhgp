@@ -51,6 +51,13 @@ HANDOVER_IN_PROMPT_CHARS = 1200
 _MAX_DIRECTIVES_INJECTED = 20
 _DIRECTIVE_TEXT_CHARS = 240
 
+# Sidecar key inside ``contracts.continuity_json`` that holds the
+# "last AGENT_MESSAGE event id this contract's attempts have
+# consumed" cursor. The typed ``Continuity`` dataclass is unaware
+# of this key; we read/write the raw JSON column directly so adding
+# a cursor is a zero-migration change.
+_DIRECTIVE_CURSOR_KEY = "_directive_cursor"
+
 # Active.md 段顺序(优先级):breach warning > 长期记忆 > 其它。
 # breach warning 必须在 contract anchor 之前,任何只读 contract metadata
 # 的工具先看到时间风险信号。
@@ -175,6 +182,64 @@ def _record_handover_incomplete(
         )
 
 
+def _read_directive_cursor(conn: sqlite3.Connection, contract_id: str) -> int:
+    """Last AGENT_MESSAGE event id this contract's attempts have consumed.
+
+    Stored in the ``continuity_json`` column under a reserved key
+    (``_directive_cursor``). Returns 0 if no cursor has been recorded
+    yet (i.e. consume all events from the beginning).
+    """
+    row = conn.execute(
+        "SELECT continuity_json FROM contracts WHERE contract_id = ?",
+        (contract_id,),
+    ).fetchone()
+    if row is None or not row[0]:
+        return 0
+    try:
+        data = json.loads(row[0])
+    except (TypeError, ValueError):
+        return 0
+    if not isinstance(data, dict):
+        return 0
+    val = data.get(_DIRECTIVE_CURSOR_KEY, 0)
+    try:
+        return int(val)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _bump_directive_cursor(conn: sqlite3.Connection, contract_id: str, new_id: int) -> None:
+    """Persist the new cursor. ``new_id`` is always set to the max of
+    the existing value and the new value so a stale write cannot
+    rewind the cursor.
+    """
+    row = conn.execute(
+        "SELECT continuity_json FROM contracts WHERE contract_id = ?",
+        (contract_id,),
+    ).fetchone()
+    if row is None:
+        return
+    raw = row[0] or "{}"
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    try:
+        current = int(data.get(_DIRECTIVE_CURSOR_KEY, 0))
+    except (TypeError, ValueError):
+        current = 0
+    if new_id <= current:
+        return  # don't rewind
+    data[_DIRECTIVE_CURSOR_KEY] = int(new_id)
+    with contextlib.suppress(Exception):
+        conn.execute(
+            "UPDATE contracts SET continuity_json = ? WHERE contract_id = ?",
+            (json.dumps(data, ensure_ascii=False), contract_id),
+        )
+
+
 # Event types that count as "the previous attempt said something about its
 # terminal state" — the only kind the active.md digest should include.
 _ATTEMPT_DIGEST_EVENT_TYPES: tuple[str, ...] = (
@@ -276,9 +341,21 @@ def compile_context_snapshot(
     # 这让用户可以在 agent 工作中途改变方向而不用终止重来。
     from lhgp.persistence.messages import pending_directives
 
+    # P0 verifier finding: without a per-contract cursor, every
+    # attempt sees the entire AGENT_MESSAGE history (the user can
+    # fire 50 directives and each attempt re-injects all 50).
+    # Read the cursor and pass ``after_event_id`` so only NEW
+    # directives since the last attempt land in this snapshot;
+    # the cursor is bumped to the max consumed event_id below.
+    directive_cursor = _read_directive_cursor(conn, contract.contract_id)
+
     # 硬 cap:用户连发 50 条时不能让 snapshot 爆 max_bytes。每条 text
     # 截断到 240 字,够传达意图,防止单条 1MB directive 直接打爆。
-    raw_directives = pending_directives(conn, contract_id=contract.contract_id)
+    raw_directives = pending_directives(
+        conn,
+        contract_id=contract.contract_id,
+        after_event_id=directive_cursor,
+    )
     directives = raw_directives[:_MAX_DIRECTIVES_INJECTED]
     sections: list[str] = [
         f"# Active Context: {contract.contract_id} / {attempt_id}",
@@ -313,6 +390,15 @@ def compile_context_snapshot(
             "如果你无法遵守，在写回中说明原因。",
             "",
         ]
+        # Advance the cursor to the max consumed event id so the
+        # next attempt only sees newer directives. The cursor
+        # never rewinds (see _bump_directive_cursor).
+        max_event_id = max(
+            (int(d["event_id"]) for d in directives if "event_id" in d),
+            default=directive_cursor,
+        )
+        if max_event_id > directive_cursor:
+            _bump_directive_cursor(conn, contract.contract_id, max_event_id)
     sections += [
         "## 合同锚点（冻结区，只读）",
         f"- objective: {draft.objective}",
