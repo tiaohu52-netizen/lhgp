@@ -158,7 +158,7 @@ def flow_command(args: argparse.Namespace) -> int:
         finally:
             conn.close()
 
-        if len(flow.nodes) == 1 and flow.nodes[0].id == f"contract:{args.contract_id}":
+        if flow.source.startswith("contract:"):
             print(
                 f"warning: no source files resolved for contract {args.contract_id}; "
                 "rendering empty flow",

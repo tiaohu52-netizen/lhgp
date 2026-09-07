@@ -1,7 +1,5 @@
 """Walk a contract's referenced source files and merge into one Flow.
 
-
-
 Builds seed strings from a contract's acceptance / execution / context
 
 metadata, resolves them to files under ``src/`` (module path first, then
@@ -12,11 +10,14 @@ a substring grep), runs :func:`walk_source` on each, and merges.
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from pathlib import Path
 
 from lhgp.contracts.contract_view_entity import ContractView
 from lhgp.flow.ast_walker import Flow, FlowEdge, FlowNode, walk_source
+
+logger = logging.getLogger(__name__)
 
 # Cap substring matches so a vague seed can't drag in half the repo.
 
@@ -25,6 +26,10 @@ _MAX_SUBSTRING_MATCHES = 3
 # Reject overlong seeds: a 1 KiB string is not a module path.
 
 _MAX_SEED_LEN = 256
+
+# Mirror the cli.py pre-check so we never read a multi-GB file into
+# memory just to be rejected by walk_source's own 2 MiB cap.
+_MAX_SOURCE_BYTES = 2 * 1024 * 1024
 
 
 def _default_src_root() -> Path:
@@ -133,6 +138,14 @@ def _resolve_by_substring(src_root: Path, seed: str) -> list[Path]:
                 matches.append(path)
 
         if len(matches) >= _MAX_SUBSTRING_MATCHES:
+            logger.warning(
+                "contract_flow: seed %r hit substring cap of %d "
+                "matches; later matches not tried (lexical order, not "
+                "relevance-ranked). Use a more specific seed or a "
+                "module-path entry in acceptance.checks.",
+                seed,
+                _MAX_SUBSTRING_MATCHES,
+            )
             return matches
 
     return matches
@@ -190,8 +203,6 @@ def walk_contract(
 ) -> Flow:
     """Return a Flow for the source files referenced by ``contract_id``.
 
-
-
     Returns an empty contract Flow if the contract is missing or no seed
 
     resolves to a file. Files that fail to read or fail ``walk_source``
@@ -223,6 +234,10 @@ def walk_contract(
             seen_files.add(file_path)
 
             try:
+                # Pre-check size before read_text so a multi-GB file
+                # is refused without ever allocating the buffer.
+                if file_path.stat().st_size > _MAX_SOURCE_BYTES:
+                    continue
                 source_text = file_path.read_text(encoding="utf-8")
 
             except (OSError, UnicodeDecodeError):
@@ -230,7 +245,6 @@ def walk_contract(
 
             try:
                 module_name = _module_path_from_file(root, file_path)
-
             except ValueError:
                 continue
 

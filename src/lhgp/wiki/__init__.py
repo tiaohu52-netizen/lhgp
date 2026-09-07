@@ -236,29 +236,7 @@ def _cmd_graph(pages: dict[str, WikiEntry], args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_publish(args: argparse.Namespace) -> int:
-    """Render Markdown pages for active contracts. Used in tests / embed.
-
-    The CLI dispatch in ``longtask.cli.main`` opens the connection itself
-    (so it can reuse ``--data-dir`` and tear down the connection on exit);
-    this thin wrapper is here for callers that already have a connection
-    and want the same one-line output.
-    """
-    from lhgp.wiki.sync import AUTO_SUBDIR  # local import to avoid cycle in tests
-
-    conn = args._publish_conn
-    wiki_root: Path = args.wiki_root
-    written = _sync.publish_active_contracts(conn, wiki_root)
-    print(f"published {len(written)} page(s) under {wiki_root / AUTO_SUBDIR}")
-    return 0
-
-
 def wiki_command(args: argparse.Namespace) -> int:
-    if args.wiki_cmd == "publish":
-        # Production dispatch is in longtask.cli.main (it owns the DB
-        # connection); this branch only fires for callers that drive
-        # ``wiki_command`` directly with their own connection.
-        return _cmd_publish(args)
     pages = _build_pages()
     if args.wiki_cmd == "list":
         return _cmd_list(pages, args)

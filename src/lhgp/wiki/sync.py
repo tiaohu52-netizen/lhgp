@@ -30,7 +30,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from lhgp.contracts.contract_view import ContractState
-from lhgp.contracts.state_machine import NON_TERMINAL_STATES
+from lhgp.contracts.state_machine import NON_TERMINAL_STATES, TERMINAL_STATES
 from lhgp.memory.types import Memory
 from longtask.contracts.schema import ContractView
 from longtask.persistence.projections import HANDOVER_FILE, parse_handover_markdown
@@ -40,14 +40,6 @@ logger = logging.getLogger(__name__)
 
 AUTO_SUBDIR = "auto"
 TERMINAL_BANNER_DAYS = 7
-TERMINAL_STATES: frozenset[ContractState] = frozenset(
-    {
-        ContractState.COMPLETE,
-        ContractState.SATISFIED,
-        ContractState.CANCELLED,
-        ContractState.ARCHIVED,
-    }
-)
 # Cap the per-page memory section so a contract with thousands of linked
 # memories does not blow the frontmatter parsing budget on the indexer side.
 MAX_MEMORIES_PER_PAGE = 50
