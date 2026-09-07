@@ -313,21 +313,23 @@ def _expire_due_memories(
 ) -> int:
     """Sweep expired long-term memories. Best-effort; failures are logged.
 
-    ``emit_fn`` is called with a one-line summary iff rows were dropped.
-    The corresponding event is also appended to the events table for
-    auditability (verifier P0 fix 2026-09-07).
+    The sweep and the audit event share one connection transaction so a
+    crash between the DELETE and the ``append_event`` cannot leave the
+    audit log out of sync with the actual deletes. ``emit_fn`` is called
+    with a one-line summary iff rows were dropped.
     """
     try:
         from lhgp.memory import expire_due
     except ImportError:
         return 0
     try:
-        n = int(expire_due(conn, now=now))
+        expired_ids = expire_due(conn, now=now)
     except Exception as exc:
         if emit_fn is not None:
             emit_fn(f"memory/expire: sweep failed: {exc}")
         return 0
-    if n <= 0:
+    n = len(expired_ids)
+    if n == 0:
         return 0
     if emit_fn is not None:
         emit_fn(f"memory/expire: dropped {n} due memories")
@@ -340,7 +342,7 @@ def _expire_due_memories(
             contract_id=None,
             goal_id=None,
             event_type=EventType.MEMORY_EXPIRED,
-            payload={"expired_count": n},
+            payload={"expired_count": n, "expired_ids": expired_ids},
             now=now,
             actor="daemon",
             role="system",

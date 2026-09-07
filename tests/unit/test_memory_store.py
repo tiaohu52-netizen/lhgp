@@ -210,14 +210,14 @@ class TestExpireAndBump:
     def test_expire_due_deletes_past(self, conn: sqlite3.Connection) -> None:
         past = datetime.now(UTC) - timedelta(hours=1)
         future = datetime.now(UTC) + timedelta(hours=1)
-        record_memory(
+        past_id = record_memory(
             conn, _make(MemoryScope.PROJECT, MemoryKind.PATTERN, title="e", expires_at=past)
         )
         record_memory(
             conn, _make(MemoryScope.PROJECT, MemoryKind.PATTERN, title="f", expires_at=future)
         )
-        n = expire_due(conn)
-        assert n == 1
+        deleted = expire_due(conn)
+        assert deleted == [past_id]
         assert {m.title for m in list_memories(conn, include_expired=True)} == {"f"}
 
     def test_expire_due_no_op_when_none_due(self, conn: sqlite3.Connection) -> None:
@@ -233,8 +233,7 @@ class TestExpireAndBump:
                 expires_at=datetime.now(UTC) + timedelta(days=1),
             ),
         )
-        n = expire_due(conn)
-        assert n == 0
+        assert expire_due(conn) == []
 
     def test_bump_score_returns_new_score(self, conn: sqlite3.Connection) -> None:
         record_memory(conn, _make(MemoryScope.PROJECT, MemoryKind.PATTERN, title="x", score=0.5))
@@ -260,3 +259,22 @@ class TestMakePatternMemory:
     def test_no_expire(self) -> None:
         m = make_pattern_memory(title="t", body_md="b", expires_in_days=None)
         assert m.expires_at is None
+
+    def test_zero_days_is_immediate_not_none(self) -> None:
+        # ``expires_in_days=0`` must mean "expires now", not "no
+        # expiry" (the truthy ``if expires_in_days`` check used to
+        # collapse 0 to None).
+        m = make_pattern_memory(title="t", body_md="b", expires_in_days=0)
+        assert m.expires_at is not None
+        assert (m.expires_at - m.created_at).total_seconds() < 1  # type: ignore[operator]
+
+    def test_alias_make_memory_is_same(self) -> None:
+        from lhgp.memory.store import make_memory, make_pattern_memory
+
+        # The back-compat alias points at the same function so callers
+        # that still use the old name get the new behavior.
+        assert make_memory is make_pattern_memory
+        a = make_memory(title="t", body_md="b", expires_in_days=0)
+        b = make_pattern_memory(title="t", body_md="b", expires_in_days=0)
+        assert a.expires_at is not None
+        assert b.expires_at is not None

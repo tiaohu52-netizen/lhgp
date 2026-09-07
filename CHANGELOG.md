@@ -70,7 +70,8 @@ memory-and-wiki Phase 1：协议内 wiki 合并发布版。
 ### Quality
 
 - 7/7 quality gate 全过(ruff format / lint / arch / deps / claims / mypy / pytest+coverage)。
-- 测试 +77 (P1 110 + P2 44 + P3 33 = 187 / 890 → 967)。
+- 测试 +95 (P1 113 / P2 50 / P3 43 = 206 新增;最终落到 985 tests,差
+  异是 simplify 与 P0 ship-block 阶段把若干 helper-only test 合并)。
 - 覆盖率 75.35% (target ≥ 70%)。
 - Phase 1 验证报告(子代理)发现 3 个 ship-block 项,已在 0.1.0a8 修复:
   1. CHANGELOG 入口(本条)

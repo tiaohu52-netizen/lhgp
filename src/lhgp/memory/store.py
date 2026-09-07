@@ -160,15 +160,28 @@ def expire_due(
     conn: sqlite3.Connection,
     *,
     now: datetime | None = None,
-) -> int:
-    """Delete memories whose ``expires_at`` is in the past. Returns row count."""
+) -> list[int]:
+    """Delete memories whose ``expires_at`` is in the past.
+
+    Returns the list of deleted memory ids so the caller can record
+    an audit event with the same ids. Reading first then deleting
+    keeps the SQL portable (SQLite does not have ``DELETE ... RETURNING``
+    in older builds).
+    """
     now = now or datetime.now(UTC)
     with conn:
         cur = conn.execute(
-            "DELETE FROM memories WHERE expires_at IS NOT NULL AND expires_at <= ?",
+            "SELECT id FROM memories WHERE expires_at IS NOT NULL AND expires_at <= ?",
             (now.isoformat(),),
         )
-    return int(cur.rowcount or 0)
+        ids = [int(row[0]) for row in cur.fetchall()]
+        if ids:
+            placeholders = ",".join("?" for _ in ids)
+            conn.execute(
+                f"DELETE FROM memories WHERE id IN ({placeholders})",  # noqa: S608 — ids are integers, placeholders count = len(ids)
+                ids,
+            )
+    return ids
 
 
 def bump_score(
@@ -208,6 +221,10 @@ def make_memory(
     The defaults match what a typical "mined pattern" looks like.
     """
     now = datetime.now(UTC)
+    if expires_in_days is None:
+        expires_at: datetime | None = None
+    else:
+        expires_at = now + timedelta(days=int(expires_in_days))
     return Memory(
         scope=scope,
         kind=kind,
@@ -219,7 +236,7 @@ def make_memory(
         source_actor=source_actor,
         score=score,
         created_at=now,
-        expires_at=now + timedelta(days=expires_in_days) if expires_in_days else None,
+        expires_at=expires_at,
     )
 
 
