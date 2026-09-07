@@ -422,6 +422,28 @@ def build_parser() -> argparse.ArgumentParser:
         "list-flow-pages", help="list wiki pages that contain a '## flow' section"
     )
     flow_lfp.add_argument("--wiki-root", type=str, default=None)
+    flow_contract = flow_sub.add_parser(
+        "contract",
+        help="walk the Python source files referenced by a contract",
+    )
+    flow_contract.add_argument("contract_id", type=str, help="contract id to walk")
+    flow_contract.add_argument(
+        "--state-db",
+        type=str,
+        default=None,
+        help="override the state.db path (default: <data-dir>/state.db)",
+    )
+    flow_contract.add_argument(
+        "--src-root",
+        type=str,
+        default=None,
+        help="override the source root (default: <repo>/src)",
+    )
+    flow_contract.add_argument(
+        "--format",
+        choices=("mermaid", "excalidraw"),
+        default="mermaid",
+    )
 
     # insights：接手包 / 看板 / 成本台账
     brief_p = sub.add_parser("brief", help="接手包：一份合同的状态/风险/最近失败/下一步")

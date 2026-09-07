@@ -1,14 +1,17 @@
 """P6+1 / memory-and-wiki Phase 3: ``lhgp flow`` CLI dispatch.
 
-Three subcommands:
+Subcommands:
 
-  - ``ast <file>``     walk a Python file and emit Mermaid / Excalidraw
-  - ``wiki <page>``    extract the ``## flow`` section of a wiki page
-  - ``list-flow-pages`` list all wiki pages that contain a flow section
+  - ``ast <file>``          walk a Python file and emit Mermaid / Excalidraw
+  - ``wiki <page>``         extract the ``## flow`` section of a wiki page
+  - ``list-flow-pages``     list all wiki pages that contain a flow section
+  - ``contract <id>``       walk the source files referenced by a contract
 
 The wiki subcommand reads from the project's ``docs/wiki/`` tree by
 default; pass ``--wiki-root`` to override (useful for testing or for
-mounting a remote wiki).
+mounting a remote wiki). The contract subcommand reads the SQLite
+state database; pass ``--state-db`` to override the default
+``<data-dir>/state.db`` location.
 """
 
 from __future__ import annotations
@@ -19,6 +22,7 @@ import sys
 from pathlib import Path
 
 from lhgp.flow.ast_walker import _MAX_SOURCE_BYTES, walk_source
+from lhgp.flow.contract_flow import walk_contract
 from lhgp.flow.render_excalidraw import render_excalidraw
 from lhgp.flow.render_mermaid import render_mermaid
 from lhgp.flow.wiki_parser import (
@@ -36,6 +40,27 @@ def _default_wiki_root() -> Path:
         if candidate.exists():
             return candidate
     return here.parents[3] / "docs" / "wiki"
+
+
+def _default_data_root() -> Path:
+    # src/lhgp/flow/cli.py -> src/lhgp/flow -> src/lhgp -> src -> REPO
+    here = Path(__file__).resolve()
+    for parent in here.parents:
+        if (parent / "pyproject.toml").is_file():
+            return parent
+    return here.parents[3]
+
+
+def _resolve_state_db(state_db: str | None, data_dir: str | None) -> Path:
+    """Pick the SQLite state.db path from ``--state-db`` / ``--data-dir`` flags."""
+    # Imported lazily so the lighter subcommands don't pay for the path
+    # resolution import (which itself reads ``Path.home()``).
+    from lhgp.persistence.paths import default_data_root
+
+    if state_db is not None:
+        return Path(state_db).expanduser().resolve()
+    root = Path(data_dir).expanduser().resolve() if data_dir else default_data_root()
+    return root / "state.db"
 
 
 def flow_command(args: argparse.Namespace) -> int:
@@ -110,6 +135,41 @@ def flow_command(args: argparse.Namespace) -> int:
         )
         for rel in list_flow_pages(wiki_root):
             print(rel)
+        return 0
+
+    if args.flow_cmd == "contract":
+        # Lazy import: lighter subcommands must not pay for SQLite open.
+        from longtask.persistence.schema import connect as _store_connect
+        from longtask.persistence.types import StoreConfig
+
+        db_path = _resolve_state_db(args.state_db, args.data_dir)
+        if not db_path.is_file():
+            print(f"error: state db not found: {db_path}", file=sys.stderr)
+            return 2
+        try:
+            conn = _store_connect(StoreConfig(db_path=db_path))
+        except Exception as exc:
+            print(f"error: cannot open state db: {exc}", file=sys.stderr)
+            return 2
+        try:
+            flow = walk_contract(
+                conn, args.contract_id, src_root=Path(args.src_root) if args.src_root else None
+            )
+        finally:
+            conn.close()
+
+        if len(flow.nodes) == 1 and flow.nodes[0].id == f"contract:{args.contract_id}":
+            print(
+                f"warning: no source files resolved for contract {args.contract_id}; "
+                "rendering empty flow",
+                file=sys.stderr,
+            )
+
+        if args.format == "excalidraw":
+            json.dump(render_excalidraw(flow), sys.stdout, ensure_ascii=False, indent=2)
+            print()
+        else:
+            sys.stdout.write(render_mermaid(flow))
         return 0
 
     print(f"flow: unknown subcommand {args.flow_cmd}", file=sys.stderr)
