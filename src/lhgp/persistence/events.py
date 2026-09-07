@@ -83,6 +83,8 @@ class EventType(StrEnum):
     PORTFOLIO_SUMMARY_VIEWED = "portfolio/summary-viewed"
     TEMPLATE_EVOLVED = "template/evolved"
     MEMORY_EXPIRED = "memory/expired"
+    MEMORY_AUTO_MINED = "memory/auto-mined"
+    MEMORY_AUTO_MINE_FAILED = "memory/auto-mine-failed"
 
 
 __all__ = ["EventType"]

@@ -117,6 +117,10 @@ def _maybe_record_memory_from_evaluation(
     Mining conditions: rating >= 4 with non-empty comments, OR a REJECT
     verdict with non-empty comments. Failures here are swallowed (the
     rating is the source of truth, the memory is a side effect).
+
+    On success or failure the events table gets one row so an
+    investigator can answer "why did this evaluation produce / not
+    produce a memory" without grepping logs.
     """
     from lhgp.memory import record_memory
 
@@ -126,9 +130,71 @@ def _maybe_record_memory_from_evaluation(
     domain = _extract_topic_domain(evaluation.comments)
     memory = _build_memory(evaluation, evaluation_id, rating_int, domain)
     try:
-        record_memory(conn, memory)
+        new_id = record_memory(conn, memory)
     except Exception as exc:
         _LOG.warning("auto-mine memory from evaluation failed: %s", exc)
+        _emit_auto_mine_audit(
+            conn,
+            evaluation,
+            evaluation_id,
+            success=False,
+            memory_id=None,
+            error=str(exc),
+        )
+        return
+    _emit_auto_mine_audit(
+        conn,
+        evaluation,
+        evaluation_id,
+        success=True,
+        memory_id=new_id,
+        error=None,
+    )
+
+
+def _emit_auto_mine_audit(
+    conn: sqlite3.Connection,
+    evaluation: UserEvaluation,
+    evaluation_id: int,
+    *,
+    success: bool,
+    memory_id: int | None,
+    error: str | None,
+) -> None:
+    """Append a MEMORY_AUTO_MINED(_FAILED) event.
+
+    Best-effort: if the events table is unavailable the audit loss
+    is acceptable (the source-of-truth evaluation row already exists).
+    """
+    from datetime import UTC, datetime
+
+    try:
+        from longtask.persistence.events import EventType
+        from longtask.persistence.store import append_event
+
+        event_type = EventType.MEMORY_AUTO_MINED if success else EventType.MEMORY_AUTO_MINE_FAILED
+        payload: dict[str, object] = {
+            "evaluation_id": evaluation_id,
+            "contract_id": evaluation.contract_id,
+            "verdict": evaluation.verdict.value,
+            "rating": str(evaluation.rating),
+        }
+        if success:
+            payload["memory_id"] = memory_id
+        else:
+            payload["error"] = error
+        append_event(
+            conn,
+            contract_id=evaluation.contract_id,
+            goal_id=None,
+            event_type=event_type,
+            payload=payload,
+            now=datetime.now(UTC),
+            actor=f"auto-mine:{evaluation.evaluator}",
+            role="system",
+        )
+    except Exception as exc:
+        _LOG.warning("auto-mine audit event failed: %s", exc)
 
 
 # ---------------------------------------------------------------------------

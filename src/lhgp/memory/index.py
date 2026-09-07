@@ -9,10 +9,17 @@ until it fits — fail-closed means: never overflow, even if the result is
 "no memories retrieved".
 
 Selection rules (in priority order):
-  1. scope=global memories always included (system-level rules)
+  1. scope=global memories are merged in (system-level rules)
   2. scope=domain memories whose domain matches the contract's
      ``draft.context.domain`` (or a default if not set)
   3. scope=project memories — top-N by score, descending
+
+All three scopes compete for the same ``top_n`` slots; globals are
+not separately preserved when many high-score project memories
+exist. This is a deliberate trade-off (one budget, not three): a
+contract with a high project memory count can crowd out the global
+rules. Callers that need unconditional globals should read them
+separately and concatenate.
 
 Within each scope, the result is sorted by (score DESC, created_at DESC).
 The top-K is taken so the rendered text fits in the budget.
@@ -154,10 +161,11 @@ class MemoryIndex:
     ) -> list[RetrievedMemory]:
         """Return the top-N memories that fit the budget.
 
-        Always includes ``global`` scope. For ``domain`` scope, matches
-        the contract's ``context.domain``. For ``project``, the top-N by
-        score. If the rendered text would overflow the budget, drops
-        lowest-score items until it fits. Returns [] on empty/no-match.
+        For ``domain`` scope, matches the contract's ``context.domain``.
+        For ``project``, the top-N by score. Globals compete in the same
+        top-N budget (not separately preserved). If the rendered text
+        would overflow the budget, drops lowest-score items until it
+        fits. Returns [] on empty/no-match.
         """
         candidates = self._gather_candidates(contract_context)
         top = self._take_top_n(candidates)

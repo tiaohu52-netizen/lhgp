@@ -293,3 +293,85 @@ class TestTopicScopeFlips:
         assert len(mems) == 1
         assert mems[0].scope is MemoryScope.PROJECT
         assert not any(t.startswith("topic/") for t in mems[0].tags)
+
+
+class TestAutoMineAudit:
+    """P2 verifier P1: auto-mine success / failure both leave an event
+    so an investigator can audit why a memory did or did not appear.
+
+    Symmetric with ``_expire_due_memories``'s MEMORY_EXPIRED event.
+    """
+
+    def test_successful_mine_emits_memory_auto_mined_event(self, tmp_path: Path) -> None:
+        from lhgp.persistence.events import EventType
+
+        conn = _setup(tmp_path)
+        try:
+            _eval(
+                conn,
+                EvaluationRating.EXCELLENT,
+                EvaluationVerdict.ACCEPT,
+                "this went well",
+            )
+        finally:
+            conn.close()
+        conn = connect(StoreConfig(db_path=tmp_path / "state.db"))
+        try:
+            evts = conn.execute(
+                "SELECT event_type, payload_json FROM events WHERE event_type LIKE 'memory/%'"
+            ).fetchall()
+        finally:
+            conn.close()
+        mined = [e for e in evts if e[0] == EventType.MEMORY_AUTO_MINED.value]
+        assert len(mined) == 1
+        import json as _json
+
+        payload = _json.loads(mined[0][1])
+        assert payload["contract_id"] == CID
+        assert payload["verdict"] == EvaluationVerdict.ACCEPT.value
+        assert payload["rating"] == str(EvaluationRating.EXCELLENT)
+        assert "memory_id" in payload
+
+    def test_failed_mine_emits_memory_auto_mine_failed_event(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from lhgp.persistence.events import EventType
+
+        # Force record_memory to raise so the auto-mine path fails.
+        # The auto-mine hook imports ``record_memory`` from
+        # ``lhgp.memory`` inside the function, so we patch the
+        # *exported* symbol rather than the feedback module's.
+        def boom(*_args: object, **_kwargs: object) -> int:
+            raise RuntimeError("simulated store failure")
+
+        import lhgp.memory as lhgp_memory
+
+        monkeypatch.setattr(lhgp_memory, "record_memory", boom)
+        conn = _setup(tmp_path)
+        try:
+            _eval(
+                conn,
+                EvaluationRating.GOOD,
+                EvaluationVerdict.ACCEPT,
+                "this would normally mine",
+            )
+        finally:
+            conn.close()
+        conn = connect(StoreConfig(db_path=tmp_path / "state.db"))
+        try:
+            evts = conn.execute(
+                "SELECT event_type, payload_json FROM events WHERE event_type LIKE 'memory/%'"
+            ).fetchall()
+            # The evaluation itself was still recorded even though
+            # the auto-mine failed (best-effort guarantee).
+            eval_row = conn.execute("SELECT 1 FROM user_evaluations LIMIT 1").fetchone()
+        finally:
+            conn.close()
+        failed = [e for e in evts if e[0] == EventType.MEMORY_AUTO_MINE_FAILED.value]
+        assert eval_row is not None
+        assert len(failed) == 1
+        import json as _json
+
+        payload = _json.loads(failed[0][1])
+        assert payload["contract_id"] == CID
+        assert "simulated store failure" in payload["error"]
