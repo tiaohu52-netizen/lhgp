@@ -42,6 +42,28 @@ memory-and-wiki Phase 1：协议内 wiki 合并发布版。
   扫目录(隐藏目录 / 编码错误跳过);`lhgp flow ast / wiki / list-flow-pages` CLI。
 - **新增 wiki 页**:`playbook/flowgen.md` —— 三个用法的取舍 + CLI 速查 +
   wiki `## flow` 约定 + 含一段手写流程图。
+- **独立 verifier 子代理复核后的 P0 ship-block 修复**(commit `ccbc781`):
+  - `expire_due` 实际无调度,过期记忆永远累积。`daemon_loop._expire_due_memories()`
+    每 tick 跑在 `_enforce_deadlines` 之后,best-effort,n>0 时
+    `append_event(MEMORY_EXPIRED)` 落审计账本。`EventType.MEMORY_EXPIRED`
+    加进枚举。
+  - auto-mine 启发式从 `"topic:" in comments` 翻 scope 但没加
+    `topic/<domain>` 标签,`MemoryIndex.retrieve` 永远找不到,DOMAIN
+    记忆是死信。改 anchored 正则 `r"^\s*topic:\s*([a-zA-Z][\w\-]+)"`,
+    翻转 scope 同时把 `topic/<domain>` 写进 tags。
+- **verifier 5 条 non-blocking 改进**(commit `29efbb2`):
+  - `walk_source` 现在处理装饰器(`FunctionDef`/`AsyncFunctionDef`/
+    `ClassDef` 的 `decorator_list` 都进 call visit)与嵌套类
+    (`ClassDef` 递归,qualified name 索引,`self.Outer` 解析到嵌套类)。
+  - Mermaid `_safe_id` 强制 ASCII(Mermaid 词法 `[A-Za-z_]`,Python
+    `str.isalnum()` 默认接受非 ASCII Unicode,会卡老版渲染器)。
+  - Excalidraw 箭头 `width`/`height` 改用 bounding box(`abs(delta)`),
+    `points` 数组带符号,back-edge 不再产出 `width=0 / height<0`。
+  - `skills/flowgen/SKILL.md` 加 FAQ 行:第二次写 `## flow` 没生效
+    是因为 parser 只取第一段,删旧的再写。
+  - `tests/unit/test_lhgp_namespace.py` 补 `lhgp.memory` / `lhgp.flow`
+    ↔ `longtask.memory` / `longtask.flow` 的 facade identity 测试
+    (P6 模式对称,任何 facade 改名都抓得到)。
 - **新增 skill**:`skills/flowgen/`(SKILL.md + MANIFEST.json 0.1.0a1)——
   教模型用 `lhgp flow` 三种入口。
 
