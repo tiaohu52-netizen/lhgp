@@ -98,13 +98,18 @@ def _make_text(node: FlowNode, idx: int) -> dict[str, object]:
 def _make_arrow(src_idx: int, dst_idx: int, eidx: int) -> dict[str, object]:
     sx, sy = _node_position(src_idx)
     dx, dy = _node_position(dst_idx)
+    # ``points`` carries the signed polyline; ``width``/``height`` are
+    # the bounding box (always non-negative) so JSON consumers reading
+    # the bbox don't see 0/-N for back-edges.
+    dx_delta = dx - (sx + W)
+    dy_delta = dy + H / 2 - (sy + H / 2)
     return {
         "id": f"arrow_{eidx}",
         "type": "arrow",
         "x": sx + W,
         "y": sy + H / 2,
-        "width": max(0.0, dx - (sx + W)),
-        "height": dy + H / 2 - (sy + H / 2),
+        "width": abs(dx_delta),
+        "height": abs(dy_delta),
         "angle": 0,
         "strokeColor": "#1e1e1e",
         "fillStyle": "solid",
@@ -117,7 +122,7 @@ def _make_arrow(src_idx: int, dst_idx: int, eidx: int) -> dict[str, object]:
         "link": None,
         "locked": False,
         "updated": 1,
-        "points": [[0, 0], [max(0.0, dx - (sx + W)), dy + H / 2 - (sy + H / 2)]],
+        "points": [[0, 0], [dx_delta, dy_delta]],
         "lastCommittedPoint": None,
         "startBinding": {"elementId": f"node_{src_idx}", "focus": 0, "gap": 1},
         "endBinding": {"elementId": f"node_{dst_idx}", "focus": 0, "gap": 1},

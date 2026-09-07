@@ -102,3 +102,4 @@ flowchart TD
 | 节点全部 `external` | walker 没在同文件找到 `def`/`class`；检查 `ast.parse` 是否能解析（语法错误） |
 | `no '## flow' section` | 页面里没有这个段，或 fence 不是 `mermaid` |
 | Excalidraw 渲染乱 | Excalidraw 视图需要把 `elements` 整个粘到 `.excalidraw` 文件或导入对话框 |
+| `## flow` 改动没生效 | wiki parser 只取**第一个** `## flow` 段;如果页面里有旧段,删掉再写新的 |

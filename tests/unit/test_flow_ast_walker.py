@@ -117,3 +117,61 @@ class TestModuleScope:
         flow = walk_source(src, "demo")
         edges = {(e.src, e.dst) for e in flow.edges}
         assert ("demo", "demo.main") in edges
+
+
+class TestDecorators:
+    def test_bare_decorator_name_is_external_edge(self) -> None:
+        src = "@deco\ndef hello():\n    pass\n"
+        flow = walk_source(src, "demo")
+        edges = {(e.src, e.dst) for e in flow.edges}
+        assert ("demo.hello", "ext:deco") in edges
+
+    def test_call_decorator_resolves(self) -> None:
+        src = "@deco(1, x=2)\ndef hello():\n    pass\n"
+        flow = walk_source(src, "demo")
+        edges = {(e.src, e.dst) for e in flow.edges}
+        assert ("demo.hello", "ext:deco") in edges
+
+    def test_class_decorator_creates_edge(self) -> None:
+        src = "@register\nclass Foo:\n    pass\n"
+        flow = walk_source(src, "demo")
+        # The decorator edge is attributed to the class node since
+        # classes have their own ``current_id`` in the walker.
+        assert any(e.dst == "ext:register" for e in flow.edges)
+
+
+class TestNestedClasses:
+    def test_nested_class_is_registered(self) -> None:
+        src = "class Outer:\n    class Inner:\n        def f(self): pass\n"
+        flow = walk_source(src, "demo")
+        ids = {n.id for n in flow.nodes}
+        assert "demo.Outer" in ids
+        assert "demo.Outer.Inner" in ids
+        assert "demo.Outer.Inner.f" in ids
+
+    def test_nested_class_self_call_resolves(self) -> None:
+        src = (
+            "class Outer:\n"
+            "    class Inner:\n"
+            "        def f(self):\n"
+            "            return self.g()\n"
+            "        def g(self):\n"
+            "            return 1\n"
+        )
+        flow = walk_source(src, "demo")
+        edges = {(e.src, e.dst) for e in flow.edges}
+        assert ("demo.Outer.Inner.f", "demo.Outer.Inner.g") in edges
+
+    def test_method_self_outer_resolves_to_nested_class(self) -> None:
+        # ``self.Inner()`` from Outer.method → resolves to Inner class
+        # (the dotted path through self counts as a class instantiation).
+        src = (
+            "class Outer:\n"
+            "    class Inner:\n"
+            "        pass\n"
+            "    def make(self):\n"
+            "        return self.Inner()\n"
+        )
+        flow = walk_source(src, "demo")
+        edges = {(e.src, e.dst) for e in flow.edges}
+        assert ("demo.Outer.make", "demo.Outer.Inner") in edges

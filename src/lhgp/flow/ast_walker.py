@@ -91,34 +91,62 @@ def walk_source(source: str, module_name: str) -> Flow:
     # Pre-compute the set of locally-defined top-level functions and
     # classes. Methods live under ``class.method`` and are not in this
     # set; they are still resolvable via class-scope context below.
+    # ``qualified`` keys are dotted, so nested classes register as
+    # ``Outer.Inner`` and stay resolvable.
     top_level_fns: dict[str, str] = {}  # name -> node id
-    classes: dict[str, str] = {}  # name -> class node id
-    methods: dict[str, set[str]] = {}  # class name -> set of method names
+    classes: dict[str, str] = {}  # qualified name -> node id
+    methods: dict[str, set[str]] = {}  # qualified class name -> set of method names
 
-    for stmt in tree.body:
+    def _register(stmt: ast.stmt, qualified: str) -> None:
+        """Register one definition (function or class) and recurse for nested classes."""
         if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
             top_level_fns[stmt.name] = f"{module_name}.{stmt.name}"
             add(FlowNode(id=top_level_fns[stmt.name], label=stmt.name, kind="function"))
         elif isinstance(stmt, ast.ClassDef):
-            class_id = f"{module_name}.{stmt.name}"
-            classes[stmt.name] = class_id
-            add(FlowNode(id=class_id, label=stmt.name, kind="class"))
+            class_id = f"{module_name}.{qualified}"
+            classes[qualified] = class_id
+            add(FlowNode(id=class_id, label=qualified, kind="class"))
             method_names: set[str] = set()
             for child in stmt.body:
                 if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     method_id = f"{class_id}.{child.name}"
                     method_names.add(child.name)
-                    add(FlowNode(id=method_id, label=f"{stmt.name}.{child.name}", kind="method"))
-            methods[stmt.name] = method_names
+                    add(
+                        FlowNode(
+                            id=method_id,
+                            label=f"{qualified}.{child.name}",
+                            kind="method",
+                        )
+                    )
+                elif isinstance(child, ast.ClassDef):
+                    # Nested class — recurse with the dotted name.
+                    _register(child, f"{qualified}.{child.name}")
+            methods[qualified] = method_names
+
+    for stmt in tree.body:
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            _register(stmt, stmt.name)
+        # Non-def top-level statements (expressions, assignments) are
+        # walked as calls in the second pass below.
 
     def _resolve(target: str, current_class: str | None) -> str | None:
         """Map a call target string to a node id, or None if external-ish."""
         head = target.split(".", 1)[0]
         if head in ("self", "cls") and current_class is not None and "." in target:
             callee = target.split(".", 1)[1]
+            # ``self.x`` may refer to a method on the same class OR a
+            # nested class accessed via self.Outer.x. Try the immediate
+            # class first, then the dotted-prefix candidates.
             method_id = f"{module_name}.{current_class}.{callee}"
             if method_id in nodes:
                 return method_id
+            # Nested class methods: ``self.Outer.Inner.foo`` etc. The
+            # remainder past the first dot may itself contain a class.
+            tail = callee.split(".", 1)
+            if len(tail) == 2 and tail[0] in classes:
+                method_id = f"{classes[tail[0]]}.{tail[1]}"
+                if method_id in nodes:
+                    return method_id
             return None
         if "." not in target:
             if head in top_level_fns:
@@ -129,7 +157,8 @@ def walk_source(source: str, module_name: str) -> Flow:
                 # ``__init__`` call is implicit and would only add noise.
                 return classes[head]
             return None
-        # Dotted: ``Class.method`` if it's our class; otherwise external.
+        # Dotted: ``Class.method`` or ``Outer.Inner.method``. Try the
+        # full path; fall back to the head as a class.
         if head in classes:
             method_id = f"{classes[head]}.{target.split('.', 1)[1]}"
             if method_id in nodes:
@@ -171,7 +200,10 @@ def walk_source(source: str, module_name: str) -> Flow:
     def _index(node: ast.AST, current: str | None) -> None:
         for child in ast.iter_child_nodes(node):
             if isinstance(child, ast.ClassDef):
-                _class_context[id(child)] = current or ""  # outer
+                # Use the immediate parent class as the enclosing scope
+                # context. Nested classes get their own resolution via
+                # the call resolver's dotted path fallback.
+                _class_context[id(child)] = current or ""
                 for grandchild in child.body:
                     _class_context[id(grandchild)] = child.name
                     _index(grandchild, child.name)
@@ -181,17 +213,73 @@ def walk_source(source: str, module_name: str) -> Flow:
 
     _index(tree, None)
 
+    def _walk_function(
+        fn: ast.FunctionDef | ast.AsyncFunctionDef,
+        current_id: str,
+        current_class: str | None,
+    ) -> None:
+        """Visit a function's decorators and body, attributing calls to ``current_id``."""
+        visitor = _CallVisitor(current_id=current_id, current_class=current_class)
+        # Decorators may be Name (bare reference) or Call. Visit the
+        # list explicitly so a `@deco(...)` line produces an edge to
+        # ``deco``. Bare names are recorded as external too.
+        for deco in fn.decorator_list:
+            if isinstance(deco, ast.Call):
+                visitor.visit(deco)
+            else:
+                target = _qualified(deco)
+                if target is not None:
+                    local = _resolve(target, current_class)
+                    if local is not None:
+                        edges.append(FlowEdge(src=current_id, dst=local))
+                    else:
+                        ext_id = f"ext:{target}"
+                        add(FlowNode(id=ext_id, label=target, kind="external"))
+                        edges.append(FlowEdge(src=current_id, dst=ext_id))
+        for stmt in fn.body:
+            visitor.visit(stmt)
+
+    def _walk_class_body(
+        cls: ast.ClassDef,
+        qualified: str,
+    ) -> None:
+        """Visit each method's body, recursing into nested classes.
+
+        Class decorators are attributed to the class's qualified id —
+        a class def is a "statement that produces a value", so the
+        decorator is the call site.
+        """
+        for deco in cls.decorator_list:
+            if isinstance(deco, ast.Call):
+                _CallVisitor(
+                    current_id=f"{module_name}.{qualified}",
+                    current_class=qualified,
+                ).visit(deco)
+            else:
+                target = _qualified(deco)
+                if target is not None:
+                    local = _resolve(target, qualified)
+                    if local is not None:
+                        edges.append(FlowEdge(src=f"{module_name}.{qualified}", dst=local))
+                    else:
+                        ext_id = f"ext:{target}"
+                        add(FlowNode(id=ext_id, label=target, kind="external"))
+                        edges.append(FlowEdge(src=f"{module_name}.{qualified}", dst=ext_id))
+        for child in cls.body:
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                mid = f"{module_name}.{qualified}.{child.name}"
+                _walk_function(child, current_id=mid, current_class=qualified)
+            elif isinstance(child, ast.ClassDef):
+                _walk_class_body(child, f"{qualified}.{child.name}")
+
     # Walk top-level statements. The module node is the "current_id" for
     # bare expressions; function/method bodies get their own node.
     for stmt in tree.body:
         if isinstance(stmt, ast.ClassDef):
-            for child in stmt.body:
-                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    mid = f"{module_name}.{stmt.name}.{child.name}"
-                    _CallVisitor(current_id=mid, current_class=stmt.name).visit(child)
+            _walk_class_body(stmt, stmt.name)
         elif isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
             fid = f"{module_name}.{stmt.name}"
-            _CallVisitor(current_id=fid, current_class=None).visit(stmt)
+            _walk_function(stmt, current_id=fid, current_class=None)
         else:
             # Module-level statements (calls, expressions). Attribute them
             # to the module node.

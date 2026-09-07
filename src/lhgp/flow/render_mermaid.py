@@ -17,7 +17,11 @@ from lhgp.flow.ast_walker import Flow, FlowNode
 
 
 def _safe_id(raw: str, taken: dict[str, int]) -> str:
-    base = "".join(c if c.isalnum() or c == "_" else "_" for c in raw)
+    # Mermaid node IDs are restricted to ``[A-Za-z][A-Za-z0-9_]*`` by the
+    # grammar; some renderers (older mermaid-cli, custom preprocessors)
+    # reject non-ASCII. Force ASCII so the diagram renders portably;
+    # the original label is preserved on the node line for legibility.
+    base = "".join(c if (c.isascii() and c.isalnum()) or c == "_" else "_" for c in raw)
     if not base:
         base = "node"
     if base[0].isdigit():
