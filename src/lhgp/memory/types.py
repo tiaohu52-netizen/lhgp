@@ -40,7 +40,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
@@ -103,6 +103,12 @@ class Memory:
         # Cursor may return sqlite3.Row OR plain tuple depending on call
         # shape. sqlite3.Row supports [] by column name; plain tuple
         # does not. Use the same Row-or-tuple pattern P6 uses elsewhere.
+        #
+        # The column indices below mirror the ``SELECT *`` order of
+        # ``_migrate_v3_to_v4``:
+        #   0:id 1:scope 2:kind 3:title 4:body_md 5:tags_json
+        #   6:source_contract_id 7:source_event_id 8:source_actor
+        #   9:score 10:created_at 11:expires_at 12:schema_version
         def _col(name: str, idx: int) -> Any:
             try:
                 return row[name]
@@ -112,7 +118,7 @@ class Memory:
                 except (KeyError, TypeError, IndexError):
                     return None
 
-        tags_raw = _col("tags_json", -1) or "[]"
+        tags_raw = _col("tags_json", 5) or "[]"
         try:
             tags_list = json.loads(tags_raw) if tags_raw else []
         except (TypeError, ValueError, json.JSONDecodeError):
@@ -122,9 +128,14 @@ class Memory:
             if not s:
                 return None
             try:
-                return datetime.fromisoformat(s)
+                dt = datetime.fromisoformat(s)
             except (TypeError, ValueError):
                 return None
+            # SQLite round-trips datetime as ISO strings without tz suffix;
+            # treat naive timestamps as UTC to keep comparisons sound.
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=UTC)
+            return dt
 
         return cls(
             id=int(_col("id", 0)) if _col("id", 0) is not None else None,

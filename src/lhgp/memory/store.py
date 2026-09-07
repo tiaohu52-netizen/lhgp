@@ -198,16 +198,19 @@ def make_pattern_memory(
     source_actor: str | None = "auto",
     score: float = 0.5,
     expires_in_days: int | None = 180,
+    kind: MemoryKind = MemoryKind.PATTERN,
+    scope: MemoryScope = MemoryScope.PROJECT,
 ) -> Memory:
-    """Build a pattern-flavored Memory with sensible defaults.
+    """Build a Memory with sensible defaults.
 
-    Pattern memories are the common case (mined from the workspace); this
-    helper makes the call site one line.
+    The name is historical — ``kind`` and ``scope`` are now parameters so
+    the auto-mine hook can emit GOTCHA or DOMAIN-flavored records without
+    rebuilding the dataclass.
     """
     now = datetime.now(UTC)
     return Memory(
-        scope=MemoryScope.PROJECT,
-        kind=MemoryKind.PATTERN,
+        scope=scope,
+        kind=kind,
         title=title,
         body_md=body_md,
         tags=tags,

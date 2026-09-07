@@ -54,13 +54,14 @@ def _maybe_record_memory_from_evaluation(
         source_actor=f"eval:{evaluation.evaluator}",
         score=score,
         expires_in_days=365 if kind == MemoryKind.GOTCHA else 180,
+        kind=kind,
     )
     # Scope: project-level by default; if comments mention a specific
     # domain tag like "topic: persistence" we put it on domain scope.
     if "topic:" in evaluation.comments:
         memory = memory.__class__(
             scope=MemoryScope.DOMAIN,
-            kind=kind,
+            kind=memory.kind,
             title=memory.title,
             body_md=memory.body_md,
             tags=memory.tags,

@@ -118,8 +118,9 @@ class MemoryIndex:
         domains: list[Memory] = []
         if domain:
             domains = list_memories(self.conn, scope=MemoryScope.DOMAIN, limit=self.top_n * 2)
-            # Filter by domain tag (we store it as a tag, not a column)
-            domains = [m for m in domains if domain in m.tags]
+            # Tag convention: domain-scope memories carry ``topic/<domain>``.
+            tag = f"topic/{domain}"
+            domains = [m for m in domains if tag in m.tags]
         # 3. Project: top by score
         projects = list_memories(self.conn, scope=MemoryScope.PROJECT, limit=self.top_n * 2)
 
@@ -135,8 +136,9 @@ class MemoryIndex:
         combined.sort(key=lambda m: (-m.score, m.created_at or datetime.min), reverse=False)
         combined.reverse()  # score DESC
 
-        # Project + render-fit; lowest-score first to drop
-        projected = [_project(m) for m in combined[: self.top_n * 3]]
+        # top_n caps the initial pull. Capacity may drop further but never
+        # add — the contract is "at most top_n memories per retrieval".
+        projected = [_project(m) for m in combined[: self.top_n]]
         projected.sort(key=lambda r: -r.score)
         selected: list[RetrievedMemory] = []
         for r in projected:
