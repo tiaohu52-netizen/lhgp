@@ -66,7 +66,6 @@ class _WalkContext:
     edges: list[FlowEdge] = field(default_factory=list)
     top_level_fns: dict[str, str] = field(default_factory=dict)
     classes: dict[str, str] = field(default_factory=dict)  # qualified name -> node id
-    methods: dict[str, set[str]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         # Module node is always present, so the id exists for both the
@@ -129,15 +128,12 @@ def _register_class(cls: ast.ClassDef, *, qualified: str, ctx: _WalkContext) -> 
     class_id = f"{ctx.module_id}.{qualified}"
     ctx.classes[qualified] = class_id
     ctx.add_node(FlowNode(id=class_id, label=qualified, kind="class"))
-    method_names: set[str] = set()
     for child in cls.body:
         if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
             method_id = f"{class_id}.{child.name}"
-            method_names.add(child.name)
             ctx.add_node(FlowNode(id=method_id, label=f"{qualified}.{child.name}", kind="method"))
         elif isinstance(child, ast.ClassDef):
             _register_class(child, qualified=f"{qualified}.{child.name}", ctx=ctx)
-    ctx.methods[qualified] = method_names
 
 
 # ---------------------------------------------------------------------------

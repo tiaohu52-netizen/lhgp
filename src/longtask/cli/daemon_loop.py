@@ -313,43 +313,45 @@ def _expire_due_memories(
 ) -> int:
     """Sweep expired long-term memories. Best-effort; failures are logged.
 
-    The sweep and the audit event share one connection transaction so a
-    crash between the DELETE and the ``append_event`` cannot leave the
-    audit log out of sync with the actual deletes. ``emit_fn`` is called
-    with a one-line summary iff rows were dropped.
+    The sweep and the audit event are written in a single
+    ``with transaction(conn):`` block so a crash between the DELETE
+    and the ``append_event`` either commits both or rolls back both.
+    The previous shape ran the DELETE inside its own ``with conn:``
+    (auto-committed) and the audit event in a separate transaction,
+    so a crash in the window between them could drop the audit event
+    while the deletes had already been persisted. ``emit_fn`` is
+    called with a one-line summary iff rows were dropped.
     """
     try:
-        from lhgp.memory import expire_due
+        from lhgp.memory import _expire_due_in_transaction
+        from lhgp.persistence.schema import transaction
     except ImportError:
         return 0
-    try:
-        expired_ids = expire_due(conn, now=now)
-    except Exception as exc:
-        if emit_fn is not None:
-            emit_fn(f"memory/expire: sweep failed: {exc}")
-        return 0
-    n = len(expired_ids)
-    if n == 0:
-        return 0
-    if emit_fn is not None:
-        emit_fn(f"memory/expire: dropped {n} due memories")
     try:
         from longtask.persistence.events import EventType
         from longtask.persistence.store import append_event
 
-        append_event(
-            conn,
-            contract_id=None,
-            goal_id=None,
-            event_type=EventType.MEMORY_EXPIRED,
-            payload={"expired_count": n, "expired_ids": expired_ids},
-            now=now,
-            actor="daemon",
-            role="system",
-        )
+        with transaction(conn):
+            expired_ids = _expire_due_in_transaction(conn, now=now)
+            n = len(expired_ids)
+            if n == 0:
+                return 0
+            append_event(
+                conn,
+                contract_id=None,
+                goal_id=None,
+                event_type=EventType.MEMORY_EXPIRED,
+                payload={"expired_count": n, "expired_ids": expired_ids},
+                now=now,
+                actor="daemon",
+                role="system",
+            )
     except Exception as exc:
         if emit_fn is not None:
-            emit_fn(f"memory/expire: event append failed: {exc}")
+            emit_fn(f"memory/expire: sweep failed: {exc}")
+        return 0
+    if emit_fn is not None:
+        emit_fn(f"memory/expire: dropped {n} due memories")
     return n
 
 

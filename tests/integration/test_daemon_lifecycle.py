@@ -151,6 +151,85 @@ def test_memory_expire_sweep_runs_each_cycle(tmp_path: Path) -> None:
         conn.close()
 
 
+def test_memory_expire_audit_failure_rolls_back_delete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """P1 verifier finding: the previous shape ran the DELETE inside
+    its own ``with conn:`` (auto-committed) and the audit event in a
+    separate transaction, so an audit-event failure left the deletes
+    persisted with no audit trail. The fix wraps both writes in a
+    single ``with transaction(conn):`` block; an exception during the
+    audit append now rolls back the DELETE too."""
+    from datetime import UTC, datetime
+
+    from lhgp.memory import Memory, MemoryKind, MemoryScope, record_memory
+    from longtask.cli.daemon_loop import _expire_due_memories
+    from longtask.persistence.events import EventType
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    conn = connect(StoreConfig(db_path=data_dir / "state.db"))
+    ensure_schema(conn)
+    now = datetime(2026, 9, 7, tzinfo=UTC)
+    stale = Memory(
+        scope=MemoryScope.PROJECT,
+        kind=MemoryKind.PATTERN,
+        title="rollback-pattern",
+        body_md="should be reverted when audit fails",
+        created_at=datetime(2024, 1, 1, tzinfo=UTC),
+        expires_at=datetime(2024, 6, 1, tzinfo=UTC),
+        score=0.5,
+        schema_version=4,
+    )
+    record_memory(conn, stale)
+    conn.commit()
+    conn.close()
+
+    # Force append_event to raise so the audit half of the transaction
+    # fails. The DELETE half must roll back, leaving the stale memory
+    # in place — the previous shape would have left it deleted.
+    from longtask.persistence import store as store_module
+
+    original_append = store_module.append_event
+
+    def _explode(*args: object, **kwargs: object) -> object:
+        raise RuntimeError("simulated audit append failure")
+
+    monkeypatch.setattr(store_module, "append_event", _explode)
+    # The daemon_loop imports append_event lazily inside the function,
+    # so the monkeypatch on the source module is what counts.
+
+    conn = connect(StoreConfig(db_path=data_dir / "state.db"))
+    ensure_schema(conn)
+    messages: list[str] = []
+    n = _expire_due_memories(conn, now, messages.append)
+    assert n == 0
+    assert any("sweep failed" in m for m in messages), messages
+    # The DELETE must have been rolled back: the stale memory is
+    # still in the table, and no MEMORY_EXPIRED event was committed.
+    titles = [r[0] for r in conn.execute("SELECT title FROM memories").fetchall()]
+    assert "rollback-pattern" in titles
+    evt = conn.execute(
+        "SELECT event_type FROM events WHERE event_type = ?",
+        (EventType.MEMORY_EXPIRED.value,),
+    ).fetchone()
+    assert evt is None
+
+    # Now restore append_event and re-run; the sweep should commit
+    # both halves of the transaction together.
+    monkeypatch.setattr(store_module, "append_event", original_append)
+    n2 = _expire_due_memories(conn, now, messages.append)
+    assert n2 == 1
+    titles = [r[0] for r in conn.execute("SELECT title FROM memories").fetchall()]
+    assert "rollback-pattern" not in titles
+    evt = conn.execute(
+        "SELECT event_type FROM events WHERE event_type = ?",
+        (EventType.MEMORY_EXPIRED.value,),
+    ).fetchone()
+    assert evt is not None
+    conn.close()
+
+
 def test_start_rejects_when_already_running(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

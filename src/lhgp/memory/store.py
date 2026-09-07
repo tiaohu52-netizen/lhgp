@@ -169,6 +169,35 @@ def search_memories(
     return [Memory.from_db_row(r) for r in rows]
 
 
+def _expire_due_in_transaction(
+    conn: sqlite3.Connection,
+    *,
+    now: datetime | None = None,
+) -> list[int]:
+    """SELECT + DELETE for due memories; the caller owns the transaction.
+
+    The caller must wrap this in ``with transaction(conn):`` (or any
+    other atomic context) so the deletes commit alongside any audit
+    events recorded in the same call. The previous shape committed
+    the deletes immediately and the audit event landed in a *separate*
+    transaction, so a crash between the two left the audit log out of
+    sync with the actual deletes.
+    """
+    now = now or datetime.now(UTC)
+    cur = conn.execute(
+        "SELECT id FROM memories WHERE expires_at IS NOT NULL AND expires_at <= ?",
+        (now.isoformat(),),
+    )
+    ids = [int(row[0]) for row in cur.fetchall()]
+    if ids:
+        placeholders = ",".join("?" for _ in ids)
+        conn.execute(
+            f"DELETE FROM memories WHERE id IN ({placeholders})",  # noqa: S608 — ids are integers, placeholders count = len(ids)
+            ids,
+        )
+    return ids
+
+
 def expire_due(
     conn: sqlite3.Connection,
     *,
@@ -176,25 +205,14 @@ def expire_due(
 ) -> list[int]:
     """Delete memories whose ``expires_at`` is in the past.
 
-    Returns the list of deleted memory ids so the caller can record
-    an audit event with the same ids. Reading first then deleting
-    keeps the SQL portable (SQLite does not have ``DELETE ... RETURNING``
-    in older builds).
+    Convenience wrapper for one-shot callers (e.g. ``memory expire``
+    CLI) that runs ``_expire_due_in_transaction`` inside its own
+    ``with conn:`` block. Daemon callers that also write an audit
+    event should use ``_expire_due_in_transaction`` directly inside
+    an outer ``with transaction(conn):`` so the two writes are atomic.
     """
-    now = now or datetime.now(UTC)
     with conn:
-        cur = conn.execute(
-            "SELECT id FROM memories WHERE expires_at IS NOT NULL AND expires_at <= ?",
-            (now.isoformat(),),
-        )
-        ids = [int(row[0]) for row in cur.fetchall()]
-        if ids:
-            placeholders = ",".join("?" for _ in ids)
-            conn.execute(
-                f"DELETE FROM memories WHERE id IN ({placeholders})",  # noqa: S608 — ids are integers, placeholders count = len(ids)
-                ids,
-            )
-    return ids
+        return _expire_due_in_transaction(conn, now=now)
 
 
 def bump_score(

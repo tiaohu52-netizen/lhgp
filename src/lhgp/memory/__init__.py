@@ -16,6 +16,7 @@ Architecture:
 from lhgp.memory.index import MemoryIndex, RetrievedMemory, render_for_active_md
 from lhgp.memory.store import (
     MemoryStoreError,
+    _expire_due_in_transaction,
     bump_score,
     expire_due,
     get_memory,
@@ -34,6 +35,7 @@ __all__ = [
     "MemoryScope",
     "MemoryStoreError",
     "RetrievedMemory",
+    "_expire_due_in_transaction",
     "bump_score",
     "expire_due",
     "get_memory",

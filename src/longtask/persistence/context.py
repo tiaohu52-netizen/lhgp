@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -33,6 +34,8 @@ from longtask.contracts.schema import ContractDraft, ContractView
 from longtask.persistence.events import EventType
 from longtask.persistence.events_query import get_latest_forecast_snapshot
 from longtask.persistence.store import append_event
+
+logger = logging.getLogger(__name__)
 
 CONTEXT_DIR = "context"
 ATTEMPTS_DIR = "attempts"
@@ -233,10 +236,22 @@ def _bump_directive_cursor(conn: sqlite3.Connection, contract_id: str, new_id: i
     if new_id <= current:
         return  # don't rewind
     data[_DIRECTIVE_CURSOR_KEY] = int(new_id)
-    with contextlib.suppress(Exception):
+    try:
         conn.execute(
             "UPDATE contracts SET continuity_json = ? WHERE contract_id = ?",
             (json.dumps(data, ensure_ascii=False), contract_id),
+        )
+    except sqlite3.Error as exc:
+        # Don't crash the snapshot compile over a cursor write —
+        # the next attempt will re-bump from the same event id
+        # (idempotent), so the only cost is one duplicate directive
+        # injection. Still worth logging so a flaky disk doesn't
+        # look like silent data loss.
+        logger.warning(
+            "directive cursor bump failed for contract %s (new_id=%d): %s",
+            contract_id,
+            new_id,
+            exc,
         )
 
 
@@ -390,15 +405,15 @@ def compile_context_snapshot(
             "如果你无法遵守，在写回中说明原因。",
             "",
         ]
-        # Advance the cursor to the max consumed event id so the
-        # next attempt only sees newer directives. The cursor
-        # never rewinds (see _bump_directive_cursor).
+        # Compute the max consumed event id; the cursor is bumped
+        # *after* the snapshot is successfully written below — if
+        # the capacity check fails (or disk write fails), the cursor
+        # stays put and the next attempt replays the same directives.
+        # The cursor never rewinds (see _bump_directive_cursor).
         max_event_id = max(
             (int(d["event_id"]) for d in directives if "event_id" in d),
             default=directive_cursor,
         )
-        if max_event_id > directive_cursor:
-            _bump_directive_cursor(conn, contract.contract_id, max_event_id)
     sections += [
         "## 合同锚点（冻结区，只读）",
         f"- objective: {draft.objective}",
@@ -466,6 +481,13 @@ def compile_context_snapshot(
 
     scratch_path = attempt_dir / SCRATCH_FILE
     scratch_path.write_text(_scratch_skeleton(attempt_id), encoding="utf-8")
+
+    # Cursor bump *after* the snapshot is on disk: a capacity
+    # failure or write failure above raises before reaching this
+    # point, so the next attempt will replay the same directives
+    # instead of silently losing them.
+    if directives and max_event_id > directive_cursor:
+        _bump_directive_cursor(conn, contract.contract_id, max_event_id)
 
     append_event(
         conn,

@@ -18,7 +18,7 @@ import json
 import sys
 from pathlib import Path
 
-from lhgp.flow.ast_walker import walk_source
+from lhgp.flow.ast_walker import _MAX_SOURCE_BYTES, walk_source
 from lhgp.flow.render_excalidraw import render_excalidraw
 from lhgp.flow.render_mermaid import render_mermaid
 from lhgp.flow.wiki_parser import (
@@ -43,6 +43,19 @@ def flow_command(args: argparse.Namespace) -> int:
         path = Path(args.file)
         if not path.exists():
             print(f"error: file not found: {path}", file=sys.stderr)
+            return 2
+        # Pre-check size before read_text so a multi-GB file doesn't
+        # land in memory just to be rejected by walk_source below.
+        try:
+            size = path.stat().st_size
+        except OSError as exc:
+            print(f"error: cannot stat {path}: {exc}", file=sys.stderr)
+            return 2
+        if size > _MAX_SOURCE_BYTES:
+            print(
+                f"error: {path} is {size} bytes; walk_source refuses > {_MAX_SOURCE_BYTES}",
+                file=sys.stderr,
+            )
             return 2
         try:
             source = path.read_text(encoding="utf-8")

@@ -478,3 +478,128 @@ class TestDirectiveCursorAdvance:
         _bump_directive_cursor(conn, "lt-rewind", 50)
         assert _read_directive_cursor(conn, "lt-rewind") == 100
         conn.close()
+
+
+class TestCursorBumpDeferredUntilWriteSucceeds:
+    """Verifier P0 finding: the cursor used to be bumped *before* the
+    capacity check and ``active_path.write_text`` call. If the snapshot
+    was rejected (capacity exceeded) the cursor had already advanced
+    to the max consumed event id, so the next attempt never saw the
+    rejected directives again — they were silently lost with no audit
+    trail beyond ``CONTEXT_CAPACITY_REFUSED``. The fix is to bump the
+    cursor *after* the snapshot is on disk; on failure the cursor stays
+    put and the next attempt replays the same directives."""
+
+    def test_capacity_failure_does_not_advance_cursor(self, tmp_path: Path) -> None:
+        from longtask.persistence.context import (
+            CapacityRefusedError,
+            _read_directive_cursor,
+        )
+        from longtask.persistence.events import EventType
+
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        conn = connect(StoreConfig(db_path=data_dir / "state.db"))
+        ensure_schema(conn)
+
+        # Tiny max_bytes — the first 5 directives already overflow.
+        draft = _make_draft(deadline_at=datetime(2099, 1, 1, tzinfo=UTC), max_bytes=400)
+        save_contract(conn, draft, contract_id="lt-cap-cursor", now=datetime.now(UTC))
+
+        base = datetime(2026, 1, 1, tzinfo=UTC)
+        for i in range(5):
+            append_event(
+                conn,
+                contract_id="lt-cap-cursor",
+                goal_id=None,
+                event_type=EventType.AGENT_MESSAGE,
+                payload={"kind": "directive", "text": f"do thing {i} " + "x" * 80},
+                now=base + timedelta(seconds=i),
+                actor="user",
+                role="user",
+            )
+        conn.commit()
+
+        from longtask.persistence.store import get_contract
+
+        view = get_contract(conn, "lt-cap-cursor")
+        assert view is not None
+        with pytest.raises(CapacityRefusedError):
+            compile_context_snapshot(data_dir, conn, view, "att-fail", now=datetime.now(UTC))
+
+        # Cursor must not have advanced despite the user having
+        # visible directives in flight. Next attempt replays them.
+        assert _read_directive_cursor(conn, "lt-cap-cursor") == 0
+        conn.close()
+
+    def test_capacity_failure_then_relaxed_compile_consumes_directives(
+        self, tmp_path: Path
+    ) -> None:
+        """End-to-end: capacity failure leaves cursor at 0; a subsequent
+        compile with relaxed max_bytes consumes the same directives and
+        then advances the cursor."""
+        from longtask.persistence.context import (
+            CapacityRefusedError,
+            _read_directive_cursor,
+        )
+        from longtask.persistence.events import EventType
+
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        conn = connect(StoreConfig(db_path=data_dir / "state.db"))
+        ensure_schema(conn)
+
+        draft_tight = _make_draft(deadline_at=datetime(2099, 1, 1, tzinfo=UTC), max_bytes=400)
+        save_contract(conn, draft_tight, contract_id="lt-relaxed", now=datetime.now(UTC))
+
+        base = datetime(2026, 1, 1, tzinfo=UTC)
+        max_event_id = 0
+        for i in range(3):
+            ev = append_event(
+                conn,
+                contract_id="lt-relaxed",
+                goal_id=None,
+                event_type=EventType.AGENT_MESSAGE,
+                payload={"kind": "directive", "text": f"do thing {i}"},
+                now=base + timedelta(seconds=i),
+                actor="user",
+                role="user",
+            )
+            max_event_id = max(max_event_id, ev.event_id)
+        conn.commit()
+
+        from longtask.persistence.store import get_contract
+
+        view = get_contract(conn, "lt-relaxed")
+        assert view is not None
+        with pytest.raises(CapacityRefusedError):
+            compile_context_snapshot(data_dir, conn, view, "att-fail", now=datetime.now(UTC))
+        assert _read_directive_cursor(conn, "lt-relaxed") == 0
+
+        # Loosen the contract via a raw UPDATE (the contracts schema
+        # has no public update API) so the same directives can fit on
+        # the next attempt. The cursor must then advance to the max
+        # consumed event id, confirming the directives were replayed.
+        conn.execute(
+            "UPDATE contracts SET context_json = ? WHERE contract_id = ?",
+            (
+                json.dumps(
+                    {
+                        "required": True,
+                        "limits": {
+                            "max_bytes": 24000,
+                            "expires_after_minutes": 60,
+                        },
+                    }
+                ),
+                "lt-relaxed",
+            ),
+        )
+        conn.commit()
+        view = get_contract(conn, "lt-relaxed")
+        assert view is not None
+        active, _ = compile_context_snapshot(data_dir, conn, view, "att-ok", now=datetime.now(UTC))
+        text = active.read_text(encoding="utf-8")
+        assert "## ⚡ 用户指令（必须遵守）" in text
+        assert _read_directive_cursor(conn, "lt-relaxed") == max_event_id
+        conn.close()

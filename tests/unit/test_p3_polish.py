@@ -205,3 +205,47 @@ class TestExcalidrawContainerId:
         # 2024 Excalidraw element spec.
         assert rects[0]["strokeStyle"] == "solid"
         assert texts[0]["strokeStyle"] == "solid"
+
+
+class TestFlowAstCliSizePrecheck:
+    """``lhgp flow ast <file>`` must reject an oversize file *before*
+    reading it into memory. The pre-check uses ``path.stat().st_size``
+    so a multi-GB file is refused without ever allocating the buffer."""
+
+    def test_oversize_file_rejected_with_clear_error(
+        self, tmp_path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from argparse import Namespace
+
+        from lhgp.flow import ast_walker as walker_mod
+        from lhgp.flow import cli as cli_mod
+
+        big = tmp_path / "big.py"
+        big.write_text("x = 1\n" * 10, encoding="utf-8")  # 60 bytes
+        # Shrink the source module's cap so the CLI sees the new
+        # value through its import; the CLI's local name shadows
+        # walker_mod._MAX_SOURCE_BYTES at import time, so we also
+        # update the CLI's local reference.
+        monkeypatch.setattr(walker_mod, "_MAX_SOURCE_BYTES", 16)
+        monkeypatch.setattr(cli_mod, "_MAX_SOURCE_BYTES", 16)
+        rc = cli_mod.flow_command(
+            Namespace(flow_cmd="ast", file=str(big), module=None, format="mermaid")
+        )
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "walk_source refuses" in err
+
+    def test_normal_file_passes_precheck(self, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+        from argparse import Namespace
+
+        from lhgp.flow import ast_walker as walker_mod
+        from lhgp.flow import cli as cli_mod
+
+        src = tmp_path / "small.py"
+        src.write_text("def f():\n    return 1\n", encoding="utf-8")
+        monkeypatch.setattr(walker_mod, "_MAX_SOURCE_BYTES", 1024)
+        monkeypatch.setattr(cli_mod, "_MAX_SOURCE_BYTES", 1024)
+        rc = cli_mod.flow_command(
+            Namespace(flow_cmd="ast", file=str(src), module=None, format="mermaid")
+        )
+        assert rc == 0
