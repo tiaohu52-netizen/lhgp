@@ -152,6 +152,29 @@ def _maybe_record_memory_from_evaluation(
     )
 
 
+def _maybe_mine_lesson(
+    conn: sqlite3.Connection,
+    evaluation: UserEvaluation,
+) -> None:
+    """Failure-driven memory hook.
+
+    Only runs on REJECT verdicts: a positive evaluation is a success
+    signal, not a failure signal. The lesson is mined by
+    :func:`lhgp.feedback.lessons.mine_lesson_if_due`, which is
+    idempotent and cheap on the no-action path. Exceptions are
+    swallowed so the evaluation write path stays fail-loud for the
+    caller.
+    """
+    if evaluation.verdict is not EvaluationVerdict.REJECT:
+        return
+    try:
+        from lhgp.feedback.lessons import mine_lesson_if_due
+
+        mine_lesson_if_due(conn, evaluation.contract_id)
+    except Exception as exc:
+        _LOG.warning("lesson mine failed for %s: %s", evaluation.contract_id, exc)
+
+
 def _emit_auto_mine_audit(
     conn: sqlite3.Connection,
     evaluation: UserEvaluation,
@@ -223,6 +246,7 @@ def record_evaluation(conn: sqlite3.Connection, evaluation: UserEvaluation) -> i
         raise RuntimeError("sqlite cursor returned no lastrowid for evaluation insert")
     evaluation_id = int(lastrowid)
     _maybe_record_memory_from_evaluation(conn, evaluation, evaluation_id)
+    _maybe_mine_lesson(conn, evaluation)
     return evaluation_id
 
 

@@ -85,6 +85,7 @@ class EventType(StrEnum):
     MEMORY_EXPIRED = "memory/expired"
     MEMORY_AUTO_MINED = "memory/auto-mined"
     MEMORY_AUTO_MINE_FAILED = "memory/auto-mine-failed"
+    MEMORY_LESSON_MINED = "memory/lesson-mined"
 
 
 __all__ = ["EventType"]
