@@ -3,6 +3,13 @@
 prepare 探针先于租约 CAS（§10 时序：prepare → 租约 CAS → spawn）；
 拒接记录 dispatch/refused 事件并换下一个（§9，绝不降级）。
 依赖执行桥接层（cli/runner.py）构造 AttemptInput，故属 cli 层。
+
+Plan gate（resilient-execution plan_mode）：当 contract.draft.context
+显式声明 ``"gate": "plan"`` 时，dispatch 必须等到收到一条
+PLAN_APPROVED 事件（且该事件晚于最新一次 PLAN_REJECTED）才放行
+DISPATCHING -> RUNNING。这条强制让任何绕过 ``plan submit`` /
+``tool_submit_plan`` 的派发路径在 runner 边界被拦住，避免 gate
+被旁路。
 """
 
 from __future__ import annotations
@@ -21,6 +28,56 @@ from longtask.persistence.projections import rebuild_projection
 from longtask.persistence.store import acquire_lease, append_event, get_lease, reclaim_lease
 from longtask.promoter.records import _record_attempt
 from longtask.promoter.urgency import UrgencyTier
+
+# Plan gate: how far back to look for a PLAN_APPROVED that hasn't been
+# superseded by a PLAN_REJECTED. 24h is generous for a planning cycle but
+# short enough that a stale approval doesn't pin a contract forever.
+PLAN_GATE_LOOKBACK_SECONDS = 24 * 60 * 60
+
+
+def _has_recent_plan_approval(
+    conn: sqlite3.Connection,
+    contract_id: str,
+    now: datetime,
+) -> bool:
+    """Return True iff the contract has a PLAN_APPROVED event in the
+    last :data:`PLAN_GATE_LOOKBACK_SECONDS` that is not superseded by a
+    later PLAN_REJECTED.
+
+    The check is pure SQL: we look up the most recent plan verdict
+    (approved or rejected) in the lookback window and require it to be
+    ``plan/approved``. If there is no plan verdict at all in the
+    window, the gate is not satisfied — the writer side (``plan
+    submit`` / ``tool_submit_plan``) must have been called first.
+    """
+    cutoff_iso = (now - timedelta(seconds=PLAN_GATE_LOOKBACK_SECONDS)).isoformat()
+    row = conn.execute(
+        "SELECT event_type FROM events "
+        "WHERE contract_id = ? "
+        "AND event_type IN (?, ?) "
+        "AND created_at >= ? "
+        "ORDER BY created_at DESC LIMIT 1",
+        (
+            contract_id,
+            EventType.PLAN_APPROVED,
+            EventType.PLAN_REJECTED,
+            cutoff_iso,
+        ),
+    ).fetchone()
+    if row is None:
+        return False
+    return str(row[0]) == EventType.PLAN_APPROVED
+
+
+def _plan_gate_required(contract: ContractView) -> bool:
+    """Opt-in flag: ``context.gate == "plan"`` enables the gate.
+
+    Default off so existing contracts without a plan keep working. A
+    contract author who wants the gate enabled sets
+    ``context = {"gate": "plan", ...}`` in the draft.
+    """
+    ctx = contract.draft.context
+    return isinstance(ctx, dict) and ctx.get("gate") == "plan"
 
 
 def _dispatch_attempt(
@@ -44,6 +101,31 @@ def _dispatch_attempt(
     """
     cid = contract.contract_id
     draft = contract.draft
+
+    # Plan gate: when the contract opts in (context.gate == "plan"), the
+    # dispatch must observe a recent PLAN_APPROVED event before any
+    # executor is contacted. Without this, the gate could be bypassed
+    # by any path that doesn't go through ``plan submit`` /
+    # ``tool_submit_plan``.
+    if _plan_gate_required(contract) and not _has_recent_plan_approval(conn, cid, now):
+        append_event(
+            conn,
+            contract_id=cid,
+            event_type=EventType.DISPATCH_REFUSED,
+            payload={
+                "reason": "plan gate: no recent PLAN_APPROVED event",
+                "gate": "plan",
+            },
+            now=now,
+            actor="daemon",
+            goal_id=contract.goal_id,
+            contract_revision=contract.revision,
+            role="promoter",
+        )
+        rebuild_projection(root, cid, conn)
+        emit(f"promoter/dispatch-refused:{cid}:plan-gate")
+        return None
+
     attempt_prefix = f"att-{now.strftime('%Y%m%d%H%M%S')}-{attempt_seq}"
     attempt_id = attempt_prefix
     sequence = 1

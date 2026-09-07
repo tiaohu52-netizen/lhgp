@@ -143,6 +143,158 @@ def test_mcp_prepare_cannot_impersonate_user_client(tmp_path: Path) -> None:
         conn.close()
 
 
+def test_mcp_submit_plan_approved_emits_audit_events(tmp_path: Path) -> None:
+    """End-to-end: lhgp_submit_plan writes plan/submitted + plan/approved
+    when validation passes, and surfaces the verdict in the response."""
+    from longtask.adapters.registry import ExecutorRegistry
+    from longtask.mcp_server import tool_prepare_contract, tool_submit_plan
+    from longtask.persistence.events import EventType
+    from longtask.persistence.store import (
+        StoreConfig,
+        connect,
+        ensure_schema,
+        get_events,
+    )
+
+    conn = connect(StoreConfig(db_path=tmp_path / "state.db"))
+    ensure_schema(conn)
+    try:
+        prepared = tool_prepare_contract(
+            {
+                "title": "plan-gate e2e",
+                "objective": "verify plan submission lands the right events",
+                "deadline_at": (datetime.now(UTC) + timedelta(hours=2)).isoformat(),
+                "acceptance_standard": "plan approved",
+                "acceptance_checks": ["plan approved"],
+            },
+            {"conn": conn, "registry": ExecutorRegistry(), "root": tmp_path},
+        )
+        cid = prepared["result"]["contract_id"]
+        result = tool_submit_plan(
+            {
+                "contract_id": cid,
+                "steps": [
+                    {
+                        "step_id": 1,
+                        "action": "verify acceptance",
+                        "target": "plan approved",
+                        "rationale": (
+                            "verify acceptance of objective 'plan submitted lands the right events'"
+                        ),
+                        "expected_outcome": "plan approved",
+                    }
+                ],
+            },
+            {"conn": conn, "registry": ExecutorRegistry(), "root": tmp_path},
+        )
+        assert result["approved"] is True
+        assert result["step_count"] == 1
+        types = [e.event_type for e in get_events(conn, contract_id=cid)]
+        assert EventType.PLAN_SUBMITTED in types
+        assert EventType.PLAN_APPROVED in types
+    finally:
+        conn.close()
+
+
+def test_mcp_submit_plan_rejected_when_rationale_omits_objective(
+    tmp_path: Path,
+) -> None:
+    """End-to-end: rationale missing the objective keyword triggers
+    plan/rejected, not plan/approved."""
+    from longtask.adapters.registry import ExecutorRegistry
+    from longtask.mcp_server import tool_prepare_contract, tool_submit_plan
+    from longtask.persistence.events import EventType
+    from longtask.persistence.store import (
+        StoreConfig,
+        connect,
+        ensure_schema,
+        get_events,
+    )
+
+    conn = connect(StoreConfig(db_path=tmp_path / "state.db"))
+    ensure_schema(conn)
+    try:
+        prepared = tool_prepare_contract(
+            {
+                "title": "plan rejection e2e",
+                "objective": "bluebird quartz must reference the objective keyword",
+                "deadline_at": (datetime.now(UTC) + timedelta(hours=2)).isoformat(),
+                "acceptance_standard": "ok",
+                "acceptance_checks": ["ok"],
+            },
+            {"conn": conn, "registry": ExecutorRegistry(), "root": tmp_path},
+        )
+        cid = prepared["result"]["contract_id"]
+        result = tool_submit_plan(
+            {
+                "contract_id": cid,
+                "steps": [
+                    {
+                        "step_id": 1,
+                        "action": "verify acceptance",
+                        "target": "ok",
+                        "rationale": "this rationale deliberately omits the keyword",
+                        "expected_outcome": "ok",
+                    }
+                ],
+            },
+            {"conn": conn, "registry": ExecutorRegistry(), "root": tmp_path},
+        )
+        assert result["approved"] is False
+        assert any("rationale" in r.lower() for r in result["rejection_reasons"])
+        types = [e.event_type for e in get_events(conn, contract_id=cid)]
+        assert EventType.PLAN_REJECTED in types
+        assert EventType.PLAN_APPROVED not in types
+    finally:
+        conn.close()
+
+
+def test_mcp_resume_attempt_writes_resumed_audit_event(tmp_path: Path) -> None:
+    """End-to-end: lhgp_resume_attempt reads active.md + handover.md,
+    returns a self-contained brief, and writes an attempt/resumed
+    audit event."""
+    from longtask.adapters.registry import ExecutorRegistry
+    from longtask.mcp_server import tool_resume_attempt
+    from longtask.persistence.events import EventType
+    from longtask.persistence.store import (
+        StoreConfig,
+        connect,
+        ensure_schema,
+        get_events,
+    )
+
+    root = tmp_path
+    conn = connect(StoreConfig(db_path=root / "state.db"))
+    ensure_schema(conn)
+    cid = "lt-resume-e2e"
+    # Stage the markdown files the resume tool reads. handover.md lives
+    # at the contract root (one per contract); active.md is per-attempt.
+    contract_dir = root / "contracts" / cid
+    attempt_dir = contract_dir / "context" / "attempts" / "att-1"
+    attempt_dir.mkdir(parents=True)
+    (attempt_dir / "active.md").write_text(
+        "# active snapshot\nobjective: deliver plan gate\n",
+        encoding="utf-8",
+    )
+    (contract_dir / "handover.md").write_text(
+        "# handover\nnext_action: continue plan gate work\n",
+        encoding="utf-8",
+    )
+    try:
+        result = tool_resume_attempt(
+            {"contract_id": cid, "attempt_id": "att-1"},
+            {"conn": conn, "registry": ExecutorRegistry(), "root": root},
+        )
+        assert result["contract_id"] == cid
+        assert result["attempt_id"] == "att-1"
+        assert "active snapshot" in result["body"]
+        assert "continue plan gate work" in result["body"]
+        types = [e.event_type for e in get_events(conn, contract_id=cid)]
+        assert EventType.ATTEMPT_RESUMED in types
+    finally:
+        conn.close()
+
+
 def _spawn_mcp(data_dir: Path) -> subprocess.Popen[bytes]:
     """启动 longtask-mcp 子进程，stdio 用 bytes 收发。"""
     return subprocess.Popen(  # noqa: S603

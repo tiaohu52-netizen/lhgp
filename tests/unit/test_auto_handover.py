@@ -187,3 +187,70 @@ class TestCheckHandoverDue:
         # Contract ``lt-ghost`` is never saved.
         assert check_handover_due(conn, "lt-ghost", "att-1") is False
         conn.close()
+
+
+class TestDaemonHandoverCheck:
+    """``_check_handover_due`` in ``src/longtask/cli/daemon_loop.py``: the
+    daemon-tick bridge that calls ``check_handover_due`` for every running
+    attempt and emits a HANDOVER_DUE event with ``reason=auto_handover_overdue``
+    when the active.md ratio crosses the high-water mark.
+    """
+
+    def _make_runner(self, conn, root: Path) -> object:
+        from longtask.adapters.registry import ExecutorRegistry
+        from longtask.cli.runner import AttemptRunner
+
+        return AttemptRunner(root, conn, ExecutorRegistry())
+
+    def test_overdue_emits_event_and_returns_count(self, tmp_path: Path) -> None:
+        from longtask.cli.daemon_loop import _check_handover_due
+
+        conn, root = _open_store(tmp_path, "lt-daemon-overdue", max_bytes=1000)
+        _write_active_md(root, "lt-daemon-overdue", "att-1", size=950)
+        runner = self._make_runner(conn, root)
+        runner._running["att-1"] = {"contract_id": "lt-daemon-overdue"}
+
+        messages: list[str] = []
+        fired = _check_handover_due(conn, runner, datetime.now(UTC), emit_fn=messages.append)
+        conn.close()
+        assert fired == 1
+        assert any("overdue" in m for m in messages), messages
+
+    def test_warm_branch_does_not_double_emit(self, tmp_path: Path) -> None:
+        """When ``check_handover_due`` already wrote the warm event, the
+        daemon helper must NOT add a second one — only overdue branch
+        warrants an extra emit."""
+        from longtask.cli.daemon_loop import _check_handover_due
+
+        conn, root = _open_store(tmp_path, "lt-daemon-warm", max_bytes=1000)
+        _write_active_md(root, "lt-daemon-warm", "att-1", size=700)
+        # First call: warm branch fires, writes HANDOVER_DUE itself.
+        from longtask.persistence.context import check_handover_due
+
+        first = check_handover_due(conn, "lt-daemon-warm", "att-1")
+        assert first is True
+        rows = conn.execute(
+            "SELECT event_type FROM events "
+            "WHERE contract_id = ? AND attempt_id = ? AND event_type = ?",
+            ("lt-daemon-warm", "att-1", HANDOVER_DUE_EVENT_TYPE),
+        ).fetchall()
+        assert len(rows) == 1
+
+        # Daemon tick within the debounce window: detector returns False,
+        # so helper fires 0.
+        runner = self._make_runner(conn, root)
+        runner._running["att-1"] = {"contract_id": "lt-daemon-warm"}
+        fired = _check_handover_due(conn, runner, datetime.now(UTC), emit_fn=None)
+        conn.close()
+        assert fired == 0
+
+    def test_missing_active_md_is_silently_skipped(self, tmp_path: Path) -> None:
+        from longtask.cli.daemon_loop import _check_handover_due
+
+        conn, root = _open_store(tmp_path, "lt-daemon-no-md", max_bytes=1000)
+        runner = self._make_runner(conn, root)
+        runner._running["att-1"] = {"contract_id": "lt-daemon-no-md"}
+        # No active.md on disk.
+        fired = _check_handover_due(conn, runner, datetime.now(UTC), emit_fn=None)
+        conn.close()
+        assert fired == 0

@@ -208,6 +208,10 @@ def run_daemon_loop(
             # 衰减是 contract，没这条 sweep 就只是纸面承诺）。廉价
             # DELETE，命中 idx_memories_expires，无行就 no-op。
             _expire_due_memories(conn, now_val, emit_fn)
+            # resilient-execution：context 预算自动交接（DESIGN §4.1）。在
+            # 调度新 attempt 之前巡检本进程持有的 running attempt；逼近
+            # 上限的写 handover/due 审计事件，迫使下一轮 tick 不再派发。
+            _check_handover_due(conn, runner, now_val, emit_fn)
             # 消费由本机计划任务经 daemon/wake 投递的一次性 fired 信号；
             # 先解除旧登记，再由本轮 tick 计算并重新 arm 下一决策点。
             while True:
@@ -353,6 +357,97 @@ def _expire_due_memories(
     if emit_fn is not None:
         emit_fn(f"memory/expire: dropped {n} due memories")
     return n
+
+
+def _check_handover_due(
+    conn: sqlite3.Connection,
+    runner: AttemptRunner,
+    now: datetime,
+    emit_fn: Callable[[str], None] | None,
+) -> int:
+    """Auto-handover detector (DESIGN §4.1)：每个 tick 检查本进程持有的
+    running attempt 的 active.md 是否逼近 context 窗口。
+
+    check_handover_due() 自身已处理「warm」分支：size/max_bytes ≥ 0.6 且
+    上次 HANDOVER_DUE 早于 60s 时，自动落一条 debounced 审计事件并返回
+    True。「overdue」分支（≥ 0.9）它只返回 True 不落事件，由本函数补一条
+    紧急事件——否则审计日志看不到「已越线」这一刻，运维只能事后从
+    上下文崩溃倒推。
+
+    写入失败/contract 找不到/active.md 缺失均被吞掉；这是 best-effort
+    巡检，不能让一个 attempt 的元数据异常把整轮 tick 拉黑。
+    """
+    from longtask.persistence.context import (
+        ACTIVE_FILE,
+        ATTEMPTS_DIR,
+        CONTEXT_DIR,
+        ContextPolicy,
+        _resolve_data_root,
+        check_handover_due,
+    )
+    from longtask.persistence.store import append_event, get_contract
+
+    fired = 0
+    for contract_id, attempt_id in runner.running_attempts():
+        try:
+            if not check_handover_due(conn, contract_id, attempt_id):
+                continue
+        except Exception as exc:  # never let one bad attempt break the tick
+            if emit_fn is not None:
+                emit_fn(f"handover/check: {contract_id}/{attempt_id} skipped: {exc}")
+            continue
+        try:
+            view = get_contract(conn, contract_id)
+            if view is None:
+                continue
+            policy = ContextPolicy.from_contract(view.draft)
+            root = _resolve_data_root(conn)
+            if root is None:
+                continue
+            active_path = (
+                root
+                / "contracts"
+                / contract_id
+                / CONTEXT_DIR
+                / ATTEMPTS_DIR
+                / attempt_id
+                / ACTIVE_FILE
+            )
+            if not active_path.is_file():
+                continue
+            size = active_path.stat().st_size
+            ratio = size / policy.max_bytes
+        except Exception as exc:
+            if emit_fn is not None:
+                emit_fn(f"handover/check: {contract_id}/{attempt_id} stat failed: {exc}")
+            continue
+        if ratio < 0.9:
+            # warm 分支的事件已由 check_handover_due 落过；不要再加一条。
+            continue
+        try:
+            append_event(
+                conn,
+                contract_id=contract_id,
+                attempt_id=attempt_id,
+                event_type=EventType.HANDOVER_DUE,
+                payload={
+                    "size": size,
+                    "max_bytes": policy.max_bytes,
+                    "ratio": round(ratio, 4),
+                    "reason": "auto_handover_overdue",
+                },
+                now=now,
+                actor="daemon",
+                role="system",
+            )
+        except Exception as exc:
+            if emit_fn is not None:
+                emit_fn(f"handover/due: {contract_id}/{attempt_id} audit failed: {exc}")
+            continue
+        fired += 1
+        if emit_fn is not None:
+            emit_fn(f"handover/due: {contract_id}/{attempt_id} ratio={ratio:.2f} (overdue)")
+    return fired
 
 
 def _dispatch_verifiers_for_reconciled(
