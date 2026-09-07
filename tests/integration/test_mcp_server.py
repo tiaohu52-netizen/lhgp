@@ -200,7 +200,15 @@ def test_mcp_submit_plan_rejected_when_rationale_omits_objective(
     tmp_path: Path,
 ) -> None:
     """End-to-end: rationale missing the objective keyword triggers
-    plan/rejected, not plan/approved."""
+    plan/rejected, not plan/approved.
+
+    P2 review (2026-09-08): the validator now uses an any-keyword
+    match rather than the old "whole objective string in rationale"
+    rule, so the rationale must avoid *all* of the objective's
+    non-stop words to be rejected — a single shared word (e.g. just
+    "keyword") would be enough to slip through.  Use a rationale
+    that is completely unrelated to the objective's vocabulary.
+    """
     from longtask.adapters.registry import ExecutorRegistry
     from longtask.mcp_server import tool_prepare_contract, tool_submit_plan
     from longtask.persistence.events import EventType
@@ -217,7 +225,7 @@ def test_mcp_submit_plan_rejected_when_rationale_omits_objective(
         prepared = tool_prepare_contract(
             {
                 "title": "plan rejection e2e",
-                "objective": "bluebird quartz must reference the objective keyword",
+                "objective": "bluebird quartz must reference the objective word",
                 "deadline_at": (datetime.now(UTC) + timedelta(hours=2)).isoformat(),
                 "acceptance_standard": "ok",
                 "acceptance_checks": ["ok"],
@@ -233,7 +241,7 @@ def test_mcp_submit_plan_rejected_when_rationale_omits_objective(
                         "step_id": 1,
                         "action": "verify acceptance",
                         "target": "ok",
-                        "rationale": "this rationale deliberately omits the keyword",
+                        "rationale": "this rationale deliberately omits every vocabulary term",
                         "expected_outcome": "ok",
                     }
                 ],
@@ -252,7 +260,12 @@ def test_mcp_submit_plan_rejected_when_rationale_omits_objective(
 def test_mcp_resume_attempt_writes_resumed_audit_event(tmp_path: Path) -> None:
     """End-to-end: lhgp_resume_attempt reads active.md + handover.md,
     returns a self-contained brief, and writes an attempt/resumed
-    audit event."""
+    audit event.
+
+    P1 review: the resume helper now requires the attempt to be
+    recorded under the contract in the DB before it will read the
+    on-disk files, so this fixture pre-inserts the matching row.
+    """
     from longtask.adapters.registry import ExecutorRegistry
     from longtask.mcp_server import tool_resume_attempt
     from longtask.persistence.events import EventType
@@ -280,6 +293,28 @@ def test_mcp_resume_attempt_writes_resumed_audit_event(tmp_path: Path) -> None:
         "# handover\nnext_action: continue plan gate work\n",
         encoding="utf-8",
     )
+    # Record the attempt so the resume helper's path-binding check
+    # passes (P1 review fix: attempt must be in the DB when conn is
+    # supplied, otherwise the read is refused as a path-binding
+    # mismatch — i.e. a file claiming to belong to a contract the
+    # contract has never heard of).
+    conn.execute(
+        "INSERT INTO attempts "
+        "(attempt_id, goal_id, contract_id, contract_revision, role, state, "
+        " admitted_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            "att-1",
+            cid,
+            cid,
+            1,
+            "executor",
+            "admitted",
+            "2026-09-08T09:00:00+00:00",
+            "2026-09-08T09:00:00+00:00",
+        ),
+    )
+    conn.commit()
     try:
         result = tool_resume_attempt(
             {"contract_id": cid, "attempt_id": "att-1"},

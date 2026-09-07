@@ -6,10 +6,24 @@ goal.  lhgp already materialises ``active.md`` (the per-attempt snapshot) and
 ``handover.md`` (the next-action memo) on every attempt; this module reads
 both, assembles a single string, and (optionally) records an
 ``attempt/resumed`` audit event so operators can see the resume happened.
+
+P1 review fix (2026-09-08): the previous implementation joined
+``contract_id`` and ``attempt_id`` directly into a file path under
+``data_root`` without verifying that the resolved path stayed inside
+``contracts/<contract_id>/``.  A caller could pass an absolute path or
+``../etc`` as ``attempt_id`` and read a file outside the contract's
+directory.  The fix is a strict whitelist on the path components plus
+a ``Path.is_relative_to`` check after resolution.
+
+The audit event's ``actor`` is now a parameter, not a hard-coded
+``"user"`` string.  The MCP path passes its own actor
+(``"agent:mcp"``/``"agent:<id>"``); the CLI passes ``"user:cli"``;
+the Python API defaults to ``"user"`` for back-compat.
 """
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -25,6 +39,31 @@ _CONTEXT_DIR = "context"
 _ATTEMPTS_DIR = "attempts"
 _ACTIVE_FILE = "active.md"
 _HANDOVER_FILE = "handover.md"
+
+# Path-component whitelist: ``[A-Za-z0-9._-]`` covers contract IDs
+# (``lt-...``), attempt IDs (``att-YYYYMMDDhhmmss-seq``), goal IDs and the
+# fixed suffixes.  Anything else — absolute paths, ``..``, separators,
+# whitespace, NULs, shell metacharacters — is rejected before it ever
+# touches the filesystem.  This is the primary defense; the
+# ``is_relative_to`` check below is the safety net for symlink escapes.
+_SAFE_PATH_COMPONENT = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+class ResumeBriefError(ValueError):
+    """Raised when a resume request is unsafe or unmatched.
+
+    Subclass of ``ValueError`` so existing callers that catch
+    ``ValueError`` keep working, while callers that want to distinguish
+    security rejections can catch this specifically.
+    """
+
+
+def _validate_id(value: str, label: str) -> str:
+    if not isinstance(value, str) or not value or not _SAFE_PATH_COMPONENT.match(value):
+        raise ResumeBriefError(
+            f"{label} must match {_SAFE_PATH_COMPONENT.pattern!r}: got {value!r}"
+        )
+    return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,6 +85,41 @@ def _derive_next_attempt_id(attempt_id: str, now: datetime) -> str:
     return f"{attempt_id}-resumed-{now.strftime('%Y%m%d%H%M%S')}"
 
 
+def _assert_within_contract_dir(candidate: Path, contract_dir_root: Path, *, label: str) -> None:
+    """Defence-in-depth: even if the components passed the whitelist,
+    resolve symlinks and ``..`` and confirm the result is still inside
+    ``contract_dir_root``.  Without this, a malicious symlink planted
+    inside the contract's directory would let the read escape it."""
+
+    try:
+        resolved = candidate.resolve(strict=False)
+        contract_dir_root_resolved = contract_dir_root.resolve(strict=False)
+    except (OSError, RuntimeError) as exc:
+        raise ResumeBriefError(f"{label} path resolution failed: {exc}") from exc
+    if not resolved.is_relative_to(contract_dir_root_resolved):
+        raise ResumeBriefError(
+            f"{label} escapes contract directory: {candidate} -> {resolved} "
+            f"not under {contract_dir_root_resolved}"
+        )
+
+
+def _attempt_belongs_to_contract(
+    conn: sqlite3.Connection, contract_id: str, attempt_id: str
+) -> bool:
+    """DB-level check that ``attempt_id`` was actually written under
+    ``contract_id``.  Without this an attacker who could drop a file
+    named ``active.md`` anywhere under ``contracts/`` could mint a
+    resume brief for a contract they don't own.  Returns False (no
+    match) if the attempts table is empty or the attempt does not
+    exist for this contract.
+    """
+    row = conn.execute(
+        "SELECT 1 FROM attempts WHERE contract_id = ? AND attempt_id = ? LIMIT 1",
+        (contract_id, attempt_id),
+    ).fetchone()
+    return row is not None
+
+
 def build_resume_brief(
     data_root: Path,
     contract_id: str,
@@ -54,6 +128,7 @@ def build_resume_brief(
     *,
     conn: sqlite3.Connection | None = None,
     now: datetime | None = None,
+    actor: str = "user",
 ) -> ResumeBrief:
     """Load active.md + handover.md and assemble a single self-contained brief.
 
@@ -75,10 +150,29 @@ def build_resume_brief(
     Raises ``FileNotFoundError`` if ``active.md`` is missing (the only
     authoritative piece; ``handover.md`` is optional and may not exist for
     a fresh attempt that never reached the handover write step).
+    Raises :class:`ResumeBriefError` (a ``ValueError`` subclass) if
+    ``contract_id`` or ``attempt_id`` fail the path-safety whitelist, if
+    the resolved path escapes the contract directory, or if a
+    ``conn`` is supplied and the attempt is not recorded under this
+    contract in the DB.
     """
+    contract_id = _validate_id(contract_id, "contract_id")
+    attempt_id = _validate_id(attempt_id, "attempt_id")
+    if next_attempt_id is not None:
+        _validate_id(next_attempt_id, "next_attempt_id")
+
     contract_dir = data_root / _CONTRACT_DIR / contract_id
     active_path = contract_dir / _CONTEXT_DIR / _ATTEMPTS_DIR / attempt_id / _ACTIVE_FILE
     handover_path = contract_dir / _HANDOVER_FILE
+    _assert_within_contract_dir(active_path, contract_dir, label="active.md path")
+
+    if conn is not None and not _attempt_belongs_to_contract(conn, contract_id, attempt_id):
+        raise ResumeBriefError(
+            f"attempt {attempt_id!r} is not recorded under contract "
+            f"{contract_id!r} in the DB; refusing to read its active.md "
+            "(path-binding mismatch)"
+        )
+
     if not active_path.is_file():
         raise FileNotFoundError(
             f"active.md not found for {contract_id} / {attempt_id} at {active_path}"
@@ -119,7 +213,7 @@ def build_resume_brief(
             },
             now=timestamp,
             attempt_id=attempt_id,
-            actor="user",
+            actor=actor,
         )
 
     return ResumeBrief(
@@ -132,4 +226,4 @@ def build_resume_brief(
     )
 
 
-__all__ = ["ResumeBrief", "build_resume_brief"]
+__all__ = ["ResumeBrief", "ResumeBriefError", "build_resume_brief"]

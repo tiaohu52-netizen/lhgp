@@ -7,6 +7,9 @@ Covers:
 - two calls with the same inputs produce the same body (idempotent on `now`)
 - the optional `conn` writes an `attempt/resumed` audit event when supplied
 - the optional `next_attempt_id` override is respected
+- P1 review: path traversal in attempt_id/contract_id is rejected
+- P1 review: attempt must be recorded in the DB when conn is supplied
+- P1 review: actor is parameterized, not hard-coded to "user"
 """
 
 from __future__ import annotations
@@ -18,6 +21,7 @@ from pathlib import Path
 import pytest
 
 from lhgp.contracts import ResumeBrief, build_resume_brief
+from lhgp.contracts.resume import ResumeBriefError
 from lhgp.persistence.events_query import get_events
 from lhgp.persistence.schema import ensure_schema
 from lhgp.persistence.types import StoreConfig
@@ -50,6 +54,33 @@ def _seed_attempt(
             HANDOVER_TEXT, encoding="utf-8"
         )
     return root
+
+
+def _open_conn(root: Path) -> sqlite3.Connection:
+    """Open the store and record the (contract_id, attempt_id) pair so
+    the resume helper's path-binding check passes when a ``conn`` is
+    supplied. Without this the helper would correctly refuse to read a
+    file claiming to belong to a contract that doesn't know about it."""
+    conn = connect(StoreConfig(db_path=root / "state.db"))
+    ensure_schema(conn)
+    conn.execute(
+        "INSERT INTO attempts "
+        "(attempt_id, goal_id, contract_id, contract_revision, role, state, "
+        " admitted_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            ATTEMPT_ID,
+            CONTRACT_ID,
+            CONTRACT_ID,
+            1,
+            "executor",
+            "admitted",
+            NOW.isoformat(),
+            NOW.isoformat(),
+        ),
+    )
+    conn.commit()
+    return conn
 
 
 def test_active_only_body_uses_placeholder(tmp_path: Path) -> None:
@@ -111,8 +142,7 @@ def test_next_attempt_id_override_wins(tmp_path: Path) -> None:
 def test_conn_writes_attempt_resumed_audit_event(tmp_path: Path) -> None:
     root = _seed_attempt(tmp_path, with_handover=False)
     db_path = root / "state.db"
-    conn = connect(StoreConfig(db_path=db_path))
-    ensure_schema(conn)
+    conn = _open_conn(root)
     try:
         brief = build_resume_brief(
             root,
@@ -149,8 +179,7 @@ def test_get_events_sees_written_resume_event(tmp_path: Path) -> None:
     """Re-query via the canonical events_query API, not raw SQL, so the
     query layer stays the source of truth for any reader."""
     root = _seed_attempt(tmp_path, with_handover=False)
-    conn = connect(StoreConfig(db_path=root / "state.db"))
-    ensure_schema(conn)
+    conn = _open_conn(root)
     try:
         build_resume_brief(
             root,
@@ -164,3 +193,171 @@ def test_get_events_sees_written_resume_event(tmp_path: Path) -> None:
         conn.close()
     types = [e.event_type for e in events]
     assert "attempt/resumed" in types
+
+
+class TestPathSafety:
+    """P1 review (2026-09-08): the previous implementation joined
+    ``contract_id`` / ``attempt_id`` directly into a file path with
+    no whitelist or boundary check. A caller could pass an absolute
+    path or ``../``-laden string and read a file outside the contract
+    directory. These tests pin the new defenses."""
+
+    def test_absolute_path_in_attempt_id_rejected(self, tmp_path: Path) -> None:
+        _seed_attempt(tmp_path, with_handover=False)
+        with pytest.raises(ResumeBriefError):
+            build_resume_brief(
+                tmp_path / "data",
+                CONTRACT_ID,
+                "C:/Windows/system32/active.md",
+                now=NOW,
+            )
+
+    def test_traversal_in_attempt_id_rejected(self, tmp_path: Path) -> None:
+        _seed_attempt(tmp_path, with_handover=False)
+        with pytest.raises(ResumeBriefError):
+            build_resume_brief(
+                tmp_path / "data",
+                CONTRACT_ID,
+                "../../../etc/passwd",
+                now=NOW,
+            )
+
+    def test_traversal_in_contract_id_rejected(self, tmp_path: Path) -> None:
+        _seed_attempt(tmp_path, with_handover=False)
+        with pytest.raises(ResumeBriefError):
+            build_resume_brief(
+                tmp_path / "data",
+                "../../etc",
+                ATTEMPT_ID,
+                now=NOW,
+            )
+
+    def test_attempt_id_with_slash_rejected(self, tmp_path: Path) -> None:
+        _seed_attempt(tmp_path, with_handover=False)
+        with pytest.raises(ResumeBriefError):
+            build_resume_brief(
+                tmp_path / "data",
+                CONTRACT_ID,
+                "subdir/file",
+                now=NOW,
+            )
+
+    def test_attempt_id_with_null_rejected(self, tmp_path: Path) -> None:
+        _seed_attempt(tmp_path, with_handover=False)
+        with pytest.raises(ResumeBriefError):
+            build_resume_brief(
+                tmp_path / "data",
+                CONTRACT_ID,
+                "att-\x00bad",
+                now=NOW,
+            )
+
+    def test_unbound_attempt_refused_when_conn_supplied(self, tmp_path: Path) -> None:
+        """Even with a whitelisted attempt_id, if the DB says no attempt
+        with that id is recorded under the contract, the read is
+        refused.  This stops an attacker who can plant a file inside
+        the contract's directory from minting a resume brief for a
+        contract they don't own."""
+
+        _seed_attempt(tmp_path, with_handover=False)
+        # Plant a *different* attempt_id so the DB-binding check fails
+        # for the ATTEMPT_ID the helper will be asked to read.
+        conn = connect(StoreConfig(db_path=tmp_path / "data" / "state.db"))
+        ensure_schema(conn)
+        try:
+            conn.execute(
+                "INSERT INTO attempts "
+                "(attempt_id, goal_id, contract_id, contract_revision, role, state, "
+                " admitted_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "att-OTHER-not-the-resume-target",
+                    CONTRACT_ID,
+                    CONTRACT_ID,
+                    1,
+                    "executor",
+                    "admitted",
+                    NOW.isoformat(),
+                    NOW.isoformat(),
+                ),
+            )
+            conn.commit()
+            with pytest.raises(ResumeBriefError, match="not recorded"):
+                build_resume_brief(
+                    tmp_path / "data",
+                    CONTRACT_ID,
+                    ATTEMPT_ID,
+                    conn=conn,
+                    now=NOW,
+                )
+        finally:
+            conn.close()
+
+    def test_bound_attempt_succeeds_with_conn(self, tmp_path: Path) -> None:
+        """The DB-binding check is a feature, not a bug: the previous
+        test plants a different attempt_id in the DB, so the planted
+        file's attempt_id no longer matches and the call is refused.
+        Here we plant the matching row and expect success."""
+
+        _seed_attempt(tmp_path, with_handover=False)
+        conn = _open_conn(tmp_path)
+        try:
+            brief = build_resume_brief(
+                tmp_path / "data",
+                CONTRACT_ID,
+                ATTEMPT_ID,
+                conn=conn,
+                now=NOW,
+            )
+        finally:
+            conn.close()
+        assert brief.attempt_id == ATTEMPT_ID
+
+
+class TestActorParameter:
+    """P1 review: the audit event used to record ``actor="user"`` no
+    matter who called the helper.  Forensic value is lost when an
+    agent-initiated MCP call looks identical to a real user keystroke.
+    The actor is now a parameter; default keeps the old behaviour for
+    direct Python callers."""
+
+    def test_default_actor_is_user(self, tmp_path: Path) -> None:
+        from lhgp.persistence.events_query import get_events
+
+        root = _seed_attempt(tmp_path, with_handover=False)
+        conn = _open_conn(root)
+        try:
+            build_resume_brief(
+                root,
+                CONTRACT_ID,
+                ATTEMPT_ID,
+                conn=conn,
+                now=NOW,
+            )
+            events = get_events(conn, contract_id=CONTRACT_ID)
+        finally:
+            conn.close()
+        resumed = [e for e in events if e.event_type == "attempt/resumed"]
+        assert len(resumed) == 1
+        assert resumed[0].actor == "user"
+
+    def test_mcp_actor_propagates(self, tmp_path: Path) -> None:
+        from lhgp.persistence.events_query import get_events
+
+        root = _seed_attempt(tmp_path, with_handover=False)
+        conn = _open_conn(root)
+        try:
+            build_resume_brief(
+                root,
+                CONTRACT_ID,
+                ATTEMPT_ID,
+                conn=conn,
+                now=NOW,
+                actor="agent:mcp",
+            )
+            events = get_events(conn, contract_id=CONTRACT_ID)
+        finally:
+            conn.close()
+        resumed = [e for e in events if e.event_type == "attempt/resumed"]
+        assert len(resumed) == 1
+        assert resumed[0].actor == "agent:mcp"
