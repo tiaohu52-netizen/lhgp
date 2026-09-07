@@ -20,7 +20,8 @@ from lhgp.memory.store import (
     expire_due,
     get_memory,
     list_memories,
-    make_pattern_memory,
+    make_memory,
+    make_pattern_memory,  # back-compat alias of make_memory
     record_memory,
     search_memories,
 )
@@ -37,7 +38,8 @@ __all__ = [
     "expire_due",
     "get_memory",
     "list_memories",
-    "make_pattern_memory",
+    "make_memory",
+    "make_pattern_memory",  # back-compat alias of make_memory
     "record_memory",
     "render_for_active_md",
     "search_memories",

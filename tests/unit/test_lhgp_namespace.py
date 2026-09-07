@@ -515,6 +515,9 @@ def test_p2_memory_and_p3_flow_namespace_reexport_single_implementation() -> Non
         MemoryScope as CanonicalMemoryScope,
     )
     from lhgp.memory import (
+        make_memory as canonical_make_memory,
+    )
+    from lhgp.memory import (
         make_pattern_memory as canonical_make_pattern_memory,
     )
     from lhgp.memory import (
@@ -545,6 +548,9 @@ def test_p2_memory_and_p3_flow_namespace_reexport_single_implementation() -> Non
         MemoryScope as LegacyMemoryScope,
     )
     from longtask.memory import (
+        make_memory as legacy_make_memory,
+    )
+    from longtask.memory import (
         make_pattern_memory as legacy_make_pattern_memory,
     )
     from longtask.memory import (
@@ -556,7 +562,11 @@ def test_p2_memory_and_p3_flow_namespace_reexport_single_implementation() -> Non
     assert CanonicalMemoryKind is LegacyMemoryKind
     assert CanonicalMemoryScope is LegacyMemoryScope
     assert canonical_record_memory is legacy_record_memory
-    assert canonical_make_pattern_memory is legacy_make_pattern_memory
+    assert canonical_make_memory is legacy_make_memory
+    # The ``make_pattern_memory`` alias must be the same callable as
+    # ``make_memory`` so the rename doesn't fork behavior.
+    assert canonical_make_pattern_memory is canonical_make_memory
+    assert legacy_make_pattern_memory is legacy_make_memory
     assert CanonicalFlow is LegacyFlow
     assert canonical_walk_source is legacy_walk_source
     assert canonical_render_mermaid is legacy_render_mermaid

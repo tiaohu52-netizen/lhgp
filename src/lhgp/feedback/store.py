@@ -6,6 +6,7 @@ and read by :mod:`lhgp.learning` to extract improvement signals.
 
 from __future__ import annotations
 
+import logging
 import re
 import sqlite3
 from typing import Any
@@ -17,84 +18,122 @@ from lhgp.feedback.types import AcceptanceDiff, EvaluationVerdict, UserEvaluatio
 # firing on mid-prose mentions like "the topic: choice is yours".
 _TOPIC_PATTERN = re.compile(r"^\s*topic:\s*([a-zA-Z][\w\-]+)")
 
+_LOG = logging.getLogger("lhgp.feedback")
+
+
+# ---------------------------------------------------------------------------
+# P6+1 / memory-and-wiki Phase 2 — auto-mine hook
+# ---------------------------------------------------------------------------
+
+
+def _should_mine(evaluation: UserEvaluation) -> int | None:
+    """Return the rating int if the evaluation is worth mining, else None.
+
+    Mining conditions (any one suffices):
+      - rating >= 4 with non-empty comments
+      - REJECT verdict with non-empty comments
+    """
+    if not evaluation.comments.strip():
+        return None
+    try:
+        rating_int = int(evaluation.rating)
+    except (TypeError, ValueError):
+        return None
+    if rating_int >= 4:
+        return rating_int
+    if evaluation.verdict is EvaluationVerdict.REJECT:
+        return rating_int
+    return None
+
+
+def _mine_plan(rating_int: int, contract_id: str) -> tuple[Any, str, float, int]:
+    """Pick the (kind, title, score, expires_in_days) for a minable eval.
+
+    High ratings become PATTERN memories (what worked); rejections
+    become GOTCHA memories (what to avoid). The score bands are
+    defined in the design — see CHANGELOG 0.1.0a8.
+    """
+    from lhgp.memory import MemoryKind
+
+    if rating_int >= 4:
+        return (
+            MemoryKind.PATTERN,
+            f"[{contract_id}] what worked (rating {rating_int}/5)",
+            0.6 + 0.1 * (rating_int - 4),  # 4 -> 0.6, 5 -> 0.7
+            180,
+        )
+    return (
+        MemoryKind.GOTCHA,
+        f"[{contract_id}] what to avoid (rejected)",
+        0.7,  # rejections are signal-dense
+        365,
+    )
+
+
+def _extract_topic_domain(comments: str) -> str | None:
+    """Return the lowercase domain if the comment starts with ``topic: <x>``."""
+    match = _TOPIC_PATTERN.match(comments)
+    return match.group(1).lower() if match is not None else None
+
+
+def _build_memory(
+    evaluation: UserEvaluation,
+    evaluation_id: int,
+    rating_int: int,
+    domain: str | None,
+) -> Any:
+    """Assemble the auto-mined Memory, including the optional topic-flip."""
+    from lhgp.memory import MemoryScope, make_memory
+
+    kind, title, score, expires_in_days = _mine_plan(rating_int, evaluation.contract_id)
+    tags: tuple[str, ...] = ("source/evaluation", f"rating/{rating_int}")
+    scope = MemoryScope.PROJECT
+    if domain is not None:
+        # Without the topic tag, the index filter would drop this memory
+        # and the auto-mine would write to a dead-letter box.
+        scope = MemoryScope.DOMAIN
+        tags = (*tags, f"topic/{domain}")
+    return make_memory(
+        title=title,
+        body_md=evaluation.comments.strip(),
+        tags=tags,
+        scope=scope,
+        kind=kind,
+        source_contract_id=evaluation.contract_id,
+        source_event_id=evaluation_id,
+        source_actor=f"eval:{evaluation.evaluator}",
+        score=score,
+        expires_in_days=expires_in_days,
+    )
+
 
 def _maybe_record_memory_from_evaluation(
     conn: sqlite3.Connection,
     evaluation: UserEvaluation,
     evaluation_id: int,
 ) -> None:
-    """P6+1 / memory-and-wiki Phase 2: auto-mine a long-term memory from a
-    user evaluation. Rating >= 4 with comments (or REJECT with comments) is
-    a signal worth keeping; without comments there is nothing to remember.
+    """Auto-mine a long-term memory from a user evaluation.
 
-    Failures here must NOT poison the evaluation write — auto-mining is
-    best-effort, the rating is the source of truth.
+    Mining conditions: rating >= 4 with non-empty comments, OR a REJECT
+    verdict with non-empty comments. Failures here are swallowed (the
+    rating is the source of truth, the memory is a side effect).
     """
+    from lhgp.memory import record_memory
 
-    from lhgp.memory import MemoryKind, MemoryScope, make_pattern_memory, record_memory
-
-    if not evaluation.comments.strip():
+    rating_int = _should_mine(evaluation)
+    if rating_int is None:
         return
-    try:
-        # EvaluationRating is a StrEnum where value is "1".."5" — int()
-        # of the str enum is the int, but be defensive against bad inputs.
-        rating_int = int(evaluation.rating)
-    except (TypeError, ValueError):
-        return
-    if rating_int < 4 and evaluation.verdict != EvaluationVerdict.REJECT:
-        return
-    if rating_int >= 4:
-        kind = MemoryKind.PATTERN
-        title = f"[{evaluation.contract_id}] what worked (rating {rating_int}/5)"
-        score = 0.6 + 0.1 * (rating_int - 4)  # 4 -> 0.6, 5 -> 0.7
-    else:
-        kind = MemoryKind.GOTCHA
-        title = f"[{evaluation.contract_id}] what to avoid (rejected)"
-        score = 0.7  # rejections are signal-dense
-    memory = make_pattern_memory(
-        title=title,
-        body_md=evaluation.comments.strip(),
-        tags=("source/evaluation", f"rating/{rating_int}"),
-        source_contract_id=evaluation.contract_id,
-        source_event_id=evaluation_id,
-        source_actor=f"eval:{evaluation.evaluator}",
-        score=score,
-        expires_in_days=365 if kind == MemoryKind.GOTCHA else 180,
-        kind=kind,
-    )
-    # Scope: project-level by default; if the comment starts with
-    # ``topic: <domain>`` (anchored) we put it on domain scope AND add
-    # the ``topic/<domain>`` tag so ``MemoryIndex.retrieve()`` can find
-    # it. Without the tag, the index filter would drop the memory and
-    # the auto-mine would write to a dead-letter box.
-    topic_match = _TOPIC_PATTERN.match(evaluation.comments)
-    if topic_match is not None:
-        domain = topic_match.group(1).lower()
-        memory = memory.__class__(
-            scope=MemoryScope.DOMAIN,
-            kind=memory.kind,
-            title=memory.title,
-            body_md=memory.body_md,
-            tags=(*memory.tags, f"topic/{domain}"),
-            source_contract_id=memory.source_contract_id,
-            source_event_id=memory.source_event_id,
-            source_actor=memory.source_actor,
-            score=memory.score,
-            created_at=memory.created_at,
-            expires_at=memory.expires_at,
-            schema_version=memory.schema_version,
-        )
+    domain = _extract_topic_domain(evaluation.comments)
+    memory = _build_memory(evaluation, evaluation_id, rating_int, domain)
     try:
         record_memory(conn, memory)
     except Exception as exc:
-        # The evaluation is the source of truth; don't fail the write if
-        # auto-mining chokes. The auto-mine path itself should be unit-tested
-        # so this branch is rarely taken.
-        import logging
+        _LOG.warning("auto-mine memory from evaluation failed: %s", exc)
 
-        logging.getLogger("lhgp.feedback").warning(
-            "auto-mine memory from evaluation failed: %s", exc
-        )
+
+# ---------------------------------------------------------------------------
+# user_evaluations CRUD
+# ---------------------------------------------------------------------------
 
 
 def record_evaluation(conn: sqlite3.Connection, evaluation: UserEvaluation) -> int:
@@ -117,9 +156,6 @@ def record_evaluation(conn: sqlite3.Connection, evaluation: UserEvaluation) -> i
     if lastrowid is None:
         raise RuntimeError("sqlite cursor returned no lastrowid for evaluation insert")
     evaluation_id = int(lastrowid)
-    # P6+1 / memory-and-wiki Phase 2: best-effort auto-mine a long-term
-    # memory from this evaluation. Failures here are swallowed (the
-    # rating is the source of truth, the memory is a side effect).
     _maybe_record_memory_from_evaluation(conn, evaluation, evaluation_id)
     return evaluation_id
 

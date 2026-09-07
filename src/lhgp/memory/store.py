@@ -188,7 +188,7 @@ def bump_score(
     return float(row[0]) if row else None
 
 
-def make_pattern_memory(
+def make_memory(
     title: str,
     body_md: str,
     *,
@@ -201,11 +201,11 @@ def make_pattern_memory(
     kind: MemoryKind = MemoryKind.PATTERN,
     scope: MemoryScope = MemoryScope.PROJECT,
 ) -> Memory:
-    """Build a Memory with sensible defaults.
+    """Build a :class:`Memory` with sensible defaults.
 
-    The name is historical — ``kind`` and ``scope`` are now parameters so
-    the auto-mine hook can emit GOTCHA or DOMAIN-flavored records without
-    rebuilding the dataclass.
+    ``kind`` and ``scope`` are parameters so the auto-mine hook can emit
+    GOTCHA or DOMAIN-flavored records without rebuilding the dataclass.
+    The defaults match what a typical "mined pattern" looks like.
     """
     now = datetime.now(UTC)
     return Memory(
@@ -223,13 +223,21 @@ def make_pattern_memory(
     )
 
 
+# Backwards-compat alias. The original name implied the kind was always
+# PATTERN; after the kind/scope params landed the name stopped reflecting
+# the contract. Keep it as a thin alias so older callers and tests
+# continue to work.
+make_pattern_memory = make_memory
+
+
 __all__ = [
     "MemoryStoreError",
     "bump_score",
     "expire_due",
     "get_memory",
     "list_memories",
-    "make_pattern_memory",
+    "make_memory",
+    "make_pattern_memory",  # back-compat alias of make_memory
     "record_memory",
     "search_memories",
 ]
