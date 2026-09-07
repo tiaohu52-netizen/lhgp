@@ -186,10 +186,8 @@ def mine_lesson_if_due(
 
     from lhgp.memory import MemoryKind, MemoryScope, make_memory, record_memory
 
-    # Use the most recent ATTEMPT_FAILED event as the memory's
-    # source_event_id; fall back to the most recent REJECT
-    # evaluation id when the cluster is REJECT-only so the audit
-    # log still has provenance.
+    # REJECT-only cluster: fall back to the most recent REJECT id
+    # so the audit log still has provenance.
     source_event_id = last_fail_event_id if last_fail_event_id is not None else last_reject_id
     body_md = _build_lesson_body(contract_id, fail_count, reject_count, last_fail_event_id)
     title = f"[{contract_id}] failure cluster ({total} signals) — auto-mined lesson"

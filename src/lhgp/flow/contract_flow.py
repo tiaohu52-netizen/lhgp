@@ -20,11 +20,9 @@ from lhgp.flow.ast_walker import Flow, FlowEdge, FlowNode, walk_source
 logger = logging.getLogger(__name__)
 
 # Cap substring matches so a vague seed can't drag in half the repo.
-
 _MAX_SUBSTRING_MATCHES = 3
 
 # Reject overlong seeds: a 1 KiB string is not a module path.
-
 _MAX_SEED_LEN = 256
 
 # Mirror the cli.py pre-check so we never read a multi-GB file into
