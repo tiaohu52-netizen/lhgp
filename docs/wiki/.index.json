@@ -2,11 +2,12 @@
   "schema_version": 1,
   "generated_by": "scripts/build_wiki_index.py",
   "wiki_root": "docs\\wiki",
-  "page_count": 11,
+  "page_count": 12,
   "by_type": {
     "glossary": 1,
     "moc": 2,
-    "playbook": 8
+    "playbook": 8,
+    "": 1
   },
   "pages": [
     {
@@ -145,7 +146,8 @@
       "related": [],
       "outgoing": [
         "glossary.md",
-        "playbook/index.md"
+        "playbook/index.md",
+        "index.md"
       ],
       "outgoing_raw": [
         "page",
@@ -154,7 +156,9 @@
         "case-studies/index",
         "topics/index"
       ],
-      "backlinks": [],
+      "backlinks": [
+        "index.md"
+      ],
       "block_ids": [
         "blockid"
       ],
@@ -202,9 +206,12 @@
       "related": [
         "add-mcp-tool"
       ],
-      "outgoing": [],
+      "outgoing": [
+        "playbook/add-mcp-tool.md"
+      ],
       "outgoing_raw": [],
       "backlinks": [
+        "playbook/add-mcp-tool.md",
         "playbook/index.md"
       ],
       "block_ids": [],
@@ -270,14 +277,24 @@
         "schema-migration",
         "sql-binding"
       ],
-      "outgoing": [],
+      "outgoing": [
+        "playbook/sql-binding.md",
+        "playbook/schema-migration.md",
+        "playbook/daemon-tick-hook.md",
+        "playbook/add-mcp-tool.md"
+      ],
       "outgoing_raw": [
         "sql-binding",
         "schema-migration",
         "daemon-tick-hook"
       ],
       "backlinks": [
-        "playbook/index.md"
+        "playbook/add-mcp-tool.md",
+        "playbook/daemon-tick-hook.md",
+        "playbook/index.md",
+        "playbook/schema-migration.md",
+        "playbook/sql-binding.md",
+        "playbook/write-test-first.md"
       ],
       "block_ids": [],
       "headings": [
@@ -350,9 +367,14 @@
         "add-cli-subcommand",
         "add-event-type"
       ],
-      "outgoing": [],
+      "outgoing": [
+        "playbook/add-cli-subcommand.md",
+        "playbook/add-event-type.md"
+      ],
       "outgoing_raw": [],
       "backlinks": [
+        "playbook/add-cli-subcommand.md",
+        "playbook/add-event-type.md",
         "playbook/index.md"
       ],
       "block_ids": [],
@@ -420,11 +442,15 @@
       "related": [
         "add-event-type"
       ],
-      "outgoing": [],
+      "outgoing": [
+        "playbook/sql-binding.md",
+        "playbook/add-event-type.md"
+      ],
       "outgoing_raw": [
         "sql-binding"
       ],
       "backlinks": [
+        "playbook/add-event-type.md",
         "playbook/index.md"
       ],
       "block_ids": [],
@@ -444,6 +470,50 @@
         {
           "level": 2,
           "text": "验证清单"
+        }
+      ]
+    },
+    {
+      "path": "playbook/flowgen.md",
+      "title": "flowgen",
+      "type": "",
+      "status": "",
+      "tags": [],
+      "audience": [],
+      "requires": [],
+      "related": [],
+      "outgoing": [],
+      "outgoing_raw": [],
+      "backlinks": [],
+      "block_ids": [],
+      "headings": [
+        {
+          "level": 1,
+          "text": "playbook: flowgen（AST → Mermaid / Excalidraw）"
+        },
+        {
+          "level": 2,
+          "text": "三种用法的取舍"
+        },
+        {
+          "level": 2,
+          "text": "CLI 速查"
+        },
+        {
+          "level": 2,
+          "text": "注意事项"
+        },
+        {
+          "level": 2,
+          "text": "何时手写而不是 AST"
+        },
+        {
+          "level": 2,
+          "text": "相关"
+        },
+        {
+          "level": 2,
+          "text": "flow"
         }
       ]
     },
@@ -529,10 +599,13 @@
       "related": [
         "write-test-first"
       ],
-      "outgoing": [],
+      "outgoing": [
+        "playbook/write-test-first.md"
+      ],
       "outgoing_raw": [],
       "backlinks": [
-        "playbook/index.md"
+        "playbook/index.md",
+        "playbook/write-test-first.md"
       ],
       "block_ids": [],
       "headings": [
@@ -597,13 +670,18 @@
         "add-event-type",
         "sql-binding"
       ],
-      "outgoing": [],
+      "outgoing": [
+        "playbook/add-event-type.md",
+        "playbook/sql-binding.md"
+      ],
       "outgoing_raw": [
         "add-event-type",
         "sql-binding"
       ],
       "backlinks": [
-        "playbook/index.md"
+        "playbook/add-event-type.md",
+        "playbook/index.md",
+        "playbook/sql-binding.md"
       ],
       "block_ids": [],
       "headings": [
@@ -668,13 +746,19 @@
         "add-event-type",
         "schema-migration"
       ],
-      "outgoing": [],
+      "outgoing": [
+        "playbook/add-event-type.md",
+        "playbook/schema-migration.md"
+      ],
       "outgoing_raw": [
         "add-event-type",
         "schema-migration"
       ],
       "backlinks": [
-        "playbook/index.md"
+        "playbook/add-event-type.md",
+        "playbook/daemon-tick-hook.md",
+        "playbook/index.md",
+        "playbook/schema-migration.md"
       ],
       "block_ids": [],
       "headings": [
@@ -759,10 +843,14 @@
         "quality-gate",
         "add-event-type"
       ],
-      "outgoing": [],
+      "outgoing": [
+        "playbook/quality-gate.md",
+        "playbook/add-event-type.md"
+      ],
       "outgoing_raw": [],
       "backlinks": [
-        "playbook/index.md"
+        "playbook/index.md",
+        "playbook/quality-gate.md"
       ],
       "block_ids": [],
       "headings": [

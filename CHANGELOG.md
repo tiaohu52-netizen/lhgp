@@ -25,16 +25,40 @@ memory-and-wiki Phase 1：协议内 wiki 合并发布版。
 - **CLI**:`lhgp wiki list / read / search / show-graph`,纯 read-only,
   不启 daemon 也能用;通过 `.index.json` 工作。
 - **双命名空间 facade**:`src/lhgp/wiki.py`(canonical)+ `src/longtask/wiki.py`(< 5 行 re-export)。
+- **Phase 2: protocol memory 子系统**（`lhgp/memory/`）—— SQLite `memories`
+  表(schema v3→v4, 3 索引: scope+kind+created_at、expires_at 偏、
+  source_contract_id 偏);`Memory`/`MemoryKind`/`MemoryScope` + `MemoryIndex`
+  (global / domain / project 三层, capacity 合同, 单条 truncate fallback);
+  `lhgp memory add / list / search / show / expire` CLI;`compile_context_snapshot`
+  在 deadline 快照之后 / handover 之前接入 1/10 `max_bytes` budget;
+  `record_evaluation` auto-mine hook:rating ≥ 4 + 有 comments → PATTERN
+  (score 0.6/0.7),REJECT + 有 comments → GOTCHA (score 0.7, expires 365d),
+  失败 logging.warning 不污染 evaluation 写入。
+- **Phase 3: flowgen 代码/手写流程图**（`lhgp/flow/`）—— `walk_source` 抽
+  Python 源(def/class/method + self.x 与 Class() 本地解析 + 动态调用落 external,
+  自循环 / 重复边丢弃);`render_mermaid` 出 `flowchart TD` 块(Mermaid 词法
+  安全的 id 冲突解决);`render_excalidraw` 出可粘贴的 JSON 场景
+  (确定性网格布局);`wiki_parser` 抽 `## flow` mermaid 段 + `list_flow_pages`
+  扫目录(隐藏目录 / 编码错误跳过);`lhgp flow ast / wiki / list-flow-pages` CLI。
+- **新增 wiki 页**:`playbook/flowgen.md` —— 三个用法的取舍 + CLI 速查 +
+  wiki `## flow` 约定 + 含一段手写流程图。
+- **新增 skill**:`skills/flowgen/`(SKILL.md + MANIFEST.json 0.1.0a1)——
+  教模型用 `lhgp flow` 三种入口。
 
 ### Quality
 
 - 7/7 quality gate 全过(ruff format / lint / arch / deps / claims / mypy / pytest+coverage)。
-- 集成 / 单元 / 命名空间 identity 共 +110 测试(775 → 885)。
-- Phase 1 验证报告（子代理）发现 3 个 ship-block 项,已在 0.1.0a8 修复:
+- 测试 +77 (P1 110 + P2 44 + P3 33 = 187 / 890 → 967)。
+- 覆盖率 75.35% (target ≥ 70%)。
+- Phase 1 验证报告(子代理)发现 3 个 ship-block 项,已在 0.1.0a8 修复:
   1. CHANGELOG 入口(本条)
   2. ARCHITECTURE.md 真身位置地图 wiki 行(见下)
   3. 索引 `_resolve_link` 加 basename fallback + frontmatter `related` 进
      outgoing + 隐藏目录排除
+- P2 修 5 个 production bug:from_db_row plain-tuple column index (-1 → 5)
+  静默把 `tags_json="4"` 解析成 4、`_opt_dt` naive 视为 UTC、index domain
+  过滤 `topic/<domain>` 标签(top_n 之前的下标剥离)、
+  `make_pattern_memory(kind=, scope=)` 让 auto-mine 不再硬编码 PATTERN。
 
 ## [0.1.0a7] - 2026-09-07
 
