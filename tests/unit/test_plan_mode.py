@@ -175,6 +175,44 @@ class TestObjectiveAlignment:
         result = plan.validate(make_view())
         assert result.approved is True, result.rejection_reasons
 
+    def test_cjk_objective_rationale_with_one_shared_char_accepted(self) -> None:
+        """A CJK objective without spaces must not require the entire
+        objective to appear verbatim in every step's rationale.
+
+        Regression for the P2 review finding: with the old
+        ``_pick_keyword`` (single-string return, ``objective.split()``),
+        the keyword for "修复登录错误并补充测试" was the entire string,
+        and no step rationale could match.
+        """
+        view = make_view(objective="修复登录错误并补充测试")
+        plan = make_plan(
+            [
+                make_step(
+                    rationale="定位登录失败的原因并记录堆栈,确认 file-exists:dist/app.js 还在",
+                    expected_outcome="ok; cross-checked by file-exists:dist/app.js",
+                )
+            ]
+        )
+        result = plan.validate(view)
+        assert result.approved is True, result.rejection_reasons
+
+    def test_cjk_objective_rationale_with_no_shared_char_rejected(self) -> None:
+        """A CJK rationale that shares no character with the objective
+        must still be rejected — the relaxed rule is any-keyword, not
+        any-rationale."""
+        view = make_view(objective="修复登录错误并补充测试")
+        plan = make_plan(
+            [
+                make_step(
+                    rationale="完全无关的工作内容,确认 file-exists:dist/app.js 还在",
+                    expected_outcome="ok; cross-checked by file-exists:dist/app.js",
+                )
+            ]
+        )
+        result = plan.validate(view)
+        assert result.approved is False
+        assert any("objective keyword" in r for r in result.rejection_reasons)
+
 
 class TestAcceptanceCoverage:
     def test_one_step_per_check_approved(self) -> None:

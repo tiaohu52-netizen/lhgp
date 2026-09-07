@@ -115,6 +115,34 @@ class Plan:
     submitted_at: datetime
     submitted_by: str  # "agent:<evaluator_id>"
 
+    @property
+    def content_hash(self) -> str:
+        """Stable hash over the plan's substantive fields.
+
+        Used by the gate enforcer to reject stale ``PLAN_APPROVED``
+        events whose plan content has been edited (e.g., a step was
+        inserted or removed) after approval. The hash covers
+        step_id, action, target, rationale, expected_outcome, in
+        order; ``contract_id`` and ``submitted_at`` are intentionally
+        excluded so the same plan content submitted twice yields the
+        same hash.
+        """
+        import hashlib
+
+        h = hashlib.sha256()
+        for step in self.steps:
+            h.update(str(step.step_id).encode("utf-8"))
+            h.update(b"\x00")
+            h.update(step.action.encode("utf-8"))
+            h.update(b"\x00")
+            h.update(step.target.encode("utf-8"))
+            h.update(b"\x00")
+            h.update(step.rationale.encode("utf-8"))
+            h.update(b"\x00")
+            h.update(step.expected_outcome.encode("utf-8"))
+            h.update(b"\x01")
+        return h.hexdigest()
+
     def validate(self, contract: ContractView) -> PlanValidation:
         """Return a :class:`PlanValidation` against the given contract view.
 
@@ -144,18 +172,22 @@ class Plan:
                 reasons.append(f"step {index}: expected_outcome must not be empty")
 
         # Objective keyword coverage. The objective is the contract's
-        # purpose; every step's rationale must connect to it.
-        keyword = _pick_keyword(contract.draft.objective)
-        if keyword is None:
+        # purpose; every step's rationale must connect to it (at least one
+        # of the candidate keywords).  ``_pick_keyword`` returns a list so
+        # CJK objectives work without requiring the whole objective to be
+        # embedded in every rationale.
+        keywords = _pick_keyword(contract.draft.objective)
+        if not keywords:
             # Empty objective already rejected by draft validation, but be
             # defensive: a plan cannot be "aligned" with no objective.
             reasons.append("contract objective has no usable keyword")
         else:
             for index, step in enumerate(self.steps, start=1):
-                if not _contains_keyword(step.rationale, keyword):
+                if not _contains_any_keyword(step.rationale, keywords):
+                    preview = ", ".join(repr(k) for k in keywords[:3])
                     reasons.append(
-                        f"step {index}: rationale must mention objective keyword "
-                        f"{keyword!r} (case-insensitive)"
+                        f"step {index}: rationale must mention one of objective "
+                        f"keywords [{preview}, ...] (case-insensitive)"
                     )
 
         # Per-acceptance.check coverage. Every check must be referenced
@@ -186,25 +218,59 @@ class PlanValidation:
         }
 
 
-def _pick_keyword(objective: str) -> str | None:
-    """Return the first non-stop word in ``objective`` (lowercased).
+def _pick_keyword(objective: str) -> list[str]:
+    """Return a list of candidate keywords from ``objective``.
 
-    The keyword is used as a connectivity check — every step's rationale
-    must contain it.  Picking a long, specific word (vs the first token
-    or the whole objective) avoids trivial matches like "the".
+    The validator checks that each step's rationale contains at least one
+    of these.  Returning a list (not a single string) avoids the trap
+    that ``"修复登录错误并补充测试".split()`` yields the whole CJK
+    string as one token, which would then require every rationale to
+    contain the entire objective verbatim.
+
+    Strategy:
+    - Latin tokens: emit each non-stop, length >= 3 word.
+    - CJK characters: emit each unique CJK ideograph that survives
+      filtering (stop-word CJK tokens are filtered as full tokens only).
+    - Mixed: collect both, dedup, return.
     """
+    keywords: list[str] = []
+    seen: set[str] = set()
+    cjk_chars: list[str] = []
+    cjk_seen: set[str] = set()
+
     for raw in objective.split():
-        # Strip ASCII + CJK punctuation that is rarely meaningful.
         cleaned = "".join(ch for ch in raw if ch.isalnum())
+        if not cleaned:
+            continue
         lowered = cleaned.lower()
-        if not lowered or lowered in _STOP_WORDS:
+        if lowered in _STOP_WORDS:
             continue
-        # Single/double-char Latin tokens are too easy to match by accident.
-        # Keep single CJK characters: they are real semantic units.
-        if len(lowered) < 3 and not _is_cjk(cleaned):
+        if _is_cjk(cleaned):
+            # CJK: keep single ideographs (each is a real semantic unit).
+            for ch in cleaned:
+                if not _is_cjk(ch):
+                    continue
+                if ch in cjk_seen:
+                    continue
+                cjk_seen.add(ch)
+                cjk_chars.append(ch)
             continue
-        return lowered
-    return None
+        if len(lowered) < 3:
+            continue
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        keywords.append(lowered)
+
+    # CJK keywords (chars) first when present, since the reviewer noted
+    # CJK objectives are the common case where the single-keyword heuristic
+    # failed completely.
+    return cjk_chars + keywords
+
+
+def _contains_any_keyword(text: str, keywords: list[str]) -> bool:
+    lowered = text.lower()
+    return any(kw in lowered for kw in keywords)
 
 
 def _is_cjk(token: str) -> bool:
