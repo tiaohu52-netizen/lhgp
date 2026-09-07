@@ -191,6 +191,19 @@ def _emit_auto_mine_audit(
     """
     from datetime import UTC, datetime
 
+    # Cap the actor field at 64 chars: an evaluator id with an email
+    # or long UUID would otherwise blow past the column width
+    # downstream. Truncation is logged so a misconfigured evaluator
+    # name doesn't silently lose provenance.
+    raw_actor = f"auto-mine:{evaluation.evaluator}"
+    actor = raw_actor[:64]
+    if len(raw_actor) > 64:
+        _LOG.warning(
+            "auto-mine actor truncated from %d to 64 chars (evaluator=%r)",
+            len(raw_actor),
+            evaluation.evaluator,
+        )
+
     try:
         from longtask.persistence.events import EventType
         from longtask.persistence.store import append_event
@@ -213,7 +226,7 @@ def _emit_auto_mine_audit(
             event_type=event_type,
             payload=payload,
             now=datetime.now(UTC),
-            actor=f"auto-mine:{evaluation.evaluator}",
+            actor=actor,
             role="system",
         )
     except Exception as exc:

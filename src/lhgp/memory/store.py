@@ -169,6 +169,48 @@ def search_memories(
     return [Memory.from_db_row(r) for r in rows]
 
 
+def list_candidates_for_context(
+    conn: sqlite3.Connection,
+    *,
+    domain: str | None,
+    now: datetime | None = None,
+    limit: int = 20,
+) -> list[Memory]:
+    """Single-SQL candidate pull for ``MemoryIndex.retrieve``.
+
+    Replaces three back-to-back ``list_memories`` calls (one per
+    scope) with one query that unions GLOBAL + PROJECT + (DOMAIN
+    whose ``tags_json`` contains ``topic/<domain>``). The tag
+    match uses ``json_each`` on the JSON-array column, so a tag
+    substring like ``topic/foo`` does not accidentally match
+    ``topic/foobar``. The result is ordered score-DESC then
+    created_at-DESC and capped by ``limit``.
+
+    The non-expired filter (``expires_at IS NULL OR > now``) is
+    applied in SQL so an expired memory never reaches Python.
+    """
+    now_dt = now or datetime.now(UTC)
+    if domain:
+        domain_tag = f"topic/{domain}"
+        where_scope = (
+            "(scope = 'global' OR scope = 'project' "
+            "OR (scope = 'domain' AND EXISTS ("
+            "SELECT 1 FROM json_each(tags_json) WHERE json_each.value = ?"
+            ")))"
+        )
+        params: list[Any] = [domain_tag]
+    else:
+        where_scope = "(scope = 'global' OR scope = 'project')"
+        params = []
+    rows = conn.execute(
+        f"SELECT * FROM memories WHERE {where_scope} "  # noqa: S608 — clauses whitelisted
+        "AND (expires_at IS NULL OR expires_at > ?) "
+        "ORDER BY score DESC, created_at DESC LIMIT ?",
+        (*params, now_dt.isoformat(), int(limit)),
+    ).fetchall()
+    return [Memory.from_db_row(r) for r in rows]
+
+
 def _expire_due_in_transaction(
     conn: sqlite3.Connection,
     *,

@@ -67,6 +67,11 @@ from typing import Any
 # pattern/rule/heuristic (long-form references use wiki pages, not
 # memory rows). Larger bodies are rejected at construction time so
 # the caller sees the limit at the boundary, not at SELECT time.
+#
+# The cap is on UTF-8 BYTES, not characters: 64 KiB of ASCII is
+# 64K characters, but 64 KiB of CJK is roughly 21K characters
+# (each Chinese char is 3 UTF-8 bytes). If the caller is reasoning
+# in characters, divide by 3 for CJK content.
 _MAX_BODY_BYTES = 64 * 1024
 
 

@@ -32,8 +32,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from lhgp.memory.store import list_memories
-from lhgp.memory.types import Memory, MemoryScope
+from lhgp.memory.store import list_candidates_for_context
+from lhgp.memory.types import Memory
 
 # Constant cost of the section header, in UTF-8 bytes. Pre-computed so
 # we can budget a single-item truncation precisely without re-encoding
@@ -176,37 +176,28 @@ class MemoryIndex:
     def _gather_candidates(self, contract_context: dict[str, Any] | None) -> list[Memory]:
         """Collect the union of global, domain-matching, and project memories.
 
-        Dedups by id and sorts score-DESC, then created_at-DESC so the
-        first N are the most relevant regardless of source scope.
+        Single SQL via ``list_candidates_for_context`` (unions
+        GLOBAL + PROJECT + DOMAIN whose tags contain ``topic/<domain>``
+        in one query, ordered score-DESC, capped at ``top_n * 2``).
+        The Python-side dedup pass is kept for safety: a memory
+        whose tag list somehow contains the domain tag twice is
+        impossible in practice, but a defensive dedup costs nothing.
         """
         domain = _domain_of(contract_context)
-        # ``limit=self.top_n * 2`` is a soft cap; the SQL is also sorted
-        # by score DESC, so even if there are thousands of project
-        # memories we never pull more than this for one retrieval.
-        limit = self.top_n * 2
-        global_mems = list_memories(self.conn, scope=MemoryScope.GLOBAL, limit=limit)
-        domain_mems: list[Memory] = []
-        if domain:
-            tag = f"topic/{domain}"
-            domain_mems = [
-                m
-                for m in list_memories(self.conn, scope=MemoryScope.DOMAIN, limit=limit)
-                if tag in m.tags
-            ]
-        project_mems = list_memories(self.conn, scope=MemoryScope.PROJECT, limit=limit)
-
+        combined = list_candidates_for_context(
+            self.conn,
+            domain=domain,
+            limit=self.top_n * 2,
+        )
         seen: set[int] = set()
-        combined: list[Memory] = []
-        for m in (*global_mems, *domain_mems, *project_mems):
+        unique: list[Memory] = []
+        for m in combined:
             if m.id is None or m.id in seen:
                 # None id would corrupt the seen set; skip rather than crash.
                 continue
             seen.add(m.id)
-            combined.append(m)
-        # Sort score-DESC; tie-break on newer-first by created_at DESC.
-        # ``-datetime`` works because datetime supports total_ordering.
-        combined.sort(key=lambda m: (-m.score, -(m.created_at or datetime.min).timestamp()))
-        return combined
+            unique.append(m)
+        return unique
 
     def _take_top_n(self, memories: list[Memory]) -> list[RetrievedMemory]:
         """Project the top-N to the wire form. ``top_n`` is a hard cap."""
