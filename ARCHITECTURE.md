@@ -31,6 +31,7 @@ SPEC §19.3 规定迁移顺序：**不得先做全仓机械 rename**。最终目
 | **learning/** | `lhgp/learning/` | `longtask/learning.py` | 信号提取 + 自动模板演化（extractor/evolver） |
 | **portfolio/** | `lhgp/portfolio/` | `longtask/portfolio.py` | dashboard 聚合 + 单合同 trace（summary/tracking） |
 | **enforcement/** | `lhgp/enforcement/` | `longtask/enforcement.py` | deadline 多级升级 + lock（levels/enforcer/report） |
+| **wiki/** | `lhgp/wiki.py` | `longtask/wiki.py` | 协议内 wiki 阅读器（read-only CLI；不接 SQL，扫 .index.json） |
 | **adapters/processes** | `lhgp/adapters/processes.py` | `longtask/adapters/processes.py` | 三平台进程探测（win/linux/darwin） |
 | **adapters/base+handles+manifest** | `lhgp/adapters/` | `longtask/adapters/` | 执行器协议面 |
 | **promoter/escalation+fairness+proposals** | `lhgp/promoter/` | `longtask/promoter/` | 升级阶梯、公平性、提案校验（纯函数） |

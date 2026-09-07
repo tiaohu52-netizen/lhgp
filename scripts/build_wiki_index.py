@@ -131,28 +131,44 @@ def _parse_page(path: Path) -> WikiPage:
 def _resolve_link(link: str, pages_by_stem: dict[str, WikiPage]) -> str | None:
     """Resolve a bare wikilink to a page rel_path or return None.
 
-    Supports Obsidian-style aliases (`page|display` already stripped by caller)
-    and heading-only references (`#heading` returns None).
+    Tries in order:
+      1. exact key match (full path or stem form)
+      2. basename match (so `[[sql-binding]]` resolves to
+         `playbook/sql-binding.md` — the common pattern when MOCs
+         are nested in a subdirectory)
+    Heading-only references (`#heading`) return None.
     """
     if not link or link.startswith("#"):
         return None
     stem = link.lower()
     if stem in pages_by_stem:
         return pages_by_stem[stem].rel_path
+    basename = stem.rsplit("/", 1)[-1]
+    for k, page in pages_by_stem.items():
+        if k.rsplit("/", 1)[-1] == basename:
+            return page.rel_path
     return None
 
 
 def build() -> dict[str, Any]:
     pages: list[WikiPage] = []
     for path in sorted(WIKI_ROOT.rglob("*.md")):
+        # Skip hidden directories (.scratch-trash, .index.json, etc.)
+        # so they never accidentally get indexed.
+        rel = path.relative_to(WIKI_ROOT)
+        if any(part.startswith(".") for part in rel.parts[:-1]):
+            continue
         pages.append(_parse_page(path))
     pages_by_stem = {p.rel_path.removesuffix(".md").lower(): p for p in pages}
     outgoing_resolved: dict[str, list[str]] = {}
     for page in pages:
         out: list[str] = []
-        for link in page.outgoing:
+        # Body wikilinks (free-form prose) + frontmatter related
+        # (machine-asserted cross-references). Both are equally part of
+        # the link graph from the AI's perspective.
+        for link in list(page.outgoing) + list(page.related):
             target = _resolve_link(link, pages_by_stem)
-            if target is not None:
+            if target is not None and target not in out:
                 out.append(target)
         outgoing_resolved[page.rel_path] = out
     backlinks: dict[str, list[str]] = defaultdict(list)

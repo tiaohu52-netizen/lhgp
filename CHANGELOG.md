@@ -4,6 +4,38 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version numbers
 follow [SemVer](https://semver.org/spec/v2.0.0.html); dates in ISO 8601.
 
+## [0.1.0a8] - 2026-09-07
+
+memory-and-wiki Phase 1：协议内 wiki 合并发布版。
+
+### Added
+
+- **协议内 wiki**（`docs/wiki/`）—— git-tracked 纯 markdown vault,Obsidian 守则
+  （wikilinks + 反链 + 层级 tags + frontmatter schema + `^blockid` 锚点）。
+  **不是数据库**:wiki 是源码,可被 git diff / IDE 搜索 / 静态站生成器读。
+- **种子页 11 个**:`glossary.md`(协议术语表)+ `index.md`(主入口 MOC)+
+  `playbook/index.md`(playbook MOC)+ 8 个 playbook
+  (add-event-type / schema-migration / sql-binding / add-mcp-tool /
+  add-cli-subcommand / write-test-first / quality-gate / daemon-tick-hook),
+  从 P6 28 个 commit 提炼。
+- **索引生成器**（`scripts/build_wiki_index.py`）—— 扫 frontmatter + 双向 wikilink,
+  产 `docs/wiki/.index.json` (schema_version 1)。`outgoing_raw` 兜底未解析引用
+  (MOC 引用未来页) 与 `outgoing`(已解析) 分两路 —— AI 拿到的信号"未解析 =
+  待写"是真实的。
+- **CLI**:`lhgp wiki list / read / search / show-graph`,纯 read-only,
+  不启 daemon 也能用;通过 `.index.json` 工作。
+- **双命名空间 facade**:`src/lhgp/wiki.py`(canonical)+ `src/longtask/wiki.py`(< 5 行 re-export)。
+
+### Quality
+
+- 7/7 quality gate 全过(ruff format / lint / arch / deps / claims / mypy / pytest+coverage)。
+- 集成 / 单元 / 命名空间 identity 共 +110 测试(775 → 885)。
+- Phase 1 验证报告（子代理）发现 3 个 ship-block 项,已在 0.1.0a8 修复:
+  1. CHANGELOG 入口(本条)
+  2. ARCHITECTURE.md 真身位置地图 wiki 行(见下)
+  3. 索引 `_resolve_link` 加 basename fallback + frontmatter `related` 进
+     outgoing + 隐藏目录排除
+
 ## [0.1.0a7] - 2026-09-07
 
 反馈回路 + 多合同管理 + deadline 强制（P6）合并发布版。
