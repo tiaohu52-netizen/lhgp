@@ -175,3 +175,29 @@ class TestNestedClasses:
         flow = walk_source(src, "demo")
         edges = {(e.src, e.dst) for e in flow.edges}
         assert ("demo.Outer.make", "demo.Outer.Inner") in edges
+
+    def test_self_dotted_resolves_to_nested_class_method(self) -> None:
+        # ``self.Outer.Inner.method()`` from a class method — the dotted
+        # path past ``self`` contains a nested class. Exercises the
+        # 3-step self.x.y resolution.
+        src = (
+            "class Outer:\n"
+            "    class Inner:\n"
+            "        def f(self): return 1\n"
+            "    def call(self):\n"
+            "        return self.Outer.Inner.f()\n"
+        )
+        flow = walk_source(src, "demo")
+        # Resolver maps ``self.Outer.<rest>`` to the nested class
+        # ``Outer.Inner`` and resolves the trailing ``.f`` to its
+        # method node ``demo.Outer.Inner.f``.
+        assert "demo.Outer.Inner.f" in {e.dst for e in flow.edges}
+
+    def test_external_dotted_class_method(self) -> None:
+        # Calling ``SomeClass.method()`` from a function body, where
+        # SomeClass is not locally defined — exercises the dotted
+        # ``Class.method`` resolution path that ends in external.
+        src = "def main():\n    Foo.bar()\n"
+        flow = walk_source(src, "demo")
+        edges = {(e.src, e.dst) for e in flow.edges}
+        assert ("demo.main", "ext:Foo.bar") in edges

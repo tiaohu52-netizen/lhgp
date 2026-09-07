@@ -41,12 +41,6 @@ class Flow:
     edges: tuple[FlowEdge, ...]
     source: str  # "ast:<module>" or "wiki:<page>"
 
-    def node(self, node_id: str) -> FlowNode | None:
-        for n in self.nodes:
-            if n.id == node_id:
-                return n
-        return None
-
 
 def _qualified(name: ast.expr) -> str | None:
     """Render a dotted ``ast.Name`` / ``ast.Attribute`` chain to a string.
@@ -164,11 +158,6 @@ def walk_source(source: str, module_name: str) -> Flow:
             if method_id in nodes:
                 return method_id
         return None
-
-    def _enclosing_class(node: ast.AST) -> str | None:
-        """Walk up parents to find the immediate ClassDef. O(n) per call —
-        fine for v1; we cache at the visitor boundary."""
-        return _class_context.get(id(node))
 
     class _CallVisitor(ast.NodeVisitor):
         def __init__(self, current_id: str, current_class: str | None) -> None:
