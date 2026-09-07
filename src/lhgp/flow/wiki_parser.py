@@ -28,6 +28,10 @@ from pathlib import Path
 
 _FLOW_HEADING = re.compile(r"^##\s+flow\s*$", re.MULTILINE)
 _MERMAID_FENCE = re.compile(r"```mermaid\s*\n(.*?)```", re.DOTALL)
+# Files saved by Windows editors (Notepad, some VSCode configs) carry a
+# UTF-8 BOM at byte 0. Without stripping it the ``^##`` anchor never
+# matches, and the page silently disappears from ``list_flow_pages``.
+_UTF8_BOM = "\ufeff"
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +43,10 @@ class FlowSection:
 
 def extract_flow_section(page_text: str, *, page: str = "<inline>") -> FlowSection | None:
     """Return the first ``## flow`` section of a wiki page, or None."""
+    # Tolerate a leading UTF-8 BOM so pages saved by Windows editors
+    # are not silently skipped.
+    if page_text.startswith(_UTF8_BOM):
+        page_text = page_text[1:]
     match = _FLOW_HEADING.search(page_text)
     if not match:
         return None
@@ -72,4 +80,24 @@ def list_flow_pages(wiki_root: Path) -> list[str]:
     return found
 
 
-__all__ = ["FlowSection", "extract_flow_section", "list_flow_pages"]
+def resolve_page_path(wiki_root: Path, page_arg: str) -> Path | None:
+    """Resolve a user-supplied page argument safely inside ``wiki_root``.
+
+    Defends against path traversal: ``../../README.md`` style inputs
+    must not escape the wiki tree. Returns the resolved path if it
+    sits inside ``wiki_root``, or None otherwise. The caller is
+    expected to surface None as a friendly error.
+    """
+    if not wiki_root.exists() or not wiki_root.is_dir():
+        return None
+    candidate = (wiki_root / page_arg).resolve(strict=False)
+    try:
+        candidate.relative_to(wiki_root.resolve())
+    except ValueError:
+        return None
+    if not candidate.exists():
+        return None
+    return candidate
+
+
+__all__ = ["FlowSection", "extract_flow_section", "list_flow_pages", "resolve_page_path"]

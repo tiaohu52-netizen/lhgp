@@ -21,7 +21,11 @@ from pathlib import Path
 from lhgp.flow.ast_walker import walk_source
 from lhgp.flow.render_excalidraw import render_excalidraw
 from lhgp.flow.render_mermaid import render_mermaid
-from lhgp.flow.wiki_parser import extract_flow_section, list_flow_pages
+from lhgp.flow.wiki_parser import (
+    extract_flow_section,
+    list_flow_pages,
+    resolve_page_path,
+)
 
 
 def _default_wiki_root() -> Path:
@@ -40,9 +44,19 @@ def flow_command(args: argparse.Namespace) -> int:
         if not path.exists():
             print(f"error: file not found: {path}", file=sys.stderr)
             return 2
-        source = path.read_text(encoding="utf-8")
-        module = args.module or path.stem
-        flow = walk_source(source, module)
+        try:
+            source = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            print(f"error: cannot read {path}: {exc}", file=sys.stderr)
+            return 2
+        try:
+            flow = walk_source(source, args.module or path.stem)
+        except SyntaxError as exc:
+            print(
+                f"error: syntax error in {path}:{getattr(exc, 'lineno', '?')}: {exc.msg}",
+                file=sys.stderr,
+            )
+            return 2
         if args.format == "excalidraw":
             json.dump(render_excalidraw(flow), sys.stdout, ensure_ascii=False, indent=2)
             print()
@@ -54,15 +68,16 @@ def flow_command(args: argparse.Namespace) -> int:
         wiki_root = (
             Path(args.wiki_root).expanduser().resolve() if args.wiki_root else _default_wiki_root()
         )
-        page_path = wiki_root / args.page
-        if not page_path.exists():
-            # Try treating the argument as a basename (e.g. "glossary").
-            candidate = wiki_root / f"{args.page}.md"
-            if candidate.exists():
-                page_path = candidate
-            else:
-                print(f"error: page not found: {args.page}", file=sys.stderr)
-                return 2
+        page_path = resolve_page_path(wiki_root, args.page)
+        if page_path is None:
+            # Try the basename fallback (e.g. "glossary" -> "glossary.md").
+            page_path = resolve_page_path(wiki_root, f"{args.page}.md")
+        if page_path is None:
+            print(
+                f"error: page not found or outside wiki root: {args.page}",
+                file=sys.stderr,
+            )
+            return 2
         text = page_path.read_text(encoding="utf-8")
         rel = page_path.relative_to(wiki_root).as_posix()
         section = extract_flow_section(text, page=rel)

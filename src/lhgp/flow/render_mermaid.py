@@ -15,6 +15,29 @@ from __future__ import annotations
 
 from lhgp.flow.ast_walker import Flow, FlowNode
 
+# Characters that have grammar meaning inside a Mermaid shape / edge
+# label. We escape them with HTML entities (``#NN;``) so a label like
+# ``list[0]`` or ``#hash`` does not break the shape parser. The set is
+# kept narrow on purpose: over-escaping makes diagrams unreadable.
+_LABEL_ESCAPE_CHARS = frozenset('[]{}()|"<>#')
+
+
+def _escape_label(label: str) -> str:
+    """Neutralize Mermaid-reserved characters in a label.
+
+    Mermaid treats ``[ ] { } ( ) | " < > #`` as shape / edge grammar.
+    HTML-entity escape each occurrence so the label can contain any
+    string a Python source file might produce (e.g. ``list[0]``,
+    ``#hash``, ``a|b``) without breaking the diagram.
+    """
+    out: list[str] = []
+    for ch in label:
+        if ch in _LABEL_ESCAPE_CHARS:
+            out.append(f"#{ord(ch)};")
+        else:
+            out.append(ch)
+    return "".join(out)
+
 
 def _safe_id(raw: str, taken: dict[str, int]) -> str:
     # Mermaid node IDs are restricted to ``[A-Za-z][A-Za-z0-9_]*`` by the
@@ -55,8 +78,10 @@ def render_mermaid(flow: Flow) -> str:
         sid = _safe_id(n.id, taken)
         safe[n.id] = sid
         shape = _shape_for(n)
-        # Strip the placeholders from _shape_for.
-        shape_filled = shape.format(n.label)
+        # Escape reserved Mermaid chars in the label so a Python
+        # identifier like ``list[0]`` or ``#hash`` cannot break the
+        # shape grammar.
+        shape_filled = shape.format(_escape_label(n.label))
         lines.append(f"  {sid}{shape_filled}")
     for e in flow.edges:
         s = safe.get(e.src)
@@ -64,7 +89,7 @@ def render_mermaid(flow: Flow) -> str:
         if s is None or d is None:
             continue
         if e.label:
-            lines.append(f"  {s} -->|{e.label}| {d}")
+            lines.append(f"  {s} -->|{_escape_label(e.label)}| {d}")
         else:
             lines.append(f"  {s} --> {d}")
     lines.append("```")

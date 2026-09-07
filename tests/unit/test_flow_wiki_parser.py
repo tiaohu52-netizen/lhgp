@@ -81,3 +81,32 @@ class TestListFlowPages:
         (tmp_path / "good.md").write_text("## flow\n\n```mermaid\nA --> B\n```\n", encoding="utf-8")
         (tmp_path / "bad.md").write_bytes(b"\xff\xfe## flow\n```mermaid\n```\n")
         assert list_flow_pages(tmp_path) == ["good.md"]
+
+    def test_utf8_bom_page_is_recognized(self, tmp_path: Path) -> None:
+        # Pages saved by Windows editors carry a UTF-8 BOM at byte 0.
+        # Without stripping it the ``^##`` regex never matches and the
+        # page silently disappears.
+        (tmp_path / "bom.md").write_text(
+            "\ufeff## flow\n\n```mermaid\nA --> B\n```\n", encoding="utf-8"
+        )
+        (tmp_path / "plain.md").write_text(
+            "## flow\n\n```mermaid\nX --> Y\n```\n", encoding="utf-8"
+        )
+        assert list_flow_pages(tmp_path) == ["bom.md", "plain.md"]
+
+    def test_resolve_page_path_escapes_traversal(self, tmp_path: Path) -> None:
+        # ``../../README.md`` must not escape the wiki root. A safe
+        # resolver returns None for any path that resolves outside
+        # ``wiki_root``.
+        wiki_root = tmp_path / "wiki"
+        wiki_root.mkdir()
+        outside = tmp_path / "outside.md"
+        outside.write_text("not wiki", encoding="utf-8")
+        from lhgp.flow.wiki_parser import resolve_page_path
+
+        assert resolve_page_path(wiki_root, "../outside.md") is None
+        assert resolve_page_path(wiki_root, "../../etc/passwd") is None
+        assert resolve_page_path(wiki_root, "missing.md") is None
+        # In-tree lookup still works.
+        (wiki_root / "real.md").write_text("## flow", encoding="utf-8")
+        assert resolve_page_path(wiki_root, "real.md") == wiki_root / "real.md"

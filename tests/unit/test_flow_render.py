@@ -113,6 +113,31 @@ class TestMermaid:
         # Label is preserved verbatim.
         assert "héllo" in out
 
+    def test_reserved_chars_in_label_are_escaped(self) -> None:
+        # Mermaid uses ``[ ] { } ( ) | " < > #`` as shape / edge grammar.
+        # A raw label like ``list[0]`` or ``#hash`` would otherwise break
+        # the diagram. The renderer HTML-entity-escapes these so the
+        # shape stays well-formed.
+        flow = Flow(
+            title="t",
+            nodes=(
+                FlowNode(id="a", label="list[0]", kind="function"),
+                FlowNode(id="b", label="#hash", kind="function"),
+                FlowNode(id="c", label="a|b", kind="function"),
+            ),
+            edges=(FlowEdge(src="a", dst="b", label="x[y]"),),
+            source="ast:t",
+        )
+        out = render_mermaid(flow)
+        # Reserved chars are gone as literals.
+        assert "list[0][" not in out
+        assert "#hash[" not in out
+        # Escaped forms are present.
+        assert "#91;" in out  # [
+        assert "#93;" in out  # ]
+        assert "#35;" in out  # #
+        assert "#124;" in out  # |
+
 
 class TestExcalidraw:
     def test_envelope_shape(self) -> None:
