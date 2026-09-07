@@ -389,6 +389,30 @@ def build_parser() -> argparse.ArgumentParser:
     mem_show.add_argument("--id", type=int, required=True)
     mem_sub.add_parser("expire", help="delete expired memories")
 
+    # ── P6+1 / memory-and-wiki Phase 3：flowgen 代码/手写流程图
+    flow_p = sub.add_parser(
+        "flow",
+        help="flow graphs: AST→Mermaid/Excalidraw, or read a wiki '## flow' section",
+    )
+    flow_sub = flow_p.add_subparsers(dest="flow_cmd", required=True)
+    flow_ast = flow_sub.add_parser("ast", help="walk a Python file and emit a diagram")
+    flow_ast.add_argument("file", type=str, help="path to a .py file")
+    flow_ast.add_argument(
+        "--module", type=str, default=None, help="module label (default: file stem)"
+    )
+    flow_ast.add_argument(
+        "--format",
+        choices=("mermaid", "excalidraw"),
+        default="mermaid",
+    )
+    flow_wiki = flow_sub.add_parser("wiki", help="print the '## flow' section of a wiki page")
+    flow_wiki.add_argument("page", type=str, help="page path or stem (e.g. topics/auto-mine)")
+    flow_wiki.add_argument("--wiki-root", type=str, default=None)
+    flow_lfp = flow_sub.add_parser(
+        "list-flow-pages", help="list wiki pages that contain a '## flow' section"
+    )
+    flow_lfp.add_argument("--wiki-root", type=str, default=None)
+
     # insights：接手包 / 看板 / 成本台账
     brief_p = sub.add_parser("brief", help="接手包：一份合同的状态/风险/最近失败/下一步")
     brief_p.add_argument("contract_id", type=str)
@@ -969,6 +993,11 @@ def main(argv: list[str] | None = None) -> int:
             return memory_command(conn, args)
         finally:
             conn.close()
+
+    if args.command == "flow":
+        from lhgp.flow.cli import flow_command
+
+        return flow_command(args)
 
     if args.command == "board":
         from lhgp.persistence.insights import build_board
