@@ -8,13 +8,23 @@ Active means ``ContractState`` not in the terminal set. The state machine's
 canonical ``NON_TERMINAL_STATES`` is the source of truth for "active"
 (see ``lhgp.contracts.state_machine``). Terminal contracts are not
 re-published; an existing page is only re-rendered with a terminal banner
-once it is older than :data:`TERMINAL_BANNER_DAYS`.
+after ``TERMINAL_BANNER_DAYS`` of staleness so manual edits to a
+just-terminal contract page survive.
+
+Path safety: ``contract_id`` is concatenated into the page path, so it
+is normalised to a filename-safe slug (any character outside
+``[A-Za-z0-9_.-]`` becomes ``_`` and leading dots are stripped) and the
+final resolved path is asserted to live under ``auto_dir``. A
+malformed id that would escape the wiki root is logged and skipped
+rather than written.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import os
+import re
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -25,6 +35,8 @@ from lhgp.memory.types import Memory
 from longtask.contracts.schema import ContractView
 from longtask.persistence.projections import HANDOVER_FILE, parse_handover_markdown
 from longtask.persistence.store import list_contracts
+
+logger = logging.getLogger(__name__)
 
 AUTO_SUBDIR = "auto"
 TERMINAL_BANNER_DAYS = 7
@@ -274,6 +286,7 @@ def publish_active_contracts(
     now = now or datetime.now(UTC)
     auto_dir = wiki_root / AUTO_SUBDIR
     auto_dir.mkdir(parents=True, exist_ok=True)
+    auto_dir_resolved = auto_dir.resolve()
 
     active_views = _iter_contracts(conn, NON_TERMINAL_STATES)
     terminal_views = _iter_contracts(conn, TERMINAL_STATES)
@@ -282,6 +295,9 @@ def publish_active_contracts(
     written: list[Path] = []
 
     for view in active_views:
+        path = _safe_page_path(auto_dir, auto_dir_resolved, view.contract_id, now)
+        if path is None:
+            continue
         memories = _related_memories(conn, view.contract_id)
         next_action = _handover_next_action(data_root, view.contract_id)
         page = _render_page(
@@ -291,12 +307,13 @@ def publish_active_contracts(
             is_terminal=False,
             now=now,
         )
-        path = auto_dir / f"{view.contract_id}.md"
         _atomic_write(path, page)
         written.append(path)
 
     for view in terminal_views:
-        path = auto_dir / f"{view.contract_id}.md"
+        path = _safe_page_path(auto_dir, auto_dir_resolved, view.contract_id, now)
+        if path is None:
+            continue
         if not path.is_file():
             continue
         mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
@@ -315,6 +332,37 @@ def publish_active_contracts(
         written.append(path)
 
     return written
+
+
+def _safe_page_path(
+    auto_dir: Path,
+    auto_dir_resolved: Path,
+    contract_id: str,
+    now: datetime,
+) -> Path | None:
+    """Resolve the on-disk path for one contract's wiki page.
+
+    Defends against path traversal: a contract id containing
+    ``..`` or path separators would let the page escape ``auto/``
+    and even ``wiki_root``. The slug normalisation strips every
+    character outside ``[A-Za-z0-9_.-]`` (replaced with ``_``) and
+    any leading dots; the resolved path is then asserted to live
+    under ``auto_dir``. Either guard alone would close the
+    vector, but defence in depth catches a future regression in
+    either.
+    """
+    slug = re.sub(r"[^A-Za-z0-9_.-]", "_", str(contract_id)).lstrip(".") or "_"
+    candidate = (auto_dir / f"{slug}.md").resolve()
+    if not candidate.is_relative_to(auto_dir_resolved):
+        logger.warning(
+            "wiki publish: skipping %r — slug %r resolves to %s, outside auto_dir %s",
+            contract_id,
+            slug,
+            candidate,
+            auto_dir_resolved,
+        )
+        return None
+    return candidate
 
 
 __all__ = [

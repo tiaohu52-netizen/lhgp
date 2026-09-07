@@ -327,3 +327,49 @@ class TestStateAxis:
         written_names = {p.name for p in written}
         for st in NON_TERMINAL_STATES:
             assert f"lt-{st.value}.md" in written_names
+
+
+class TestPathSafety:
+    """`contract_id` is concatenated into the page path. A malicious id
+    with ``..`` segments or path separators must not let the page
+    escape ``auto/`` (or the wiki root entirely). The publisher
+    normalises to a slug and asserts the resolved path is under
+    ``auto_dir``; a contract that would otherwise escape is logged
+    and skipped."""
+
+    @pytest.mark.parametrize(
+        "malicious_id",
+        [
+            "../../../etc/passwd",
+            "..\\..\\..\\evil",
+            "subdir/inside",
+            "name with space",
+            "../auto-collision",
+        ],
+    )
+    def test_malicious_contract_id_does_not_escape(
+        self, tmp_path: Path, malicious_id: str, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        conn = _open_db(tmp_path)
+        wiki_root = tmp_path / "wiki"
+        try:
+            save_contract(
+                conn, _draft(), contract_id=malicious_id, now=NOW, state=ContractState.ACTIVE
+            )
+            with caplog.at_level("WARNING"):
+                written = publish_active_contracts(conn, wiki_root, now=NOW)
+        finally:
+            conn.close()
+        # No file lives outside auto_dir — the slug normalisation
+        # replaces path separators with underscores and the
+        # resolved-path assertion rejects any slug that still escapes
+        # (defence in depth). Two dots in the middle of a filename
+        # are not path traversal — those are just two characters
+        # inside a single filename segment.
+        auto_dir = wiki_root / AUTO_SUBDIR
+        for p in wiki_root.rglob("*.md"):
+            assert p.resolve().is_relative_to(auto_dir.resolve()), f"file {p} escaped auto_dir"
+        for p in written:
+            assert p.resolve().is_relative_to(auto_dir.resolve())
+            assert "/" not in p.name
+            assert "\\" not in p.name

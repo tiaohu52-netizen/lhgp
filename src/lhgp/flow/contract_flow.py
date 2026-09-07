@@ -1,1 +1,253 @@
-"""Walk a contract's referenced source files and merge into one Flow.Builds seed strings from a contract's acceptance / execution / contextmetadata, resolves them to files under ``src/`` (module path first, thena substring grep), runs :func:`walk_source` on each, and merges."""from __future__ import annotationsimport sqlite3from pathlib import Pathfrom lhgp.contracts.contract_view_entity import ContractViewfrom lhgp.flow.ast_walker import Flow, FlowEdge, FlowNode, walk_source# Cap substring matches so a vague seed can't drag in half the repo._MAX_SUBSTRING_MATCHES = 3# Reject overlong seeds: a 1 KiB string is not a module path._MAX_SEED_LEN = 256def _default_src_root() -> Path:    here = Path(__file__).resolve()    for parent in here.parents:        candidate = parent / "src"        if candidate.is_dir():            return candidate    return here.parents[3] / "src"def _coerce_seed(value: object) -> str | None:    if not isinstance(value, str):        return None    text = value.strip()    if not text or len(text) > _MAX_SEED_LEN:        return None    return textdef _seeds_from_contract(view: ContractView) -> list[str]:    seeds: list[str] = []    standard = _coerce_seed(view.draft.acceptance.standard)    if standard is not None:        seeds.append(standard)    for check in view.draft.acceptance.checks:        # checks are ``str | CheckSpec``; CheckSpec exposes a ``target`` attr.        seed = _coerce_seed(check.target if hasattr(check, "target") else check)        if seed is not None:            seeds.append(seed)    target = _coerce_seed(view.draft.execution.get("target"))    if target is not None:        seeds.append(target)    py_module = _coerce_seed(view.draft.context.get("python_module"))    if py_module is not None:        seeds.append(py_module)    return seedsdef _module_path_from_file(src_root: Path, file_path: Path) -> str:    rel = file_path.relative_to(src_root)    parts = list(rel.parts)    if parts and parts[-1].endswith(".py"):        parts[-1] = parts[-1][:-3]    if parts and parts[-1] == "__init__":        parts.pop()    return ".".join(parts)def _resolve_by_module_path(src_root: Path, seed: str) -> Path | None:    candidates = [        src_root / f"{seed.replace('.', '/')}.py",        src_root / seed.replace(".", "/") / "__init__.py",    ]    for candidate in candidates:        if candidate.is_file():            return candidate    return Nonedef _resolve_by_substring(src_root: Path, seed: str) -> list[Path]:    if not src_root.is_dir():        return []    matches: list[Path] = []    for path in sorted(src_root.rglob("*.py")):        if path.name == "__init__.py":            # Package marker; not what a contract hint usually means.            continue        if seed in path.stem or seed in path.as_posix():            matches.append(path)        else:            try:                text = path.read_text(encoding="utf-8")            except (OSError, UnicodeDecodeError):                continue            if seed in text:                matches.append(path)        if len(matches) >= _MAX_SUBSTRING_MATCHES:            return matches    return matchesdef _resolve_seed(src_root: Path, seed: str) -> list[Path]:    module_hit = _resolve_by_module_path(src_root, seed)    if module_hit is not None:        return [module_hit]    return _resolve_by_substring(src_root, seed)def _merge_flows(flows: list[Flow], *, title: str, source: str) -> Flow:    # Node ids include the module name, so a function reached via two    # different seeds never produces a duplicate node.    nodes: dict[str, FlowNode] = {}    edges: list[FlowEdge] = []    for flow in flows:        for node in flow.nodes:            if node.id not in nodes:                nodes[node.id] = node        edges.extend(flow.edges)    return Flow(        title=title,        nodes=tuple(nodes.values()),        edges=tuple(edges),        source=source,    )def _empty_flow(contract_id: str) -> Flow:    module_id = f"contract:{contract_id}"    return Flow(        title=contract_id,        nodes=(FlowNode(id=module_id, label=contract_id, kind="module"),),        edges=(),        source=f"contract:{contract_id}",    )def walk_contract(    conn: sqlite3.Connection,    contract_id: str,    *,    src_root: Path | None = None,) -> Flow:    """Return a Flow for the source files referenced by ``contract_id``.    Returns an empty contract Flow if the contract is missing or no seed    resolves to a file. Files that fail to read or fail ``walk_source``    are skipped — one bad seed must not blank the diagram.    """    from longtask.persistence.store import get_contract  # local: avoid import cycle    view = get_contract(conn, contract_id)    if view is None:        return _empty_flow(contract_id)    root = src_root if src_root is not None else _default_src_root()    seeds = _seeds_from_contract(view)    seen_files: set[Path] = set()    per_file_flows: list[Flow] = []    for seed in seeds:        for file_path in _resolve_seed(root, seed):            if file_path in seen_files:                continue            seen_files.add(file_path)            try:                source_text = file_path.read_text(encoding="utf-8")            except (OSError, UnicodeDecodeError):                continue            try:                module_name = _module_path_from_file(root, file_path)            except ValueError:                continue            try:                per_file_flows.append(walk_source(source_text, module_name))            except (SyntaxError, ValueError):                continue    if not per_file_flows:        return _empty_flow(contract_id)    return _merge_flows(        per_file_flows,        title=contract_id,        source=f"contract:{contract_id}",    )__all__ = ["walk_contract"]
+"""Walk a contract's referenced source files and merge into one Flow.
+
+
+
+Builds seed strings from a contract's acceptance / execution / context
+
+metadata, resolves them to files under ``src/`` (module path first, then
+
+a substring grep), runs :func:`walk_source` on each, and merges.
+
+"""
+
+from __future__ import annotations
+
+import sqlite3
+from pathlib import Path
+
+from lhgp.contracts.contract_view_entity import ContractView
+from lhgp.flow.ast_walker import Flow, FlowEdge, FlowNode, walk_source
+
+# Cap substring matches so a vague seed can't drag in half the repo.
+
+_MAX_SUBSTRING_MATCHES = 3
+
+# Reject overlong seeds: a 1 KiB string is not a module path.
+
+_MAX_SEED_LEN = 256
+
+
+def _default_src_root() -> Path:
+    here = Path(__file__).resolve()
+
+    for parent in here.parents:
+        candidate = parent / "src"
+
+        if candidate.is_dir():
+            return candidate
+
+    return here.parents[3] / "src"
+
+
+def _coerce_seed(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+
+    text = value.strip()
+
+    if not text or len(text) > _MAX_SEED_LEN:
+        return None
+
+    return text
+
+
+def _seeds_from_contract(view: ContractView) -> list[str]:
+    seeds: list[str] = []
+
+    standard = _coerce_seed(view.draft.acceptance.standard)
+
+    if standard is not None:
+        seeds.append(standard)
+
+    for check in view.draft.acceptance.checks:
+        # checks are ``str | CheckSpec``; CheckSpec exposes a ``target`` attr.
+
+        seed = _coerce_seed(check.target if hasattr(check, "target") else check)
+
+        if seed is not None:
+            seeds.append(seed)
+
+    target = _coerce_seed(view.draft.execution.get("target"))
+
+    if target is not None:
+        seeds.append(target)
+
+    py_module = _coerce_seed(view.draft.context.get("python_module"))
+
+    if py_module is not None:
+        seeds.append(py_module)
+
+    return seeds
+
+
+def _module_path_from_file(src_root: Path, file_path: Path) -> str:
+    rel = file_path.relative_to(src_root)
+
+    parts = list(rel.parts)
+
+    if parts and parts[-1].endswith(".py"):
+        parts[-1] = parts[-1][:-3]
+
+    if parts and parts[-1] == "__init__":
+        parts.pop()
+
+    return ".".join(parts)
+
+
+def _resolve_by_module_path(src_root: Path, seed: str) -> Path | None:
+    candidates = [
+        src_root / f"{seed.replace('.', '/')}.py",
+        src_root / seed.replace(".", "/") / "__init__.py",
+    ]
+
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+
+    return None
+
+
+def _resolve_by_substring(src_root: Path, seed: str) -> list[Path]:
+    if not src_root.is_dir():
+        return []
+
+    matches: list[Path] = []
+
+    for path in sorted(src_root.rglob("*.py")):
+        if path.name == "__init__.py":
+            # Package marker; not what a contract hint usually means.
+
+            continue
+
+        if seed in path.stem or seed in path.as_posix():
+            matches.append(path)
+
+        else:
+            try:
+                text = path.read_text(encoding="utf-8")
+
+            except (OSError, UnicodeDecodeError):
+                continue
+
+            if seed in text:
+                matches.append(path)
+
+        if len(matches) >= _MAX_SUBSTRING_MATCHES:
+            return matches
+
+    return matches
+
+
+def _resolve_seed(src_root: Path, seed: str) -> list[Path]:
+    module_hit = _resolve_by_module_path(src_root, seed)
+
+    if module_hit is not None:
+        return [module_hit]
+
+    return _resolve_by_substring(src_root, seed)
+
+
+def _merge_flows(flows: list[Flow], *, title: str, source: str) -> Flow:
+    # Node ids include the module name, so a function reached via two
+
+    # different seeds never produces a duplicate node.
+
+    nodes: dict[str, FlowNode] = {}
+
+    edges: list[FlowEdge] = []
+
+    for flow in flows:
+        for node in flow.nodes:
+            if node.id not in nodes:
+                nodes[node.id] = node
+
+        edges.extend(flow.edges)
+
+    return Flow(
+        title=title,
+        nodes=tuple(nodes.values()),
+        edges=tuple(edges),
+        source=source,
+    )
+
+
+def _empty_flow(contract_id: str) -> Flow:
+    module_id = f"contract:{contract_id}"
+
+    return Flow(
+        title=contract_id,
+        nodes=(FlowNode(id=module_id, label=contract_id, kind="module"),),
+        edges=(),
+        source=f"contract:{contract_id}",
+    )
+
+
+def walk_contract(
+    conn: sqlite3.Connection,
+    contract_id: str,
+    *,
+    src_root: Path | None = None,
+) -> Flow:
+    """Return a Flow for the source files referenced by ``contract_id``.
+
+
+
+    Returns an empty contract Flow if the contract is missing or no seed
+
+    resolves to a file. Files that fail to read or fail ``walk_source``
+
+    are skipped — one bad seed must not blank the diagram.
+
+    """
+
+    from longtask.persistence.store import get_contract  # local: avoid import cycle
+
+    view = get_contract(conn, contract_id)
+
+    if view is None:
+        return _empty_flow(contract_id)
+
+    root = src_root if src_root is not None else _default_src_root()
+
+    seeds = _seeds_from_contract(view)
+
+    seen_files: set[Path] = set()
+
+    per_file_flows: list[Flow] = []
+
+    for seed in seeds:
+        for file_path in _resolve_seed(root, seed):
+            if file_path in seen_files:
+                continue
+
+            seen_files.add(file_path)
+
+            try:
+                source_text = file_path.read_text(encoding="utf-8")
+
+            except (OSError, UnicodeDecodeError):
+                continue
+
+            try:
+                module_name = _module_path_from_file(root, file_path)
+
+            except ValueError:
+                continue
+
+            try:
+                per_file_flows.append(walk_source(source_text, module_name))
+
+            except (SyntaxError, ValueError):
+                continue
+
+    if not per_file_flows:
+        return _empty_flow(contract_id)
+
+    return _merge_flows(
+        per_file_flows,
+        title=contract_id,
+        source=f"contract:{contract_id}",
+    )
+
+
+__all__ = ["walk_contract"]
