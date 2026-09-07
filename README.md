@@ -46,6 +46,14 @@ The typical path is approval → decision point → eligible executor → artifa
 independent verification → satisfaction, budgeted repair or user escalation.
 A scheduling tick need not call a model, and a worker exiting with code 0 does not prove contract acceptance.
 
+## At a glance
+
+The resilient-execution layer (`src/longtask/persistence/context.py`, `src/longtask/rpc/dispatch.py`, `src/longtask/cli/dispatch.py`, `src/lhgp/contracts/resume.py`, `src/lhgp/contracts/plan.py`) keeps long-running contracts alive across model crashes, 502 errors, and context exhaustion. Four streams cooperate: plan gate enforces a structured plan before any executor is contacted; retry handles transient RPC failures; auto-handover watches `active.md` size and fires before the context window dies; resume reads `active.md` + `handover.md` to spin up a fresh attempt.
+
+![resilient-execution overview](docs/diagrams/01-resilient-execution.png)
+
+See [`docs/diagrams/README.md`](docs/diagrams/README.md) for the full set: plan-gate enforcement, auto-handover data flow, handover lifecycle, and the architecture above.
+
 ## Start from a checkout
 
 Requirements: Python 3.11+ and uv. Run from the repository root:
@@ -136,6 +144,7 @@ Do not delete the state database to troubleshoot, or attach unredacted runtime d
 - [Specification](docs/LHGP-SPEC.md): protocol semantics; [ADR-004](docs/decisions/0004-contract-runtime-and-release-scope.md): positioning decision.
 - [Release and improvement plan](docs/RELEASE-PLAN.md): current execution order; [roadmap](docs/LHGP-ROADMAP.md): broader milestones and history.
 - [Release audit](docs/evidence/release-readiness-2026-09-05.md): checks performed and remaining gaps.
+- [Resilient execution diagrams](docs/diagrams/README.md): visual overview of plan gate, retry, auto-handover, and resume.
 - [Contributing](CONTRIBUTING.md), [security](SECURITY.md), [changelog](CHANGELOG.md), [Apache-2.0 license](LICENSE).
 
 Implementation lives in both `src/lhgp/` and the compatibility namespace `src/longtask/`;
