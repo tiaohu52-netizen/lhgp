@@ -159,3 +159,73 @@ class TestPlaceholderPositioning:
     def test_placeholder_is_fixed_vocabulary(self) -> None:
         """占位符是固定词表常量，不是模型可控数据。"""
         assert TASK_PLACEHOLDER == "{task}"
+
+    def test_context_snapshot_path_passed_via_env(self, tmp_path: Path) -> None:
+        """P1 review fix: SubprocessAdapter must hand the context snapshot
+        path to the child process so the default executor can actually
+        read the freshly built active.md (directives, handover, contract
+        anchor). Without this, the snapshot is built and the cursor
+        advances, but nothing on the executor side ever consumes it.
+
+        The snapshot path is passed via the ``LHGP_CONTEXT_SNAPSHOT_PATH``
+        environment variable — the same channel used for the per-attempt
+        session token (``LHGP_SESSION_TOKEN``) — so no argv slot is
+        burned and shell injection is impossible."""
+
+        script = (
+            "import os; open('env.txt','w',encoding='utf-8')"
+            ".write(os.environ.get('LHGP_CONTEXT_SNAPSHOT_PATH', 'MISSING'))"
+        )
+        adapter = SubprocessAdapter(
+            make_manifest(),
+            launch=LaunchSpec(argv=(sys.executable, "-c", script)),
+        )
+        snapshot_path = str(tmp_path / "context" / "att-t1" / "active.md")
+        input_ = make_input(str(tmp_path), prompt="env-test")
+        # AttemptInput doesn't expose context_snapshot_path as a public
+        # field the test fixture knows about; use dataclasses.replace.
+        import dataclasses
+
+        input_ = dataclasses.replace(input_, context_snapshot_path=snapshot_path)
+        prepared = adapter.prepare(input_)
+        adapter.spawn(input_, prepared)
+        import time
+
+        deadline = time.time() + 15.0
+        while time.time() < deadline:
+            if (tmp_path / "env.txt").is_file():
+                break
+            time.sleep(0.1)
+        got = (tmp_path / "env.txt").read_text(encoding="utf-8")
+        assert got == snapshot_path
+        adapter.cancel("att-t1", "收尾")
+        adapter.collect("att-t1")
+
+    def test_no_snapshot_path_no_env_leak(self, tmp_path: Path) -> None:
+        """No context_snapshot_path (probe dispatch, no-with_context) → the
+        ``LHGP_CONTEXT_SNAPSHOT_PATH`` env var is absent. Pinned so a
+        future refactor can't quietly inject a stale snapshot path into
+        probes that intentionally bypass context materialization."""
+
+        script = (
+            "import os; open('env.txt','w',encoding='utf-8')"
+            ".write('PRESENT' if 'LHGP_CONTEXT_SNAPSHOT_PATH' in os.environ else 'ABSENT')"
+        )
+        adapter = SubprocessAdapter(
+            make_manifest(),
+            launch=LaunchSpec(argv=(sys.executable, "-c", script)),
+        )
+        input_ = make_input(str(tmp_path), prompt="probe")
+        prepared = adapter.prepare(input_)
+        adapter.spawn(input_, prepared)
+        import time
+
+        deadline = time.time() + 15.0
+        while time.time() < deadline:
+            if (tmp_path / "env.txt").is_file():
+                break
+            time.sleep(0.1)
+        got = (tmp_path / "env.txt").read_text(encoding="utf-8")
+        assert got == "ABSENT"
+        adapter.cancel("att-t1", "收尾")
+        adapter.collect("att-t1")

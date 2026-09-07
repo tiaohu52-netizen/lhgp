@@ -352,6 +352,14 @@ class SubprocessAdapter(ExecutorAdapter):
         # Per-attempt session token：执行者进程通过此环境变量获取写回凭据
         if input_.session_token:
             env["LHGP_SESSION_TOKEN"] = input_.session_token
+        # P1 review fix (2026-09-08): pass the context snapshot path to the
+        # subprocess. The default executor must be able to read the freshly
+        # built active.md (including the user's directive queue, handover
+        # summary, contract anchor, etc.). Without this env var the executor
+        # only sees task_prompt in argv and the cursor advances uselessly
+        # because nothing actually consumes the snapshot.
+        if input_.context_snapshot_path:
+            env["LHGP_CONTEXT_SNAPSHOT_PATH"] = input_.context_snapshot_path
         # 任务文本注入（DESIGN §12.1）：{task} 占位符 → 原位替换；无占位符
         # → 尾元素追加（向后兼容：cli-bridge 等位置参数 CLI 的既有形态）。
         # 文本是用户审定的冻结区数据，非模型输出；列表参数 + shell=False，
