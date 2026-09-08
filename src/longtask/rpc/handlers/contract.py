@@ -192,7 +192,6 @@ def handle_contract_auto_approve(
         )
     if (replay := idempotent_replay(conn, envelope, contract_id)) is not None:
         return replay
-    expected_revision = _coerce_int(envelope.params.get("expected_revision"), "expected_revision")
     current = get_contract(conn, contract_id)
     if current is None:
         raise RpcError(
@@ -219,18 +218,34 @@ def handle_contract_auto_approve(
             ),
         )
     actor = resolve_actor(envelope, envelope.params)
+    # Revision CAS (5th-round review): pass the current revision so
+    # ``update_contract_state`` rejects any concurrent writer that
+    # has already bumped the revision.  Without this, two
+    # concurrent daemon clients racing on the same DRAFTED contract
+    # both succeed, producing duplicate CONTRACT_APPROVED events
+    # and a non-monotonic revision history.
     try:
         updated = update_contract_state(
             conn,
             contract_id=contract_id,
             new_state=ContractState.ACTIVE,
             now=now,
-            expected_revision=expected_revision,
+            expected_revision=int(current.revision),
             request_id=envelope.request_id,
             actor=actor,
         )
-    except RevisionConflictError as exc:
-        raise RpcError(code=ErrorCode.REVISION_CONFLICT, message=str(exc)) from exc
+    except RevisionConflictError:
+        # Another daemon client raced us to the promotion.  The
+        # contract is already ACTIVE; surface a state-skipped
+        # response so the caller can move on.
+        return {
+            "ok": True,
+            "result": {
+                "contract_id": contract_id,
+                "skipped": True,
+                "reason": "lost CAS race; another writer already promoted",
+            },
+        }
     except StoreError as exc:
         raise RpcError(code=ErrorCode.INTERNAL, message=str(exc)) from exc
     return {"ok": True, "result": updated.to_dict()}
