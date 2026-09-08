@@ -498,3 +498,117 @@ def test_capacity_full_contract_recovers_when_executor_frees(
         conn.close()
     assert (ws1 / "result.txt").read_text(encoding="utf-8") == "ok"
     assert (ws2 / "result.txt").read_text(encoding="utf-8") == "ok"
+
+
+def test_approved_plan_stays_binding_through_capacity_full(
+    tmp_path: Path,
+) -> None:
+    """P1 review (2026-09-08, 3rd round) regression: two contracts
+    share a cap=1 executor.  B has an approved plan (gate=on).  On
+    tick 1, A dispatches (cap full); B's match_candidates sees the
+    cap, B goes to BLOCKED.  On tick 2, the previous
+    ``update_contract_state`` path bumped the contract revision on
+    the BLOCKED transition, which invalidated B's PLAN_APPROVED
+    (the event's contract_revision no longer matched the now-bumped
+    contract).  The wake would set B back to ACTIVE but the gate
+    would refuse, leaving B stuck on NO_EXECUTOR.
+
+    Fix: CAPACITY_FULL transitions go through a revision-preserving
+    direct UPDATE; the plan stays binding; the wake re-activates;
+    the gate passes; the contract dispatches.
+    """
+
+    from lhgp.contracts.plan import Plan as PlanModel
+    from lhgp.contracts.plan import PlanStep, _extract_check_identifiers
+    from lhgp.persistence.events_query import append_event
+    from longtask.contracts.schema import ContractState
+
+    ws1 = tmp_path / "ws1"
+    ws2 = tmp_path / "ws2"
+    ws1.mkdir()
+    ws2.mkdir()
+    conn = connect(StoreConfig(db_path=tmp_path / "state.db"))
+    ensure_schema(conn)
+    try:
+        _save_active(conn, "lt-e2e-bind1", ws1, max_dispatches=1)
+        _save_active(conn, "lt-e2e-bind2", ws2, gate="plan", max_dispatches=1)
+        registry = _build_registry(with_verifier=False, max_concurrent=1)
+        runner = AttemptRunner(tmp_path, conn, registry)
+
+        # Pre-approve a plan for B against the current contract
+        # revision.  Without the fix, the BLOCKED(CAPACITY_FULL)
+        # transition would bump the revision, and the plan's
+        # contract_revision would no longer match.
+        view = get_contract(conn, "lt-e2e-bind2")
+        assert view is not None
+        plan_rev = view.revision
+        plan = PlanModel(
+            contract_id="lt-e2e-bind2",
+            steps=(
+                PlanStep(
+                    step_id=1,
+                    action="write file",
+                    target="result.txt",
+                    rationale="write ok to result.txt to satisfy the verify_gate check",
+                    expected_outcome="file-exists:result.txt",
+                ),
+            ),
+            submitted_at=NOW + timedelta(seconds=1),
+            submitted_by="agent:e2e",
+        )
+        assert plan.validate(view).approved
+        append_event(
+            conn,
+            contract_id="lt-e2e-bind2",
+            event_type=EventType.PLAN_APPROVED,
+            payload={
+                "step_count": 1,
+                "contract_revision": plan_rev,
+                "accepted_check_ids": list(_extract_check_identifiers(view)),
+            },
+            now=NOW + timedelta(seconds=1),
+            actor="daemon",
+        )
+
+        # Tick 1: A dispatches; B's plan-approved contract hits the
+        # cap → CAPACITY_FULL, no revision bump.
+        first = run_daemon_tick(tmp_path, conn, registry, now=NOW + timedelta(seconds=2))
+        assert first["dispatched"] == 1
+        first_attempt = first["attempts_started"][0]
+        assert first_attempt["contract_id"] == "lt-e2e-bind1"
+        runner.start_attempt(
+            NOW + timedelta(seconds=2),
+            contract_id=first_attempt["contract_id"],
+            attempt_id=first_attempt["attempt_id"],
+            executor_id=first_attempt["executor_id"],
+        )
+        _wait_for_attempt_to_finish(runner, ws1)
+
+        # Sanity: B's revision must NOT have changed across the
+        # CAPACITY_FULL transition (the bug was a revision bump that
+        # invalidated the plan).
+        after_block = get_contract(conn, "lt-e2e-bind2")
+        assert after_block is not None
+        assert after_block.state == ContractState.BLOCKED
+        assert after_block.revision == plan_rev, (
+            f"CAPACITY_FULL transition must preserve revision; "
+            f"was {plan_rev}, now {after_block.revision}"
+        )
+
+        # Tick 2: A terminated → cap free → B wakes, plan still
+        # binding → dispatches.
+        second = run_daemon_tick(tmp_path, conn, registry, now=NOW + timedelta(seconds=3))
+        assert second["dispatched"] == 1, second
+        second_attempt = second["attempts_started"][0]
+        assert second_attempt["contract_id"] == "lt-e2e-bind2"
+        runner.start_attempt(
+            NOW + timedelta(seconds=3),
+            contract_id=second_attempt["contract_id"],
+            attempt_id=second_attempt["attempt_id"],
+            executor_id=second_attempt["executor_id"],
+        )
+        _wait_for_attempt_to_finish(runner, ws2)
+    finally:
+        conn.close()
+    assert (ws1 / "result.txt").read_text(encoding="utf-8") == "ok"
+    assert (ws2 / "result.txt").read_text(encoding="utf-8") == "ok"

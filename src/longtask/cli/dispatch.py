@@ -140,6 +140,79 @@ def wake_blocked_after_plan_approval(
     return True
 
 
+def mark_blocked_capacity_full(
+    conn: sqlite3.Connection,
+    contract_id: str,
+    now: datetime,
+) -> bool:
+    """Transition an ACTIVE contract to BLOCKED(CAPACITY_FULL) without
+    bumping the contract revision.
+
+    P1 review (2026-09-08, 3rd round): the standard
+    ``update_contract_state`` path bumps the contract revision, which
+    is correct for content changes (acceptance-criteria edit, draft
+    patch, …) but wrong for *bookkeeping* transitions like a
+    cap-saturation block. Bumping the revision here would
+    invalidate any just-approved ``PLAN_APPROVED`` (its
+    ``contract_revision`` no longer matches the now-bumped contract)
+    and the contract would then refuse to dispatch even after a wake,
+    looking like ``NO_EXECUTOR`` to the operator.
+
+    Fix: same direct-UPDATE pattern as
+    :func:`wake_blocked_after_plan_approval` —
+    write state/blocked_reason, leave revision untouched, and
+    record a ``contract/blocked`` event for audit. The
+    CAS guard on (state, revision) prevents a concurrent cancel
+    from being silently overwritten.
+    """
+    from lhgp.contracts.contract_view import BlockReason
+    from lhgp.persistence.schema import transaction
+
+    view = get_contract(conn, contract_id)
+    if view is None:
+        return False
+    if view.state != ContractState.ACTIVE:
+        return False
+
+    with transaction(conn):
+        cur = conn.execute(
+            "UPDATE contracts SET state = ?, blocked_reason = ?, "
+            "next_decision_at = ?, updated_at = ? "
+            "WHERE contract_id = ? AND state = ? AND revision = ?",
+            (
+                ContractState.BLOCKED.value,
+                BlockReason.CAPACITY_FULL.value,
+                now.isoformat(),
+                now.isoformat(),
+                contract_id,
+                view.state.value,
+                view.revision,
+            ),
+        )
+        if cur.rowcount == 0:
+            return False
+        append_event(
+            conn,
+            contract_id=contract_id,
+            event_type=EventType.CONTRACT_BLOCKED,
+            payload={
+                "reason": (
+                    "every eligible executor is at max_concurrent_attempts; "
+                    "auto-retry when a lease is released"
+                ),
+                "previous_state": view.state.value,
+                "new_state": ContractState.BLOCKED.value,
+                "blocked_reason": BlockReason.CAPACITY_FULL.value,
+            },
+            now=now,
+            actor="daemon",
+            goal_id=view.goal_id,
+            contract_revision=view.revision,
+            role="promoter",
+        )
+    return True
+
+
 def wake_blocked_capacity_full(
     conn: sqlite3.Connection,
     contract_id: str,

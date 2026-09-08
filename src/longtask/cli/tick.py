@@ -483,28 +483,38 @@ def run_daemon_tick(
                     # - NO_EXECUTOR: 没有合格候选（registry/authority/capability 都不通过）
                     # - CAPACITY_FULL: 合格候选存在但都 cap-saturated，可自愈
                     if saturated_only:
-                        blocked_reason = BlockReason.CAPACITY_FULL
-                        block_reason_text = (
-                            "every eligible executor is at max_concurrent_attempts; "
-                            "auto-retry when a lease is released"
+                        # P1 review (2026-09-08, 3rd round): use the
+                        # revision-preserving helper.  update_contract_state
+                        # would bump the contract revision, which would
+                        # invalidate a just-approved PLAN_APPROVED
+                        # (its contract_revision no longer matches) and
+                        # the contract would refuse to dispatch even
+                        # after the wake — looking like NO_EXECUTOR
+                        # to the operator.  CAPACITY_FULL is a
+                        # bookkeeping transition, not a contract
+                        # content change.
+                        from longtask.cli.dispatch import (
+                            mark_blocked_capacity_full,
                         )
-                        block_emit = "promoter/blocked-capacity-full:{cid}"
+
+                        if mark_blocked_capacity_full(conn, cid, now):
+                            rebuild_projection(root, cid, conn)
+                            _emit(f"promoter/blocked-capacity-full:{cid}")
                     else:
-                        blocked_reason = BlockReason.NO_EXECUTOR
-                        block_reason_text = "no dispatchable executor: none eligible or all refused"
-                        block_emit = "promoter/blocked-no-executor:{cid}"
-                    update_contract_state(
-                        conn,
-                        contract_id=cid,
-                        new_state=ContractState.BLOCKED,
-                        now=now,
-                        blocked_reason=blocked_reason,
-                        event_type=EventType.CONTRACT_BLOCKED,
-                        event_payload={"reason": block_reason_text},
-                        actor="daemon",
-                    )
-                    rebuild_projection(root, cid, conn)
-                    _emit(block_emit.format(cid=cid))
+                        update_contract_state(
+                            conn,
+                            contract_id=cid,
+                            new_state=ContractState.BLOCKED,
+                            now=now,
+                            blocked_reason=BlockReason.NO_EXECUTOR,
+                            event_type=EventType.CONTRACT_BLOCKED,
+                            event_payload={
+                                "reason": ("no dispatchable executor: none eligible or all refused")
+                            },
+                            actor="daemon",
+                        )
+                        rebuild_projection(root, cid, conn)
+                        _emit(f"promoter/blocked-no-executor:{cid}")
 
             case UrgencyTier.HAND_TO_USER:
                 update_contract_state(
