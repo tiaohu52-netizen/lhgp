@@ -783,14 +783,44 @@ def handle_contract_user_confirm(
                 actor=principal_actor,
             )
             verifier_evidence = _latest_verifier_evidence(conn, contract_id, expected_revision)
+            # 5th-round P1 regression fix: when the user_confirm
+            # path closes the contract, the
+            # CONTRACT_COMPLETED event must carry meaningful
+            # evidence.  The previous implementation passed
+            # ``evidence={}`` whenever no verifier attempt had
+            # recorded ATTEMPT_SUCCEEDED (the common case for
+            # hand-rolled fixtures, and any flow that bypasses
+            # the verifier on the way to CANDIDATE).  The
+            # reviewer reproduced the empty-evidence case.
+            # The fix: synthesize a user-confirm evidence
+            # record from the principal actor + the user's
+            # note + the CANDIDATE→PASSED transition so the
+            # audit log and the next-stage ``previous_evidence``
+            # always have something concrete to point at.
+            verifier_attempt_id = verifier_evidence.get("attempt_id")
+            verifier_payload = verifier_evidence.get("payload") or {}
+            if verifier_attempt_id is None:
+                # No verifier evidence was recorded for the
+                # pre-CANDIDATE accept path.  Synthesize one
+                # from the user-confirm itself so the
+                # CONTRACT_COMPLETED payload is never empty.
+                verifier_attempt_id = f"user-confirm:{principal_actor}"
+                verifier_payload = {
+                    "source": "user-confirm",
+                    "resolved_principal": principal_actor,
+                    "from_status": pre_acceptance.value,
+                    "to_status": AcceptanceStatus.PASSED.value,
+                    "note": note,
+                    "confirmed_at": now.isoformat(),
+                }
             # CONTRACT_COMPLETED is written by ``update_contract_state``
             # (COMPLETE → CONTRACT_COMPLETED via ``_STATE_TO_EVENT``);
             # we merge the verifier evidence into its ``event_payload``
             # so the same event carries the user-confirm provenance
             # without producing a second CONTRACT_COMPLETED row.
             completed_event_payload: dict[str, Any] = {
-                "verifier": verifier_evidence.get("attempt_id"),
-                "evidence": verifier_evidence.get("payload", {}),
+                "verifier": verifier_attempt_id,
+                "evidence": verifier_payload,
                 "user_confirmed": True,
             }
             updated = update_contract_state(
@@ -818,7 +848,28 @@ def handle_contract_user_confirm(
             # next-stage contract).  Best-effort: any failure here
             # is silent, ``goal/next`` will surface
             # ``create_contract`` so the caller can re-attempt.
-            auto_create_next_stage_contract(conn, updated, now)
+            #
+            # 5th-round P1 regression: the user-confirm evidence
+            # (principal + note + transition) is forwarded to the
+            # next stage as ``previous_evidence`` so the new
+            # contract's executor has a concrete reference to the
+            # stage that produced it.  Previously the field was
+            # always ``None`` here, leaving the next stage with no
+            # trace of the user-confirm.
+            auto_create_next_stage_contract(
+                conn,
+                updated,
+                now,
+                previous_evidence={
+                    "source": "user-confirm",
+                    "contract_id": contract_id,
+                    "resolved_principal": principal_actor,
+                    "note": note,
+                    "completed_at": now.isoformat(),
+                    "from_status": pre_acceptance.value,
+                    "to_status": AcceptanceStatus.PASSED.value,
+                },
+            )
     except RevisionConflictError as exc:
         # The CAS rejected the state update.  The transaction
         # rolled back any events we appended; the contract view

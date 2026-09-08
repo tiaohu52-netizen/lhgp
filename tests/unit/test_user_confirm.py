@@ -360,6 +360,128 @@ def test_user_confirm_creates_next_stage_contract(tmp_path: Path) -> None:
     conn.close()
 
 
+def test_user_confirm_completed_event_carries_synthesized_evidence(tmp_path: Path) -> None:
+    """5th-round P1 regression: when the user_confirm path
+    closes a contract, the CONTRACT_COMPLETED event payload
+    must carry meaningful evidence.  Previously the
+    ``evidence`` field was empty (``{}``) whenever no
+    verifier attempt had recorded ATTEMPT_SUCCEEDED —
+    the common case for hand-rolled fixtures and any flow
+    that bypasses the verifier on the way to CANDIDATE.
+    The fix synthesizes a user-confirm evidence record
+    from the principal actor + the user's note + the
+    CANDIDATE→PASSED transition so the audit log and the
+    next-stage ``previous_evidence`` always have something
+    concrete to point at.
+    """
+    conn, cid, envelope = _seed_candidate_contract(tmp_path, client_id="cli")
+    tool_user_confirm_spec_verdict(
+        envelope.params,
+        ctx={"conn": conn, "now": NOW, "envelope": envelope},
+    )
+    from lhgp.persistence.events import EventType
+    from lhgp.persistence.events_query import get_events
+
+    completed = next(
+        e
+        for e in get_events(conn, contract_id=cid)
+        if str(e.event_type) == EventType.CONTRACT_COMPLETED.value
+    )
+    import json as _json
+
+    payload = _json.loads(completed.payload_json or "{}")
+    assert payload.get("user_confirmed") is True
+    assert payload.get("verifier"), (
+        f"CONTRACT_COMPLETED must carry a verifier field; got {payload!r}"
+    )
+    evidence = payload.get("evidence") or {}
+    assert evidence, f"CONTRACT_COMPLETED.evidence must not be empty; got {evidence!r}"
+    # The synthesized user-confirm evidence records the
+    # resolved principal + the CANDIDATE→PASSED transition.
+    assert evidence.get("source") == "user-confirm"
+    assert evidence.get("from_status") == "candidate"
+    assert evidence.get("to_status") == "passed"
+    assert evidence.get("resolved_principal") == "user"
+    conn.close()
+
+
+def test_user_confirm_creates_next_stage_with_previous_evidence(
+    tmp_path: Path,
+) -> None:
+    """5th-round P1 regression: the user_confirm path
+    threads the resolved principal + note as
+    ``previous_evidence`` into the next-stage contract.
+    Previously the field was always ``None`` here.
+    """
+    from lhgp.goals.stage import StageSpec
+    from longtask.persistence.store import (
+        list_contracts,
+        patch_goal,
+    )
+
+    conn, cid, envelope = _seed_candidate_contract(tmp_path, client_id="cli")
+    goal_id = "lt-uc-1"  # seeded contract's goal_id
+    # Add stage 2 to the goal so the next-stage path fires.
+    patch_goal(
+        conn,
+        goal_id=goal_id,
+        now=NOW,
+        expected_revision=1,
+        actor="user",
+        plan={
+            "stages": [
+                {"id": "stage-1", "contract_id": cid},
+                {
+                    "id": "stage-2",
+                    "spec": StageSpec(
+                        goal="second stage",
+                        acceptance={
+                            "all": [
+                                {
+                                    "judge": "machine",
+                                    "kind": "file-exists",
+                                    "target": "summary.md",
+                                }
+                            ]
+                        },
+                    ).to_dict(),
+                },
+            ]
+        },
+    )
+    # advance progress so the lifecycle helper creates the
+    # next-stage contract.
+    patch_goal(
+        conn,
+        goal_id=goal_id,
+        now=NOW,
+        expected_revision=2,
+        actor="user",
+        progress={"current": "stage-2", "completed": ["stage-1"]},
+    )
+    tool_user_confirm_spec_verdict(
+        envelope.params,
+        ctx={"conn": conn, "now": NOW, "envelope": envelope},
+    )
+    new_contracts = [
+        c for c in list_contracts(conn) if c.contract_id != cid and c.goal_id == goal_id
+    ]
+    assert len(new_contracts) == 1, (
+        f"user_confirm must create the next-stage contract; got "
+        f"{[c.contract_id for c in list_contracts(conn) if c.goal_id == goal_id]!r}"
+    )
+    next_stage = new_contracts[0]
+    previous_evidence = next_stage.draft.context.get("previous_evidence") or {}
+    assert previous_evidence, (
+        f"next-stage contract must carry previous_evidence; "
+        f"got context={next_stage.draft.context!r}"
+    )
+    assert previous_evidence.get("source") == "user-confirm"
+    assert previous_evidence.get("contract_id") == cid
+    assert previous_evidence.get("resolved_principal") == "user"
+    conn.close()
+
+
 def test_user_confirm_rejects_non_candidate(tmp_path: Path) -> None:
     """A user-confirm on a non-CANDIDATE contract is rejected
     with VALIDATION_FAILED — guards against accidentally
