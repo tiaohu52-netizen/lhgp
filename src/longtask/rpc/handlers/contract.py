@@ -14,12 +14,14 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sqlite3
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from lhgp.acceptance.checks import parse_check
+from lhgp.contracts.contract_view import AcceptanceStatus
 from longtask.contracts.schema import (
     FROZEN_FIELDS,
     Acceptance,
@@ -574,6 +576,76 @@ def handle_contract_request_verification(
             "verification_requested": True,
             "note": "daemon will dispatch an independent verifier on its next tick",
         },
+    }
+
+
+def handle_contract_user_confirm(
+    envelope: RequestEnvelope,
+    *,
+    conn: sqlite3.Connection,
+    now: datetime,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    """User confirms a CANDIDATE spec (Principal-gated).
+
+    A contract whose acceptance spec has a ``judge == "user"``
+    criterion transitions to ``acceptance_status = CANDIDATE``
+    after a verifier pass — the dispatcher deliberately skips
+    it until the user signs off (no executor is allowed to mark
+    the user criterion resolved).  This tool is the only path
+    that moves ``CANDIDATE → PASSED``: it is server-side gated
+    to a user-class client (``require_principal`` is called by
+    the MCP tool wrapper before the synthetic envelope reaches
+    here), so a model client cannot mark its own user criterion
+    resolved.
+    """
+    params = envelope.params
+    contract_id = require_contract_id(params)
+    if (replay := idempotent_replay(conn, envelope, contract_id)) is not None:
+        return replay
+
+    current = get_contract(conn, contract_id)
+    if current is None:
+        raise RpcError(
+            code=ErrorCode.UNKNOWN_CONTRACT,
+            message=f"contract {contract_id} not found",
+        )
+    if current.acceptance_status != AcceptanceStatus.CANDIDATE:
+        raise RpcError(
+            code=ErrorCode.VALIDATION_FAILED,
+            message=(
+                f"contract {contract_id} is in {current.acceptance_status.value!r}; "
+                "user-confirm is only valid for CANDIDATE (verifier passed with a "
+                "user criterion pending)"
+            ),
+        )
+    note = str(params.get("note") or "").strip() or None
+    append_event(
+        conn,
+        contract_id=contract_id,
+        event_type=EventType.ACCEPTANCE_STATUS_CHANGED,
+        payload={
+            "reason": "user-confirmed",
+            "from_status": current.acceptance_status.value,
+            "to_status": AcceptanceStatus.PASSED.value,
+            "note": note,
+        },
+        now=now,
+        actor=resolve_actor(envelope, params),
+    )
+    with contextlib.suppress(StoreError):
+        update_contract_state(
+            conn,
+            contract_id=contract_id,
+            new_state=ContractState.ACTIVE,
+            now=now,
+            acceptance_status=AcceptanceStatus.PASSED,
+        )
+    return {
+        "contract_id": contract_id,
+        "user_confirmed": True,
+        "acceptance_status": AcceptanceStatus.PASSED.value,
+        "note": note,
     }
 
 

@@ -170,6 +170,14 @@ def is_valid_acceptance_transition(
             AcceptanceStatus.CANDIDATE,
             AcceptanceStatus.VERIFYING,
         }
+    # CANDIDATE → PASSED is the user-confirmation transition (a
+    # ``judge == "user"`` spec criterion explicitly approved by the
+    # Principal). Without it a CANDIDATE contract would be
+    # permanently stuck — the dispatcher would keep skipping it
+    # while no code path could move it on. Allowed from CANDIDATE
+    # only; PENDING → PASSED remains the standard verifier path.
+    if to_status == AcceptanceStatus.PASSED:
+        return from_status == AcceptanceStatus.CANDIDATE
     return False
 
 

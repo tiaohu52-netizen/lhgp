@@ -196,6 +196,49 @@ def tool_prepare_contract(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str
     return route(envelope, conn=ctx["conn"], now=_now(), registry=ctx["registry"])
 
 
+def tool_user_confirm_spec_verdict(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    """User confirms a CANDIDATE spec verdict (Principal-gated).
+
+    A contract whose acceptance spec has a ``judge == "user"``
+    criterion transitions to ``CANDIDATE`` after a verifier pass.
+    The dispatcher deliberately skips CANDIDATE contracts so the
+    user has the final say.  This tool is the only path that
+    moves the contract to ``PASSED``; it is server-side gated to
+    user-class clients — model callers will get AUTH_FAILED.
+
+    A typical model-caller workflow:
+    1. ``contract.get`` to see ``acceptance_status``.
+    2. Notice ``CANDIDATE`` and the spec's user criterion.
+    3. Ask the user to review the artifacts.
+    4. The user runs ``lhgp contract user-confirm <contract_id>``
+       (or calls this tool from a user-class MCP client).
+    """
+    caller_envelope = ctx.get("envelope")
+    caller_client_id = caller_envelope.client_id if caller_envelope is not None else "mcp"
+    if caller_envelope is not None:
+        # Principal gate runs on the caller's envelope, not the
+        # synthetic one we build for routing — the synthetic envelope
+        # would carry ``client_id="mcp"`` and reject every caller.
+        from lhgp.rpc.handlers._common import require_principal
+
+        require_principal(caller_envelope, args, action="contract/user-confirm")
+    envelope = parse_envelope(
+        {
+            "method": Method.CONTRACT_USER_CONFIRM.value,
+            "request_id": _mcp_request_id(Method.CONTRACT_USER_CONFIRM, args),
+            "client_id": caller_client_id,
+            "protocol_version": PROTOCOL_VERSION,
+            "params": {
+                "contract_id": args["contract_id"],
+                "note": args.get("note"),
+            },
+        }
+    )
+    # The user_confirm path is a state-only transition — no executor
+    # dispatch — so the registry is optional.
+    return route(envelope, conn=ctx["conn"], now=_now(), registry=ctx.get("registry"))
+
+
 def tool_approve_contract(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
     envelope = parse_envelope(
         {
@@ -1358,6 +1401,29 @@ TOOLS: dict[
                 "properties": {
                     "contract_id": {"type": "string"},
                     "request_id": {"type": "string", "description": "幂等重试键；重试时复用"},
+                },
+            },
+        },
+    ),
+    "longtask_user_confirm_spec_verdict": (
+        tool_user_confirm_spec_verdict,
+        {
+            "description": (
+                "用户确认 CANDIDATE Spec 验收（Principal-gated）。"
+                '当 Spec 包含 judge="user" 判据时，verifier 通过后合同停在'
+                " CANDIDATE 等用户最终签字；这是唯一把它推到 PASSED 的路径。"
+                "模型客户端调用会返回 AUTH_FAILED——请提示用户在 CLI 执行"
+                " `lhgp contract user-confirm <contract_id>`。"
+            ),
+            "inputSchema": {
+                "type": "object",
+                "required": ["contract_id"],
+                "properties": {
+                    "contract_id": {"type": "string"},
+                    "note": {
+                        "type": "string",
+                        "description": "可选：用户签字的备注，会落进审计事件",
+                    },
                 },
             },
         },

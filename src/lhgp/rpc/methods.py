@@ -16,6 +16,12 @@ class Method(StrEnum):
     CONTRACT_CANCEL = "contract/cancel"
     CONTRACT_ARBITRATE = "contract/arbitrate"
     CONTRACT_REQUEST_VERIFICATION = "contract/request-verification"
+    # 3rd-round review (2026-09-08): Principal-gated CANDIDATE → PASSED
+    # transition. A contract whose spec has a ``judge == "user"``
+    # criterion parks in CANDIDATE after a verifier pass; the
+    # dispatcher deliberately skips it until the user signs off.
+    # This method is the only path that moves CANDIDATE → PASSED.
+    CONTRACT_USER_CONFIRM = "contract/user-confirm"
     ATTEMPT_STATUS = "attempt/status"
     ATTEMPT_LOGS = "attempt/logs"
     ATTEMPT_WRITE_BACK = "attempt/write-back"
@@ -53,6 +59,7 @@ IDEMPOTENT_METHODS = frozenset(
         Method.CONTRACT_CANCEL,
         Method.CONTRACT_ARBITRATE,
         Method.CONTRACT_REQUEST_VERIFICATION,
+        Method.CONTRACT_USER_CONFIRM,
         Method.GOAL_PREPARE,
         Method.GOAL_ADMISSION_CHECK,
         Method.CONTEXT_PROMOTE,
