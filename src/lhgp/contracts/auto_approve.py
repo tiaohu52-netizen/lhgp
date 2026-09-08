@@ -1,32 +1,4 @@
-"""User pre-authorised scope for plan auto-approval.
-
-3rd-round review (2026-09-08): the user can declare a scope at
-contract-prep time that lets the runner auto-approve plans,
-retries, and stage advances without an explicit sign-off — as
-long as the proposed action stays inside the scope.  Anything
-outside the scope falls back to the existing
-``tool_submit_plan`` / ``lhgp_plan_signoff`` flow with a human
-in the loop.
-
-Three things the scope locks down:
-
-- ``actions``: which ``ALLOWED_ACTIONS`` tokens the plan is
-  allowed to use.  Empty list = no auto-approve (always require
-  sign-off).  All-listed = the runner can approve any plan whose
-  every step's action is in the set.
-- ``max_budget_increment``: how many times the plan may
-  declare a higher ``max_dispatches`` than the contract
-  declares without going to the user.  ``0`` is the strict
-  default — plans that ask for more budget always need sign-off.
-- ``max_spec_changes``: how many times the plan may add new
-  acceptance checks without sign-off.  ``0`` is the strict
-  default.
-
-The ``enabled`` flag is a kill switch: a contract author can
-declare the scope fields but leave ``enabled=False`` to keep the
-old sign-off-required behaviour while the rest of the team
-experiments with the auto-approve format.
-"""
+"""User pre-authorised scope for plan auto-approval."""
 
 from __future__ import annotations
 

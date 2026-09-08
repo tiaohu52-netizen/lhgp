@@ -1,19 +1,4 @@
-"""Structured stage spec: 5 required contents + version binding + dispatch wiring.
-
-外部 review 3rd-round 建议：每个阶段明确
-- Goal（交付什么结果）
-- Spec（功能/接口/约束/不做范围）
-- 验收条件（用什么测试/证据判断完成）
-- 依赖与产物（开工前需要什么，完成后交给谁）
-- 时间/预算/权限（截止、重试、可改范围）
-
-本测试覆盖：
-1. StageSpec dataclass 的 5 字段 + 校验
-2. spec_hash 稳定性
-3. evaluate_stage_acceptance 在 dispatch 路径上的 pass/fail/pending 行为
-4. Acceptance dataclass 新加 spec/spec_hash 字段的 round-trip
-5. ContractDraft to_dict/from_dict 携带 spec + spec_hash
-"""
+"""Structured stage spec: 5 required contents + version binding + dispatch wiring."""
 
 from __future__ import annotations
 

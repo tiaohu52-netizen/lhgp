@@ -1,24 +1,4 @@
-"""Structured stage spec for staged Goal execution.
-
-Each stage of a Goal plan declares five required contents (外部 review 3rd-round
-建议) so the executor and verifier share one explicit contract for what the
-stage is, what it covers, how to verify completion, and what resources the
-executor is allowed to consume.
-
-Required fields
----------------
-- goal:        what this stage delivers
-- scope:       functional / interfaces / constraints / out_of_scope
-- acceptance:  verifiable conditions (forwarded to acceptance/spec.py)
-- dependencies + artifacts: what the stage needs and what it produces
-- time_budget: deadline (deadline_at)
-- budget:      retries / concurrent attempts / dispatch ceiling
-- permissions:  declared modifiable scope (a stage may not change anything
-                outside this set without re-approval)
-
-The spec is bound to the contract that implements the stage: any change to the
-spec invalidates the contract's plan approval (revision CAS).
-"""
+"""Structured stage spec for staged Goal execution."""
 
 from __future__ import annotations
 

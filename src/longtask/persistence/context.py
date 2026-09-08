@@ -344,48 +344,55 @@ def _record_directive_acks(
     # directives over a long-lived goal would otherwise bloat the row.
     merged: list[int] = (existing + new_acks)[-1000:]
     data[key] = merged
-    try:
-        conn.execute(
-            "UPDATE contracts SET continuity_json = ? WHERE contract_id = ?",
-            (json.dumps(data, ensure_ascii=False), contract_id),
-        )
-    except sqlite3.Error as exc:
-        logger.warning(
-            "directive ack write failed for contract %s (to_agent=%s): %s",
-            contract_id,
-            to_agent,
-            exc,
-        )
-        return
-    # Audit each newly acknowledged directive.  The events are
-    # written inside the same transaction so a crash between the
-    # cursor bump and the audit doesn't leave the system in a state
-    # where directives are "consumed but not audited".
     from lhgp.persistence.events import EventType
     from lhgp.persistence.events_query import append_event
 
     actor_label = f"agent:{to_agent}" if to_agent else "agent:broadcast"
-    for did in new_acks:
+    # The dedup set UPDATE and each directive/acknowledged event write
+    # are inside one transaction. Without this, a crash between the
+    # dedup write and the last ack event would leave the system in a
+    # "consumed but not audited" state, which breaks the
+    # directive/acknowledged rate metric and audit trail. The runner
+    # call-site (cli/runner.py) is also expected to call this from
+    # within its own attempt-finish transaction, so nesting
+    # transactions is a no-op when one is already open.
+    from longtask.persistence.store import transaction
+
+    with transaction(conn):
         try:
-            append_event(
-                conn,
-                contract_id=contract_id,
-                event_type=EventType.DIRECTIVE_ACKNOWLEDGED,
-                payload={
-                    "directive_event_id": did,
-                    "to_agent": to_agent,
-                    "cursor_position": max(merged) if merged else 0,
-                },
-                now=now,
-                actor=actor_label,
+            conn.execute(
+                "UPDATE contracts SET continuity_json = ? WHERE contract_id = ?",
+                (json.dumps(data, ensure_ascii=False), contract_id),
             )
         except sqlite3.Error as exc:
             logger.warning(
-                "directive/acknowledged event write failed for %s/%s: %s",
+                "directive ack write failed for contract %s (to_agent=%s): %s",
                 contract_id,
-                did,
+                to_agent,
                 exc,
             )
+            return
+        for did in new_acks:
+            try:
+                append_event(
+                    conn,
+                    contract_id=contract_id,
+                    event_type=EventType.DIRECTIVE_ACKNOWLEDGED,
+                    payload={
+                        "directive_event_id": did,
+                        "to_agent": to_agent,
+                        "cursor_position": max(merged) if merged else 0,
+                    },
+                    now=now,
+                    actor=actor_label,
+                )
+            except sqlite3.Error as exc:
+                logger.warning(
+                    "directive/acknowledged event write failed for %s/%s: %s",
+                    contract_id,
+                    did,
+                    exc,
+                )
 
 
 def _bump_directive_cursor(

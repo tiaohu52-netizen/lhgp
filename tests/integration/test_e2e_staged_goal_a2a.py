@@ -475,11 +475,36 @@ def test_e2e_staged_goal_a2a_loop(tmp_path: Path) -> None:
     # active. Auto-create stage-3 only fires when stage-2 is complete
     # (verdict pass); since the verdict is pending, stage-3 must NOT
     # be created yet.
-    pending = any(
-        c.contract_id != cid1 and c.contract_id != stage2.contract_id
-        for c in _all_contracts(conn, "goal-e2e-1")
+    # Drive the spec-pending path: run a verifier on stage-2 that
+    # reports the machine check pass; the spec has a user criterion
+    # so verdict=pending. stage-2 must stay ACTIVE and stage-3 must
+    # NOT be auto-created.
+    append_event(
+        conn,
+        contract_id=stage2.contract_id,
+        attempt_id="ver-stage2",
+        event_type=EventType.ATTEMPT_SUCCEEDED,
+        payload={
+            "reported_by": "model",
+            "role": "verifier",
+            "checks": {"file-exists:summary.md": "pass"},
+        },
+        now=NOW,
+        actor="model",
     )
-    assert not pending, "stage-3 must not be created while stage-2 is pending"
+    run_daemon_tick(root, conn, _load_reg(root), now=NOW)
+    stage2_after = get_contract(conn, stage2.contract_id)
+    assert stage2_after.state == ContractState.ACTIVE, (
+        "user criterion must keep the contract active (verdict=pending)"
+    )
+    assert _events_of_type(conn, stage2.contract_id, EventType.ACCEPTANCE_STATUS_CHANGED.value), (
+        "pending verdict must record acceptance/status-changed event"
+    )
+    # stage-3 must NOT exist yet
+    contracts_after = _all_contracts(conn, "goal-e2e-1")
+    assert all(c.contract_id != "lt-20260901-stage-3" for c in contracts_after), (
+        "stage-3 must not be auto-created while stage-2 is pending"
+    )
 
     conn.close()
 

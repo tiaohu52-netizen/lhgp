@@ -1049,25 +1049,27 @@ def _synthesize_stage_draft(
     """Build a usable contract draft from a stage's structured spec.
 
     Used when the stage entry does not pre-supply a ``draft`` (the
-    model caller only wrote a spec). The synthesized draft is the
-    minimum the contract layer needs: title, objective, deadline,
-    hard constraints, acceptance (with the stage's spec carried as
-    ``acceptance.spec``), budget derived from ``StageSpec.budget``.
-    The previous stage's verifier evidence is included in
-    ``context`` so the next executor can reference produced artifacts.
+    model caller only wrote a spec). The synthesized draft carries
+    every field the user declared in the spec: title, objective,
+    deadline, scope, dependencies, artifacts, modifiable scope,
+    acceptance (boolean spec + typed checks for plan-gate coverage).
+    The previous stage's verifier evidence is included in ``context``
+    so the next executor can reference produced artifacts.
     """
     raw_spec = stage.get("spec") if isinstance(stage.get("spec"), dict) else {}
-    # raw_spec as stored under ``stage.spec`` is the boolean-logic body
-    # (e.g. ``{"all": [...]}``), not the full StageSpec envelope.
-    # ``StageSpec.from_dict`` expects the envelope shape with top-level
-    # ``acceptance`` (the boolean body) and ``goal``; we synthesise
-    # that envelope here so budget / deadline / acceptance.checks are
-    # actually populated from the spec rather than falling back to
-    # placeholders.
+    # raw_spec as stored under ``stage.spec`` is the boolean-logic
+    # body (``{"all": [...]}`` or ``{"any": [...]}``). The full
+    # StageSpec envelope (``goal``/``scope``/``acceptance``/etc.) lives
+    # on the stage itself; merge so the user's full intent is
+    # preserved, not just the boolean body.
     spec_envelope: dict[str, Any] = {
         "goal": str(stage.get("title") or stage.get("id") or "stage"),
         "acceptance": raw_spec,
     }
+    for opt_key in ("scope", "dependencies", "artifacts", "time_budget", "budget", "permissions"):
+        v = stage.get(opt_key)
+        if v is not None:
+            spec_envelope[opt_key] = v
     from lhgp.goals.stage import StageSpec
 
     spec = StageSpec.from_dict(spec_envelope)
@@ -1077,16 +1079,12 @@ def _synthesize_stage_draft(
         deadline_iso = str(spec.deadline_at)
     else:
         deadline_iso = (now + timedelta(hours=24)).isoformat()
+    # Recursively walk the boolean spec (all/any + leaf criteria) so
+    # a plan author can mention any of the substantive machine
+    # criteria; the legacy "only ``all``" path left ``any`` branches
+    # as the placeholder.
     acceptance_checks: list[Any] = []
-    for raw_mach in spec.acceptance.get("all", []):
-        if isinstance(raw_mach, dict) and raw_mach.get("kind") and raw_mach.get("target"):
-            acceptance_checks.append(
-                {
-                    "kind": raw_mach.get("kind"),
-                    "target": raw_mach.get("target"),
-                    "mandatory": True,
-                }
-            )
+    _collect_machine_checks(raw_spec, acceptance_checks)
     if not acceptance_checks:
         acceptance_checks = [
             {
@@ -1102,11 +1100,16 @@ def _synthesize_stage_draft(
         context["dependencies"] = list(spec.dependencies)
     if spec.artifacts:
         context["expected_artifacts"] = list(spec.artifacts)
+    if spec.modifiable_scope:
+        context["modifiable_scope"] = list(spec.modifiable_scope)
+    hard_constraints: dict[str, Any] = {}
+    if spec.modifiable_scope:
+        hard_constraints["modifiable_scope"] = list(spec.modifiable_scope)
     return {
         "title": title,
         "objective": objective,
         "deadline_at": deadline_iso,
-        "hard_constraints": {},
+        "hard_constraints": hard_constraints,
         "acceptance": {
             "standard": objective,
             "checks": acceptance_checks,
@@ -1124,6 +1127,30 @@ def _synthesize_stage_draft(
         },
         "context": context,
     }
+
+
+def _collect_machine_checks(node: Any, out: list[dict[str, Any]]) -> None:
+    """Walk a boolean spec and append every leaf machine criterion.
+
+    Handles ``{"all": [...]}``, ``{"any": [...]}``, and bare
+    criterion dicts. Stops at non-machine leaves (user/agent judges)
+    since the plan gate only requires coverage of typed checks.
+    """
+    if not isinstance(node, dict):
+        return
+    for comb in ("all", "any"):
+        children = node.get(comb)
+        if isinstance(children, list):
+            for child in children:
+                _collect_machine_checks(child, out)
+            return
+    judge = node.get("judge")
+    if judge != "machine":
+        return
+    kind = node.get("kind")
+    target = node.get("target")
+    if isinstance(kind, str) and kind.strip() and isinstance(target, str) and target.strip():
+        out.append({"kind": kind, "target": target, "mandatory": True})
 
 
 def _auto_create_next_stage_contract(
