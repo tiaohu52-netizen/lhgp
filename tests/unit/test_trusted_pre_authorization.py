@@ -257,12 +257,20 @@ def test_auto_approve_rejects_claim_outside_goal_scope(tmp_path: Path) -> None:
 
 
 def test_goal_pre_authorized_grants_generic_auto_approve(tmp_path: Path) -> None:
-    """A user-pinned Goal-level pre-authorization with no
-    specific actions still grants a generic auto-approve:
-    the user said "this whole Goal is pre-authorised" so the
+    """A user-pinned Goal-level pre-authorization with
+    ``wildcard=True`` grants a generic auto-approve: the
+    user said "this whole Goal is pre-authorised" so the
     synthesised next-stage contracts (which never claim any
     action scope) can be auto-approved without a per-contract
     claim.
+
+    5th-round P1 regression fix: previously the bare
+    ``enabled=True, actions=[...]`` without a claim on
+    the contract also auto-approved — that was the silent
+    bypass the reviewer flagged.  The fix requires an
+    explicit ``wildcard=True`` for the no-claim case; a
+    bare actions list is a whitelist that the contract's
+    own claim must be a subset of.
     """
     conn = _seed_drafted(
         tmp_path,
@@ -279,6 +287,7 @@ def test_goal_pre_authorized_grants_generic_auto_approve(tmp_path: Path) -> None
             "stages": [{"id": "s1", "title": "first"}],
             "pre_authorized": {
                 "enabled": True,
+                "wildcard": True,
                 "actions": ["write file", "run command"],
             },
         },
@@ -319,5 +328,59 @@ def test_goal_pre_authorized_disabled_blocks_auto_approve(
     contract = get_contract(conn, "lt-tpa-1")
     assert contract is not None
     assert auto_approve_drafted_contract(conn, contract, NOW) is False
+    assert get_contract(conn, "lt-tpa-1").state == ContractState.DRAFTED
+    conn.close()
+
+
+def test_no_claim_without_wildcard_blocks_auto_approve(tmp_path: Path) -> None:
+    """5th-round P1 regression: a contract with no claim
+    (``auto_approve.enabled=False``) must NOT be auto-approved
+    by a bare Goal grant.  The user has to either pin
+    ``wildcard=True`` on the Goal (an explicit
+    "I trust this whole goal" sign-off) OR the contract
+    must declare its action scope so the grant's whitelist
+    can be checked.
+
+    The reviewer reproduced the bypass: pin
+    ``pre_authorized.actions=["read file"]`` and the model
+    can submit an MCP contract that does ``write file``
+    (or anything else) with ``auto_approve.enabled=False``
+    on its draft, and the daemon auto-approves.  This
+    test pins the fix: the bypass is closed; a contract
+    without a claim + a Goal without a wildcard → no
+    auto-approve, period.
+    """
+    # Goal only authorises "read file".  The contract
+    # makes no claim (the bypass case).
+    conn = _seed_drafted(
+        tmp_path,
+        goal_id="lt-tpa-goal-no-claim",
+        auto_approve=AutoApprove(),  # enabled=False, no actions
+    )
+    patch_goal(
+        conn,
+        goal_id="lt-tpa-goal-no-claim",
+        now=NOW,
+        expected_revision=1,
+        actor="user",
+        plan={
+            "stages": [{"id": "s1", "title": "first"}],
+            "pre_authorized": {
+                "enabled": True,
+                "actions": ["read file"],
+                # No wildcard — must claim.
+            },
+        },
+    )
+    contract = get_contract(conn, "lt-tpa-1")
+    assert contract is not None
+    # The bare "read file" grant is not enough; the model
+    # could be doing anything.  Auto-approve is blocked.
+    assert auto_approve_drafted_contract(conn, contract, NOW) is False, (
+        "a no-claim contract bound to a Goal whose grant "
+        "is a bare actions list must NOT auto-approve; "
+        "the model could be doing actions the user did "
+        "not pin.  Regression fix for 5th-round P1."
+    )
     assert get_contract(conn, "lt-tpa-1").state == ContractState.DRAFTED
     conn.close()

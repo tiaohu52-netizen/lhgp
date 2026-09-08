@@ -1403,6 +1403,14 @@ TOOLS: dict[
                         "type": "string",
                         "description": "幂等重试键；重试同一变更时必须复用",
                     },
+                    "goal_id": {
+                        "type": "string",
+                        "description": (
+                            "5th-round P1: 可选关联已有 Goal（绑 Goal 后会绑定 "
+                            "plan.pre_authorized 作为可信预授权源，自动激活走 "
+                            "Goal 层 plan.execution_config 的工作区/执行器授权）。"
+                        ),
+                    },
                 },
             },
         },

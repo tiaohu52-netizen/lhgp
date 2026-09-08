@@ -297,6 +297,7 @@ def _insert_goal_with_3_stages(conn: sqlite3.Connection, workspace: Path) -> Non
     plan = {
         "pre_authorized": {
             "enabled": True,
+            "wildcard": True,  # user-pinned trust-the-whole-goal sign-off
             "actions": [
                 "read file",
                 "run command",

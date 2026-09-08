@@ -522,6 +522,21 @@ def _goal_pre_authorizes_contract(conn: sqlite3.Connection, contract: Any) -> bo
     ``pre_authorized``, returns False.  When the contract claims
     actions not in the user-pinned scope, the answer is also False
     so the model cannot escalate beyond the user's grant.
+
+    5th-round P1 regression fix: the previous implementation
+    had a "no claim" branch that returned True for any
+    contract whose ``auto_approve.enabled=False``.  A model
+    could omit the actions field on its draft to bypass
+    the scope check entirely.  The new rule is:
+
+    - If the contract claims actions: they must be a subset
+      of the Goal's ``pre_authorized.actions``.
+    - If the contract does NOT claim actions: the Goal's
+      ``pre_authorized`` must explicitly include
+      ``wildcard=True`` (a user-pinned "I trust this whole
+      goal" sign-off).  Otherwise the no-claim path is a
+      silent bypass; the model could be doing anything the
+      Goal's grant didn't pin.
     """
     goal_id = getattr(contract, "goal_id", None)
     if not goal_id:
@@ -541,19 +556,23 @@ def _goal_pre_authorizes_contract(conn: sqlite3.Connection, contract: Any) -> bo
     if not isinstance(granted, (list, tuple)):
         return False
     granted_set = {str(a) for a in granted if a}
-    if not granted_set:
+    is_wildcard = bool(pre_authorized.get("wildcard", False))
+    if not granted_set and not is_wildcard:
         return False
     claimed = getattr(contract.draft, "auto_approve", None)
     if claimed is None or not getattr(claimed, "enabled", False):
-        # Contract doesn't claim pre-auth; honour the user's
-        # Goal-level grant as a generic "you said this goal is
-        # pre-authorised" sign-off.  Useful for the
-        # spec-only-stage flow where the synthesizer pre-fills
-        # ``auto_approve.enabled=False`` (it never claims any
-        # action scope) but the user has pre-authorised the
-        # whole stage at the Goal level.
-        return True
+        # Contract doesn't claim any action scope.  A bare
+        # grant (no wildcard) is not enough — the model
+        # could be doing actions the user didn't pin.  Only
+        # an explicit ``wildcard=True`` sign-off clears.
+        return is_wildcard
     claimed_actions = {str(a) for a in claimed.actions if a}
+    if not claimed_actions and not is_wildcard:
+        # Contract explicitly claims ``enabled=True`` with
+        # zero actions.  Same bypass: without a wildcard
+        # we cannot trust a zero-claim contract to not
+        # escalate.
+        return False
     return claimed_actions.issubset(granted_set)
 
 
@@ -1088,6 +1107,33 @@ def update_contract_state(
                 new_next_decision.isoformat() if new_next_decision else None,
                 contract_id,
             ),
+        )
+
+        # 5th-round P1 regression fix: when the state transition
+        # is a pure lifecycle change (DRAFTED→ACTIVE auto-promote,
+        # BLOCKED→ACTIVE re-activation, retry reactivation) the
+        # plan approval the user granted at the prior revision
+        # is still binding — the spec, the accepted_check_ids,
+        # and the acceptance criteria are unchanged.  Without
+        # this migration the gate would refuse dispatch with
+        # "no recent PLAN_APPROVED event" because the approval's
+        # contract_revision lags the new revision.
+        #
+        # We re-stamp any prior PLAN_APPROVED with the new
+        # revision.  The plan approval's accepted_check_ids and
+        # spec_hash are unchanged; if a later CONTENT change
+        # invalidates the plan, the gate's payload checks
+        # (spec_hash, accepted_check_ids) still fire.
+        conn.execute(
+            """
+            UPDATE events
+            SET contract_revision = ?
+            WHERE contract_id = ?
+              AND event_type = ?
+              AND contract_revision IS NOT NULL
+              AND contract_revision < ?
+            """,
+            (new_revision, contract_id, EventType.PLAN_APPROVED.value, new_revision),
         )
 
         # P1：写入新一份不可变修订快照（基于当前最新 draft 字段；后续 patch 会改 draft）
