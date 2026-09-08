@@ -1,0 +1,55 @@
+fix(spec/principal/cli): real-bug regressions from 3rd-round review
+
+外部 review 找了 4 个影响使用的真 bug（不是结构小瑕疵）：
+
+1. lhgp_plan_signoff 不做服务端 Principal 校验
+   - 模型客户端能在 payload 里写 signoff_by="user:human"，handler
+     原样照抄写到 PLAN_APPROVED 事件的 actor 字段，假装用户已签
+   - 修：tool_plan_signoff 入口从 ctx["envelope"] 拿 envelope，调
+     require_principal(envelope, args, action="lhgp_plan_signoff")
+     拒绝非 user 客户端；事件 actor 强制用解析后的 principal
+
+2. 真实 executor → verifier 跑过后 Spec 仍判 pending
+   - runner 写 verdict 在 payload["evidence"]（typed-check 列表）
+     和 payload["model_verdict"].checks（lhgp-verdict 块），而
+     _evaluate_contract_spec 只读顶层 payload["checks"] dict
+   - 真实路径下顶层 checks 为空 → 全部 machine 判据回退 pending
+   - 修：_extract_verifier_check_results 归一化三个形状（top-level
+     checks / evidence 列表 / model_verdict.checks），union 后丢给
+     evaluate_stage_acceptance
+
+3. contract/prepare 和 contract/patch 静默丢 spec/spec_hash
+   - parse_contract_draft 手工构造 Acceptance 缺字段
+   - contract.py 的 patch 路径同样手工构造
+   - 修：两处都透传 spec + spec_hash；contract.py 同时把 checks
+     parse 走 CheckSpec 兼容类型化检查
+
+4. CLI lhgp plan signoff 报 UnboundLocalError
+   - get_contract 在 plan submit / 状态命令等分支里被条件 import
+   - signoff 分支直接引用，没有 import 路径
+   - 修：get_contract 提到顶层 import；CLI signoff event payload
+     补 spec_hash 字段
+
+附加修复：等用户确认期间 dispatcher 不再二次派工
+- _record_spec_pending 把 acceptance_status 钉到 CANDIDATE
+- tick.py 主循环新增 CANDIDATE 跳过分支，避免 verdict=pending
+  期间被反复重派
+
+新增测试
+- tests/unit/test_spec_payload_shapes.py（9 单元）
+  - runner-shaped evidence 列表 / model_verdict 块 / 顶层 checks
+    三种 shape 都被读出 verdict=pass
+  - 三种 shape 合并，union 三个来源
+  - 缺证据时缺判据=pending（不是 pass）
+  - parse_contract_draft 保留 spec + spec_hash
+  - 旧合同（无 spec）仍能解析
+  - 非法 spec 被 validate 拒绝
+  - request_verification 写真实事件
+
+- tests/unit/test_plan_signoff_principal.py（3 单元）
+  - model 客户端被服务端拒（AUTH_FAILED），不写 PLAN_APPROVED
+  - user 客户端成功；事件 actor=principal（不是 caller 声称的）
+  - 未知 client_id 直接 AUTH_FAILED
+
+质量门 7/7 PASS。1223 passed, 8 skipped（1211 + 12 新增），
+coverage 76.63%。

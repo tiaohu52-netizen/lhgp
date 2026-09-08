@@ -126,7 +126,14 @@ def require_contract_id(params: dict[str, Any]) -> str:
 
 
 def parse_contract_draft(params: dict[str, Any]) -> ContractDraft:
-    """解析并验证合同草稿，统一 canonical contracts 组件。"""
+    """解析并验证合同草稿，统一 canonical contracts 组件。
+
+    3rd-round review (2026-09-08): 验收字段新增的 ``spec`` 和
+    ``spec_hash`` 必须与 ``standard``/``checks``/``verifier`` 一同
+    透传；之前手工构造 ``Acceptance`` 把这两个字段静默丢掉了，
+    下游 spec dispatch 和 plan gate 的 spec_hash 绑定都会因为
+    spec=None 而绕过全部新行为。
+    """
     draft_data: dict[str, Any] = params.get("draft", params)
     try:
         title = str(draft_data["title"])
@@ -138,10 +145,16 @@ def parse_contract_draft(params: dict[str, Any]) -> ContractDraft:
             else datetime.fromisoformat(str(raw_deadline))
         )
         acc_raw = draft_data["acceptance"]
+        spec_raw = acc_raw.get("spec")
+        spec_obj = spec_raw if isinstance(spec_raw, dict) else None
+        spec_hash_raw = acc_raw.get("spec_hash")
+        spec_hash = spec_hash_raw if isinstance(spec_hash_raw, str) and spec_hash_raw else None
         acceptance = Acceptance(
             standard=str(acc_raw["standard"]),
             checks=tuple(parse_check(item) for item in acc_raw["checks"]),
             verifier=str(acc_raw.get("verifier", "cross_check")),
+            spec=spec_obj,
+            spec_hash=spec_hash,
         )
         workload_estimate = draft_data.get("workload_estimate")
         if isinstance(workload_estimate, dict):

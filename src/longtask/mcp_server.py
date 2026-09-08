@@ -791,6 +791,24 @@ def tool_plan_signoff(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, An
     from lhgp.persistence.events import EventType
     from lhgp.persistence.events_query import append_event
     from lhgp.persistence.store import get_contract
+    from longtask.rpc.handlers._common import require_principal
+    from longtask.rpc.server import RequestEnvelope
+
+    # P0 fix (3rd-round review 2026-09-08): the caller MUST be a
+    # Principal (user).  The previous implementation took the
+    # caller's claimed ``signoff_by`` verbatim, so a model client
+    # could write ``"user:human"`` and promote its own plan.
+    # Server-side gate enforced here — the actor recorded on the
+    # event is the resolved principal, not the caller's claim.
+    envelope = ctx.get("envelope")
+    if not isinstance(envelope, RequestEnvelope):
+        from longtask.rpc.errors import ErrorCode, RpcError
+
+        raise RpcError(
+            code=ErrorCode.INTERNAL,
+            message="missing RPC envelope in tool context",
+        )
+    principal_actor = require_principal(envelope, args, action="lhgp_plan_signoff")
 
     contract_id = str(args.get("contract_id") or "").strip()
     if not contract_id:
@@ -798,7 +816,9 @@ def tool_plan_signoff(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, An
     steps_raw = args.get("steps")
     if not isinstance(steps_raw, list) or not steps_raw:
         raise ValueError("steps must be a non-empty array")
-    signoff_by = str(args.get("signoff_by") or "user:human").strip()
+    # The recorded actor is the resolved principal, not the
+    # caller's ``signoff_by`` claim.
+    signoff_by = principal_actor
     note = str(args.get("note") or "").strip() or None
 
     conn = ctx["conn"]

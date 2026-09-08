@@ -7,6 +7,7 @@ run_daemon_tick 只做调度簿记：ticker 扫描、过期仲裁、紧迫度分
 
 from __future__ import annotations
 
+import contextlib
 import json
 import math
 import os
@@ -41,6 +42,7 @@ from longtask.persistence.events import EventType
 from longtask.persistence.notifications import enqueue_notification
 from longtask.persistence.projections import rebuild_projection
 from longtask.persistence.store import (
+    StoreError,
     _notification_available_at,
     advance_goal,
     append_event,
@@ -255,6 +257,15 @@ def run_daemon_tick(
 
         # 5. 仅对 ACTIVE 状态合同进行推进
         if c.state != ContractState.ACTIVE:
+            continue
+        # 3rd-round review (2026-09-08): a contract whose acceptance
+        # spec is waiting on a user criterion (verdict=pending) is
+        # pinned to ``acceptance_status=CANDIDATE``.  Re-dispatching
+        # the executor while waiting would burn dispatch budget and
+        # produce a contradictory active/executor-spent state.  Skip
+        # such contracts here; the user must confirm the spec verdict
+        # before the contract is allowed to advance.
+        if c.acceptance_status == AcceptanceStatus.CANDIDATE:
             continue
 
         # 计算剩余时间与工作量
@@ -952,25 +963,79 @@ def _evaluate_contract_spec(contract: Any, verifier_payload: dict[str, Any]) -> 
     """Return SpecVerdict for a contract with a structured acceptance spec.
 
     Returns ``None`` for contracts that do not declare a spec (legacy
-    behavior — verifier success is sufficient). The verifier's
-    ``checks`` dict is used as the typed-check outcomes. If the verifier
-    did not emit a ``checks`` payload, the spec is treated as
-    satisfied-only-by-its-stated-criteria (machine criteria fall back
-    to ``pending``, user criteria stay pending).
+    behavior — verifier success is sufficient).
+
+    3rd-round review (2026-09-08): the runner writes the verifier
+    outcome under several shapes (top-level ``checks`` dict, the
+    ``evidence`` list of merged typed-check results, or the
+    ``model_verdict.checks`` block). The previous implementation
+    only read the top-level ``checks`` dict and treated the absence
+    as "all machine criteria pending", so a real executor → real
+    verifier pass was always judged pending.  Normalize all three
+    shapes here.
     """
     spec = getattr(contract.draft.acceptance, "spec", None)
     if not spec:
         return None
     from lhgp.acceptance.spec import evaluate_stage_acceptance
 
-    raw_checks = verifier_payload.get("checks")
-    if not isinstance(raw_checks, dict):
-        raw_checks = {}
-    check_results: dict[str, str] = {}
-    for key, value in raw_checks.items():
-        if isinstance(key, str) and isinstance(value, str):
-            check_results[key] = value
+    check_results = _extract_verifier_check_results(verifier_payload)
     return evaluate_stage_acceptance(spec, check_results=check_results)
+
+
+def _extract_verifier_check_results(verifier_payload: dict[str, Any]) -> dict[str, str]:
+    """Normalize the runner's verifier payload into ``{kind:target: outcome}``.
+
+    Three shapes observed in the runner:
+
+    1. ``{"checks": {"file-exists:dist/app.js": "pass", ...}}`` —
+       direct flat dict, written by the M2M verifier write-back
+       path.
+    2. ``{"evidence": [{"check_id": "file-exists:dist/app.js",
+       "outcome": "pass", ...}, ...]}`` — runner typed-check
+       synthesis, with the merged protocol+model verdict per
+       typed check.
+    3. ``{"model_verdict": {"checks": [{"check_id": "...", "outcome":
+       "pass", ...}]}}`` — model-emitted ``lhgp-verdict`` block.
+
+    All three collapse to ``{"<kind>:<target>": "pass"|"fail"|"pending"}``
+    so the spec's machine criteria can be evaluated.
+    """
+    out: dict[str, str] = {}
+
+    # Shape 1: top-level dict.
+    direct = verifier_payload.get("checks")
+    if isinstance(direct, dict):
+        for key, value in direct.items():
+            if isinstance(key, str) and isinstance(value, str):
+                out[key] = value
+
+    # Shape 2: ``evidence`` list — each entry has ``check_id`` and
+    # ``outcome``; the check_id is already ``<kind>:<target>``.
+    evidence = verifier_payload.get("evidence")
+    if isinstance(evidence, list):
+        for entry in evidence:
+            if not isinstance(entry, dict):
+                continue
+            check_id = entry.get("check_id")
+            outcome = entry.get("outcome")
+            if isinstance(check_id, str) and isinstance(outcome, str):
+                out.setdefault(check_id, outcome)
+
+    # Shape 3: model_verdict block.
+    mv = verifier_payload.get("model_verdict")
+    if isinstance(mv, dict):
+        mv_checks = mv.get("checks")
+        if isinstance(mv_checks, list):
+            for entry in mv_checks:
+                if not isinstance(entry, dict):
+                    continue
+                check_id = entry.get("check_id")
+                outcome = entry.get("outcome")
+                if isinstance(check_id, str) and isinstance(outcome, str):
+                    out.setdefault(check_id, outcome)
+
+    return out
 
 
 def _record_spec_failure(
@@ -1020,9 +1085,26 @@ def _record_spec_pending(
     verdict: Any,
     now: datetime,
 ) -> None:
-    """Spec has user criteria pending — leave contract active, surface verdict."""
-    from lhgp.acceptance.spec import verdict_to_event_payload
+    """Spec has user criteria pending — leave contract active, surface verdict.
 
+    3rd-round review (2026-09-08): the user explicitly observed
+    that the dispatcher would re-dispatch the contract while a user
+    criterion was still waiting for confirmation.  Pin the
+    ``acceptance_status`` field to ``CANDIDATE`` so the dispatch
+    path can recognise a "waiting for user" contract and skip
+    further executor dispatches until the user signs off.
+    """
+    from lhgp.acceptance.spec import verdict_to_event_payload
+    from lhgp.contracts.contract_view import AcceptanceStatus
+
+    with contextlib.suppress(StoreError):
+        update_contract_state(
+            conn,
+            contract_id=contract.contract_id,
+            new_state=ContractState.ACTIVE,
+            now=now,
+            acceptance_status=AcceptanceStatus.CANDIDATE,
+        )
     append_event(
         conn,
         contract_id=contract.contract_id,

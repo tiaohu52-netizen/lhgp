@@ -19,6 +19,7 @@ import sqlite3
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
+from lhgp.acceptance.checks import parse_check
 from longtask.contracts.schema import (
     FROZEN_FIELDS,
     Acceptance,
@@ -376,10 +377,19 @@ def handle_contract_patch(
     if "acceptance" in patch_data:
         acc_raw = patch_data["acceptance"]
         try:
+            # 3rd-round review (2026-09-08): patch 必须保留 spec /
+            # spec_hash，否则验收要求在 patch 路径上静默消失，
+            # plan gate 的 spec_hash 绑定随之失效。
+            spec_raw = acc_raw.get("spec")
+            spec_obj = spec_raw if isinstance(spec_raw, dict) else None
+            spec_hash_raw = acc_raw.get("spec_hash")
+            spec_hash = spec_hash_raw if isinstance(spec_hash_raw, str) and spec_hash_raw else None
             acceptance = Acceptance(
                 standard=str(acc_raw["standard"]),
-                checks=tuple(str(c) for c in acc_raw["checks"]),
+                checks=tuple(parse_check(c) for c in acc_raw["checks"]),
                 verifier=str(acc_raw.get("verifier", "cross_check")),
+                spec=spec_obj,
+                spec_hash=spec_hash,
             )
         except (KeyError, TypeError) as exc:
             # 审计 RPC-R7：畸形 acceptance 之前裸抛 KeyError → INTERNAL，

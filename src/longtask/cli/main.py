@@ -43,6 +43,7 @@ from longtask.persistence.store import (
     StoreConfig,
     connect,
     ensure_schema,
+    get_contract,
     list_contracts,
 )
 from longtask.rpc.client import call_unix_socket
@@ -1083,7 +1084,6 @@ def main(argv: list[str] | None = None) -> int:
             compute_deadline_level,
             format_deadline_report,
         )
-        from lhgp.persistence.store import get_contract
 
         conn = _open_read_conn(args.data_dir)
         try:
@@ -1113,7 +1113,6 @@ def main(argv: list[str] | None = None) -> int:
             from lhgp.persistence.events import EventType
             from lhgp.persistence.events_query import append_event
             from lhgp.persistence.schema import transaction as _tx
-            from lhgp.persistence.store import get_contract
 
             if args.from_file:
                 raw = Path(args.from_file).read_text(encoding="utf-8")
@@ -1281,6 +1280,7 @@ def main(argv: list[str] | None = None) -> int:
                         "contract_revision": view.revision,
                         "content_hash": plan_obj.content_hash,
                         "accepted_check_ids": list(_extract_check_identifiers(view)),
+                        "spec_hash": view.draft.acceptance.spec_hash,
                         "auto_approved": False,
                     },
                     now=now,
