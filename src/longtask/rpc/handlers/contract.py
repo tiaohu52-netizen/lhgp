@@ -697,12 +697,23 @@ def handle_contract_user_confirm(
     the CANDIDATE→PASSED transition.
 
     After resolving the user, the handler replays the verifier
-    success path: emit ``CONTRACT_COMPLETED``, transition to
-    ``COMPLETE`` with ``acceptance_status=PASSED``, and advance
-    the bound Goal stage so the next contract is generated.  The
-    old version only flipped the status and left the contract
-    ACTIVE — the dispatcher immediately re-dispatched, the Goal
-    was never advanced, and the next contract was never created.
+    success path: transition to ``COMPLETE`` with
+    ``acceptance_status=PASSED`` (which also writes the
+    ``CONTRACT_COMPLETED`` event via ``_STATE_TO_EVENT``), and
+    advance the bound Goal stage so the next contract is
+    generated.  The old version only flipped the status and
+    left the contract ACTIVE — the dispatcher immediately
+    re-dispatched, the Goal was never advanced, and the next
+    contract was never created.
+
+    5th-round review: the event append + state update + goal
+    advance are one atomic transaction with a pre-read
+    ``expected_revision`` CAS.  Two concurrent user_confirm
+    calls would otherwise both write the ACCEPTANCE_STATUS_CHANGED
+    event, then race the contract state update; only the thread
+    whose ``update_contract_state`` wins the revision CAS
+    commits, the other raises ``REVISION_CONFLICT`` and the
+    outer transaction rolls its events back.
     """
     params = envelope.params
     contract_id = require_contract_id(params)
@@ -712,79 +723,102 @@ def handle_contract_user_confirm(
     if (replay := idempotent_replay(conn, envelope, contract_id)) is not None:
         return replay
 
-    current = get_contract(conn, contract_id)
-    if current is None:
+    note = str(params.get("note") or "").strip() or None
+    # 5th-round review: the event append + state update +
+    # goal advance are one atomic transaction with a
+    # pre-read ``expected_revision`` CAS.  Two concurrent
+    # user_confirm calls would otherwise both write
+    # ACCEPTANCE_STATUS_CHANGED, then race the contract
+    # state update; only the thread whose
+    # ``update_contract_state`` wins the revision CAS commits,
+    # the other raises ``REVISION_CONFLICT`` and the outer
+    # transaction rolls its events back.  ``BEGIN IMMEDIATE``
+    # inside ``transaction()`` serializes the write lock.
+    from longtask.persistence.store import (
+        RevisionConflictError,
+        advance_goal_after_verified_contract,
+        transaction,
+    )
+
+    # Pre-transaction snapshot.  ``current.revision`` here is
+    # the CAS baseline that ``update_contract_state`` will check
+    # against.  Reading it OUTSIDE the transaction is what makes
+    # the CAS span the BEGIN IMMEDIATE boundary: two concurrent
+    # threads both read the same baseline, but only one wins the
+    # write lock and the other's expected_revision check fails.
+    pre_current = get_contract(conn, contract_id)
+    if pre_current is None:
         raise RpcError(
             code=ErrorCode.UNKNOWN_CONTRACT,
             message=f"contract {contract_id} not found",
         )
-    if current.acceptance_status != AcceptanceStatus.CANDIDATE:
+    if pre_current.acceptance_status != AcceptanceStatus.CANDIDATE:
         raise RpcError(
             code=ErrorCode.VALIDATION_FAILED,
             message=(
-                f"contract {contract_id} is in {current.acceptance_status.value!r}; "
+                f"contract {contract_id} is in {pre_current.acceptance_status.value!r}; "
                 "user-confirm is only valid for CANDIDATE (verifier passed with a "
                 "user criterion pending)"
             ),
         )
-    note = str(params.get("note") or "").strip() or None
-    append_event(
-        conn,
-        contract_id=contract_id,
-        event_type=EventType.ACCEPTANCE_STATUS_CHANGED,
-        payload={
-            "reason": "user-confirmed",
-            "from_status": current.acceptance_status.value,
-            "to_status": AcceptanceStatus.PASSED.value,
-            "note": note,
-        },
-        now=now,
-        actor=principal_actor,
-    )
-    # Full completion: emit CONTRACT_COMPLETED with the same
-    # payload shape the verifier success path uses, then move
-    # the contract to COMPLETE.  The verifier event the daemon
-    # would have seen was already recorded when the verifier
-    # passed (before CANDIDATE was set); we re-read it from
-    # the event log to keep the completion payload consistent
-    # with the verifier-driven path.
-    verifier_evidence = _latest_verifier_evidence(conn, contract_id, current.revision)
-    completed_payload: dict[str, Any] = {
-        "verifier": verifier_evidence.get("attempt_id"),
-        "evidence": verifier_evidence.get("payload", {}),
-        "user_confirmed": True,
-    }
-    append_event(
-        conn,
-        contract_id=contract_id,
-        event_type=EventType.CONTRACT_COMPLETED,
-        payload=completed_payload,
-        now=now,
-        actor=principal_actor,
-    )
+    expected_revision = int(pre_current.revision)
+    pre_acceptance = pre_current.acceptance_status
+
     try:
-        update_contract_state(
-            conn,
-            contract_id=contract_id,
-            new_state=ContractState.COMPLETE,
-            now=now,
-            acceptance_status=AcceptanceStatus.PASSED,
-            deadline_status=(
-                DeadlineStatus.MET if now <= current.draft.deadline_at else DeadlineStatus.MISSED
-            ),
-        )
+        with transaction(conn):
+            append_event(
+                conn,
+                contract_id=contract_id,
+                event_type=EventType.ACCEPTANCE_STATUS_CHANGED,
+                payload={
+                    "reason": "user-confirmed",
+                    "from_status": pre_acceptance.value,
+                    "to_status": AcceptanceStatus.PASSED.value,
+                    "note": note,
+                },
+                now=now,
+                actor=principal_actor,
+            )
+            verifier_evidence = _latest_verifier_evidence(conn, contract_id, expected_revision)
+            # CONTRACT_COMPLETED is written by ``update_contract_state``
+            # (COMPLETE → CONTRACT_COMPLETED via ``_STATE_TO_EVENT``);
+            # we merge the verifier evidence into its ``event_payload``
+            # so the same event carries the user-confirm provenance
+            # without producing a second CONTRACT_COMPLETED row.
+            completed_event_payload: dict[str, Any] = {
+                "verifier": verifier_evidence.get("attempt_id"),
+                "evidence": verifier_evidence.get("payload", {}),
+                "user_confirmed": True,
+            }
+            updated = update_contract_state(
+                conn,
+                contract_id=contract_id,
+                new_state=ContractState.COMPLETE,
+                now=now,
+                expected_revision=expected_revision,
+                acceptance_status=AcceptanceStatus.PASSED,
+                deadline_status=(
+                    DeadlineStatus.MET
+                    if now <= pre_current.draft.deadline_at
+                    else DeadlineStatus.MISSED
+                ),
+                event_payload=completed_event_payload,
+                actor=principal_actor,
+            )
+            advance_goal_after_verified_contract(conn, updated, now)
+    except RevisionConflictError as exc:
+        # The CAS rejected the state update.  The transaction
+        # rolled back any events we appended; the contract view
+        # is the same as before the call.
+        raise RpcError(
+            code=ErrorCode.REVISION_CONFLICT,
+            message=str(exc),
+        ) from exc
     except StoreError as exc:
         raise RpcError(
             code=ErrorCode.INTERNAL,
             message=f"failed to mark contract complete: {exc}",
         ) from exc
-    # Advance the bound Goal stage so the next contract is
-    # generated by the next tick (or the current one if it observes
-    # the new state).  Implemented in the persistence layer
-    # (rpc → cli is forbidden by the arch rule).
-    from longtask.persistence.store import advance_goal_after_verified_contract
-
-    advance_goal_after_verified_contract(conn, current, now)
     return {
         "contract_id": contract_id,
         "user_confirmed": True,
