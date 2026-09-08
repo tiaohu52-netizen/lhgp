@@ -44,6 +44,7 @@ from longtask.persistence.store import (
     _notification_available_at,
     advance_goal,
     append_event,
+    get_contract,
     get_events,
     get_goal,
     get_lease,
@@ -186,6 +187,26 @@ def run_daemon_tick(
         )
         escalations_used_by_contract[cid] = verifier_count + steer_count
         estimate_stalled_by_contract[cid] = _estimate_stalled_from_attempts(conn, cid)
+
+    # P1 review (2026-09-08, second round): auto-recover contracts
+    # blocked purely on CAPACITY_FULL. These went BLOCKED because
+    # every eligible executor was at its cap; as soon as any lease
+    # is released, the next tick should retry them. Doing it here at
+    # the start of every tick is O(blocked_set) and self-throttling
+    # — if the cap is still full, the contract re-blocks immediately
+    # and stops showing up here.
+    woken_capacity: set[str] = set()
+    for c in all_contracts:
+        if c.state == ContractState.BLOCKED and c.blocked_reason == BlockReason.CAPACITY_FULL:
+            from longtask.cli.dispatch import wake_blocked_capacity_full
+
+            if wake_blocked_capacity_full(conn, c.contract_id, now):
+                woken_capacity.add(c.contract_id)
+    # Refresh the in-memory views for woken contracts so the main
+    # loop sees them as ACTIVE this tick (the snapshot at the top
+    # of run_daemon_tick is now stale for them).
+    if woken_capacity:
+        all_contracts = [get_contract(conn, c.contract_id) or c for c in all_contracts]
 
     ordered_contracts = sorted(
         (c for c in all_contracts if c.state != ContractState.ACTIVE),
@@ -425,13 +446,26 @@ def run_daemon_tick(
                 # running=0 and a single executor with cap=1 can still be
                 # handed two contracts in the same tick.
                 running_attempts = count_running_by_executor(conn)
+                # P1 review (2026-09-08, second round): when
+                # match_candidates returns empty, distinguish "no
+                # eligible candidate exists" (NO_EXECUTOR, terminal)
+                # from "candidates exist but every one is cap-saturated"
+                # (CAPACITY_FULL, recoverable). Calling match_candidates
+                # a second time with an empty running_attempts map gives
+                # the cap-free set cheaply — the registry's per-entry
+                # eligibility checks (enabled, authority, capabilities)
+                # are the same; only the cap gate differs.
+                saturated_only = False
+                candidates = registry.match_candidates(c.draft, running_attempts=running_attempts)
+                if not candidates:
+                    cap_free = registry.match_candidates(c.draft, running_attempts={})
+                    if cap_free:
+                        saturated_only = True
                 started = _dispatch_attempt(
                     root=root,
                     conn=conn,
                     contract=c,
-                    candidates=registry.match_candidates(
-                        c.draft, running_attempts=running_attempts
-                    ),
+                    candidates=candidates,
                     now=now,
                     tier=decision.tier,
                     attempt_seq=cid[-4:],
@@ -445,21 +479,32 @@ def run_daemon_tick(
                     capacity_ledger.record_dispatch(cid)
                     dispatched_this_tick.add(cid)
                 else:
-                    # 无可用执行器或全部拒接 -> 转 blocked(no-executor)
+                    # 区分两种 block:
+                    # - NO_EXECUTOR: 没有合格候选（registry/authority/capability 都不通过）
+                    # - CAPACITY_FULL: 合格候选存在但都 cap-saturated，可自愈
+                    if saturated_only:
+                        blocked_reason = BlockReason.CAPACITY_FULL
+                        block_reason_text = (
+                            "every eligible executor is at max_concurrent_attempts; "
+                            "auto-retry when a lease is released"
+                        )
+                        block_emit = "promoter/blocked-capacity-full:{cid}"
+                    else:
+                        blocked_reason = BlockReason.NO_EXECUTOR
+                        block_reason_text = "no dispatchable executor: none eligible or all refused"
+                        block_emit = "promoter/blocked-no-executor:{cid}"
                     update_contract_state(
                         conn,
                         contract_id=cid,
                         new_state=ContractState.BLOCKED,
                         now=now,
-                        blocked_reason=BlockReason.NO_EXECUTOR,
+                        blocked_reason=blocked_reason,
                         event_type=EventType.CONTRACT_BLOCKED,
-                        event_payload={
-                            "reason": "no dispatchable executor: none eligible or all refused"
-                        },
+                        event_payload={"reason": block_reason_text},
                         actor="daemon",
                     )
                     rebuild_projection(root, cid, conn)
-                    _emit(f"promoter/blocked-no-executor:{cid}")
+                    _emit(block_emit.format(cid=cid))
 
             case UrgencyTier.HAND_TO_USER:
                 update_contract_state(

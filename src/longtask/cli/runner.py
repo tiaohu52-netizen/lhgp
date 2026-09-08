@@ -124,8 +124,17 @@ def build_attempt_input(
     now: datetime,
     *,
     with_context: bool = True,
-) -> AttemptInput:
+) -> tuple[AttemptInput, int]:
     """构造 AttemptInput（DESIGN §11.6 字段表）。
+
+    Returns ``(AttemptInput, consumed_max_event_id)`` — the second
+    element is the max AGENT_MESSAGE event id actually inlined into
+    the freshly built snapshot. The caller passes it to
+    :func:`mark_directives_consumed` after Popen succeeds so the
+    per-contract directive cursor only advances when the executor
+    was actually started (P1 review, 2026-09-08, 2nd round: previously
+    the cursor was bumped at snapshot-build time, which lost
+    directives when the spawn then failed).
 
     lease_generation 动态取当前租约：租约获取前作 prepare 探针（旧代次），
     租约获取后作 spawn 入参（attempt 实际持有的新代次，§5.1 不可变五元组）。
@@ -140,6 +149,7 @@ def build_attempt_input(
     draft = contract.draft
     active_lease = get_lease(conn, contract.contract_id)
     context_snapshot_path: str | None = None
+    consumed_max_event_id = 0
     # SPEC §11.2：被唤起的执行者必须能得知合同——task_prompt 带冻结区摘要
     # （验收条款是「做到什么算完成」的判据，硬约束是写权限边界）。只给
     # objective 等于让模型盲干：干完不知道按什么标准被验收。
@@ -149,7 +159,9 @@ def build_attempt_input(
         if addendum:
             task_prompt = f"{task_prompt}\n\n{addendum}"
         try:
-            active_path, _scratch = compile_context_snapshot(root, conn, contract, attempt_id, now)
+            active_path, _scratch, consumed_max_event_id = compile_context_snapshot(
+                root, conn, contract, attempt_id, now
+            )
             context_snapshot_path = str(active_path)
         except CapacityRefusedError:
             # 容量合同不满足：按 §4.1 拒绝启动 attempt，向上传播
@@ -170,7 +182,7 @@ def build_attempt_input(
         },
         task_prompt=task_prompt,
         context_snapshot_path=context_snapshot_path,
-    )
+    ), consumed_max_event_id
 
 
 class AttemptRunner:
@@ -340,7 +352,9 @@ class AttemptRunner:
             )
             return False
         try:
-            input_ = build_attempt_input(self._root, self._conn, contract, attempt_id, now)
+            input_, consumed_max_event_id = build_attempt_input(
+                self._root, self._conn, contract, attempt_id, now
+            )
             # Per-attempt session token（安全加固）：spawn 前生成一次性凭据
             import hashlib
             import secrets
@@ -367,6 +381,16 @@ class AttemptRunner:
         except OSError as exc:
             self._fail_attempt(now, contract_id, attempt_id, f"spawn failed: {exc}")
             return False
+        # P1 review (2026-09-08, 2nd round): cursor advance deferred
+        # to *after* the spawn has actually launched a subprocess.
+        # Previously the cursor was bumped in compile_context_snapshot,
+        # so a spawn failure (executable missing, argv invalid, …)
+        # silently lost the directives the failed snapshot had
+        # inlined — the next attempt's snapshot would see the
+        # advanced cursor and skip them.  See mark_directives_consumed.
+        from longtask.persistence.context import mark_directives_consumed
+
+        mark_directives_consumed(self._conn, contract_id, consumed_max_event_id)
         self._persist_handle(adapter, contract, attempt_id, now)
         lease = get_lease(self._conn, contract_id)
         self._running[attempt_id] = {
@@ -1024,7 +1048,7 @@ class AttemptRunner:
         """
         from longtask.persistence.context import handover_prompt_addendum
 
-        base = build_attempt_input(self._root, self._conn, contract, attempt_id, now)
+        base, _consumed = build_attempt_input(self._root, self._conn, contract, attempt_id, now)
         checks_lines = []
         for c in contract.draft.acceptance.checks:
             if isinstance(c, CheckSpec):

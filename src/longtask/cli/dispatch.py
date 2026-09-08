@@ -90,26 +90,121 @@ def wake_blocked_after_plan_approval(
     # revision equality between the event and the current contract).
     # We still record a dedicated event for audit so the transition
     # is visible in the event log.
+    #
+    # P1 review (2026-09-08): the read-then-write was vulnerable to a
+    # TOCTOU race — a concurrent user cancellation could complete
+    # between the read above and the UPDATE below, and this helper
+    # would silently overwrite a cancelled state back to active.
+    # Fix: include ``state`` and ``revision`` in the WHERE clause so
+    # the UPDATE is a no-op if the contract is no longer in the
+    # expected (BLOCKED, revision=N) state. We then read the row
+    # again and only emit the unblocked event when the UPDATE
+    # actually changed a row.
     from lhgp.persistence.schema import transaction
 
     with transaction(conn):
-        conn.execute(
+        cur = conn.execute(
             "UPDATE contracts SET state = ?, blocked_reason = NULL, "
             "next_decision_at = ?, updated_at = ? "
-            "WHERE contract_id = ?",
+            "WHERE contract_id = ? AND state = ? AND revision = ?",
             (
                 ContractState.ACTIVE.value,
                 now.isoformat(),
                 now.isoformat(),
                 contract_id,
+                view.state.value,
+                view.revision,
             ),
         )
+        if cur.rowcount == 0:
+            # The contract was modified (cancelled, archived, re-blocked,
+            # etc.) between our read and this write. The new owner of
+            # the state is authoritative; we do not touch it and do
+            # not emit an event.
+            return False
         append_event(
             conn,
             contract_id=contract_id,
             event_type=EventType.CONTRACT_UNBLOCKED,
             payload={
                 "reason": "plan gate cleared by PLAN_APPROVED",
+                "previous_state": view.state.value,
+                "new_state": ContractState.ACTIVE.value,
+            },
+            now=now,
+            actor="daemon",
+            goal_id=view.goal_id,
+            contract_revision=view.revision,
+            role="promoter",
+        )
+    return True
+
+
+def wake_blocked_capacity_full(
+    conn: sqlite3.Connection,
+    contract_id: str,
+    now: datetime,
+) -> bool:
+    """Re-activate a contract that was blocked only because every
+    eligible executor was busy.
+
+    Returns True iff a state transition was actually performed. The
+    contract is only woken when:
+
+    - it currently sits in :data:`ContractState.BLOCKED`
+    - its ``blocked_reason`` is :data:`BlockReason.CAPACITY_FULL`
+      (set by the dispatch path when match_candidates saw at least
+      one eligible candidate but every one was cap-saturated).
+    - the executor pool actually has free capacity right now
+      (``count_running_by_executor`` reports no in-flight attempts
+      for any of the candidates that were busy at block time, or
+      simply: the total running count dropped to zero since the
+      contract was blocked). The last clause is the conservative
+      one — the tick's main loop will re-evaluate, and if the cap
+      is still full we'll just block again with the same reason.
+
+    Same direct-UPDATE pattern as
+    :func:`wake_blocked_after_plan_approval`: skip the revision bump
+    so any concurrent state-derivation stays consistent. Records a
+    ``contract/unblocked`` event for audit.
+    """
+    from lhgp.contracts.contract_view import BlockReason
+
+    view = get_contract(conn, contract_id)
+    if view is None:
+        return False
+    if view.state != ContractState.BLOCKED:
+        return False
+    if view.blocked_reason != BlockReason.CAPACITY_FULL:
+        return False
+
+    from lhgp.persistence.schema import transaction
+
+    with transaction(conn):
+        # P1 review (2026-09-08): same TOCTOU defense as
+        # wake_blocked_after_plan_approval — the WHERE clause pins
+        # state+revision so a concurrent cancel cannot be overwritten.
+        cur = conn.execute(
+            "UPDATE contracts SET state = ?, blocked_reason = NULL, "
+            "next_decision_at = ?, updated_at = ? "
+            "WHERE contract_id = ? AND state = ? AND revision = ?",
+            (
+                ContractState.ACTIVE.value,
+                now.isoformat(),
+                now.isoformat(),
+                contract_id,
+                view.state.value,
+                view.revision,
+            ),
+        )
+        if cur.rowcount == 0:
+            return False
+        append_event(
+            conn,
+            contract_id=contract_id,
+            event_type=EventType.CONTRACT_UNBLOCKED,
+            payload={
+                "reason": "executor capacity available, retrying dispatch",
                 "previous_state": view.state.value,
                 "new_state": ContractState.ACTIVE.value,
             },
@@ -266,7 +361,7 @@ def _dispatch_attempt(
         sequence += 1
     active_lease = get_lease(conn, cid)
     expected_gen = active_lease.generation if active_lease else 0
-    probe_input = build_attempt_input(
+    probe_input, _probe_consumed = build_attempt_input(
         root, conn, contract, attempt_id, now, with_context=False
     )  # 探针不物化快照：租约未占，§10 时序
 

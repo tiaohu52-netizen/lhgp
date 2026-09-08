@@ -211,6 +211,29 @@ def _read_directive_cursor(conn: sqlite3.Connection, contract_id: str) -> int:
         return 0
 
 
+def mark_directives_consumed(conn: sqlite3.Connection, contract_id: str, new_id: int) -> bool:
+    """Bump the per-contract directive cursor to ``new_id``.
+
+    Called by the runner **after** Popen succeeds for a spawned
+    attempt, so the cursor only advances when the executor has
+    actually been started.  Previously the cursor was advanced at
+    snapshot-build time, which meant a spawn failure (executable
+    missing, argv invalid, …) silently lost the directives the
+    failed snapshot had inlined — the next attempt's snapshot
+    would see the advanced cursor and skip them.
+
+    Returns True iff the underlying row was actually updated (i.e.
+    the cursor moved).  The cursor never rewinds; if a stale
+    ``new_id`` is passed (lower than the stored cursor), the call
+    is a no-op.
+    """
+    current = _read_directive_cursor(conn, contract_id)
+    if new_id <= current:
+        return False
+    _bump_directive_cursor(conn, contract_id, new_id)
+    return True
+
+
 def _bump_directive_cursor(conn: sqlite3.Connection, contract_id: str, new_id: int) -> None:
     """Persist the new cursor. ``new_id`` is always set to the max of
     the existing value and the new value so a stale write cannot
@@ -318,12 +341,23 @@ def compile_context_snapshot(
     contract: ContractView,
     attempt_id: str,
     now: datetime,
-) -> tuple[Path, Path]:
+) -> tuple[Path, Path, int]:
     """物化该次 attempt 的上下文：active.md 快照 + scratch.md 骨架。
 
-    返回 (active_path, scratch_path)。容量超限（policy.max_bytes）记
-    context/capacity-refused 并抛 CapacityRefusedError（fail-closed，
-    §4.1：压缩后仍不满足 required 容量合同则拒绝启动 attempt）。
+    返回 ``(active_path, scratch_path, consumed_max_event_id)``。
+    第三个值是该快照实际内联进去的 AGENT_MESSAGE 事件 id 的最大值；
+    调用方在确认执行器子进程真正拉起之后，再调用
+    :func:`mark_directives_consumed` 推进 cursor。
+
+    P1 review（2026-09-08，第二轮）：原实现快照写盘即推 cursor，
+    意味着「快照生成 → spawn 失败」之间没有任何信号时，已注入快照
+    的用户指令会随 cursor 上推而丢失（下一个 attempt 的快照会跳过
+    它们）。本函数现在不直接动 cursor，由调用方在 spawn 兑现后再
+    落账。
+
+    容量超限（policy.max_bytes）记 context/capacity-refused 并抛
+    CapacityRefusedError（fail-closed，§4.1：压缩后仍不满足
+    required 容量合同则拒绝启动 attempt）。
     """
     policy = ContextPolicy.from_contract(contract.draft)
     draft = contract.draft
@@ -363,6 +397,11 @@ def compile_context_snapshot(
     # directives since the last attempt land in this snapshot;
     # the cursor is bumped to the max consumed event_id below.
     directive_cursor = _read_directive_cursor(conn, contract.contract_id)
+    # Default to the existing cursor when no directives are included;
+    # the runner's post-spawn mark_directives_consumed call is a
+    # no-op for new_id <= current (P1 review), so passing the
+    # existing cursor forward is safe.
+    max_event_id = directive_cursor
 
     # 硬 cap:用户连发 50 条时不能让 snapshot 爆 max_bytes。每条 text
     # 截断到 240 字,够传达意图,防止单条 1MB directive 直接打爆。
@@ -482,12 +521,17 @@ def compile_context_snapshot(
     scratch_path = attempt_dir / SCRATCH_FILE
     scratch_path.write_text(_scratch_skeleton(attempt_id), encoding="utf-8")
 
-    # Cursor bump *after* the snapshot is on disk: a capacity
-    # failure or write failure above raises before reaching this
-    # point, so the next attempt will replay the same directives
-    # instead of silently losing them.
-    if directives and max_event_id > directive_cursor:
-        _bump_directive_cursor(conn, contract.contract_id, max_event_id)
+    # Cursor bump is *not* done here.  P1 review (2026-09-08, 2nd
+    # round) showed that bumping on snapshot build loses the
+    # directives when the spawn then fails (executable missing,
+    # argv invalid, …): the cursor advances, the next attempt's
+    # snapshot skips the same directives, and the user message
+    # never reaches an executor.  The caller (build_attempt_input
+    # → runner.start_attempt → SubprocessAdapter.spawn) now calls
+    # :func:`mark_directives_consumed` after Popen succeeds, so the
+    # cursor only advances when the executor was actually started.
+    # We still return the max_event_id so the caller knows what to
+    # mark consumed.
 
     append_event(
         conn,
@@ -502,7 +546,7 @@ def compile_context_snapshot(
         now=now,
         actor="daemon",
     )
-    return active_path, scratch_path
+    return active_path, scratch_path, max_event_id
 
 
 def _scratch_skeleton(attempt_id: str) -> str:

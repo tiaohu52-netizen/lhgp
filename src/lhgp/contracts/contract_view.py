@@ -56,6 +56,12 @@ class BlockReason(StrEnum):
     ACCEPTANCE_FAILED = "acceptance-failed"
     DEADLINE_MISSED = "deadline-missed"
     NEED_ARBITRATION = "need-arbitration"
+    # P1 review (2026-09-08): capacity-recoverable block. Every
+    # eligible executor is busy (per-executor max_concurrent_attempts
+    # reached), but a candidate *does* exist — the contract should
+    # auto-recover as soon as a lease is released, not sit blocked
+    # forever the way NO_EXECUTOR would.
+    CAPACITY_FULL = "capacity-full"
 
 
 class AttemptRole(StrEnum):
