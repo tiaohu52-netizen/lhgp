@@ -784,7 +784,17 @@ def _judge_verifier_outcomes(root: Path, conn: sqlite3.Connection, now: datetime
             )
             rebuild_projection(root, contract.contract_id, conn)
             _advance_goal_after_verified_contract(conn, contract, now)
-            _auto_create_next_stage_contract(root, conn, contract, now)
+            # Forward the verifier's evidence to the next stage so its
+            # executor can reference produced artifacts without re-asking
+            # the verifier. The spec_verdict is part of the evidence.
+            forwarded_evidence: dict[str, Any] = dict(last_verifier_payload)
+            if spec_verdict is not None:
+                from lhgp.acceptance.spec import verdict_to_event_payload
+
+                forwarded_evidence["spec_verdict"] = verdict_to_event_payload(spec_verdict)
+            _auto_create_next_stage_contract(
+                root, conn, contract, now, previous_evidence=forwarded_evidence
+            )
         else:  # failed
             # P5 修复闭环（SPEC §12.4）：verifier 失败不退回裸 active，
             # 而是把失败原因结构化成 RepairBrief 写进 handover.md——
@@ -1029,14 +1039,100 @@ def _record_spec_pending(
     rebuild_projection(root, contract.contract_id, conn)
 
 
+def _synthesize_stage_draft(
+    goal: dict[str, Any],
+    stage: dict[str, Any],
+    *,
+    previous_evidence: dict[str, Any] | None,
+    now: datetime,
+) -> dict[str, Any]:
+    """Build a usable contract draft from a stage's structured spec.
+
+    Used when the stage entry does not pre-supply a ``draft`` (the
+    model caller only wrote a spec). The synthesized draft is the
+    minimum the contract layer needs: title, objective, deadline,
+    hard constraints, acceptance (with the stage's spec carried as
+    ``acceptance.spec``), budget derived from ``StageSpec.budget``.
+    The previous stage's verifier evidence is included in
+    ``context`` so the next executor can reference produced artifacts.
+    """
+    raw_spec = stage.get("spec") if isinstance(stage.get("spec"), dict) else {}
+    from lhgp.goals.stage import StageSpec
+
+    spec = StageSpec.from_dict(raw_spec) if raw_spec else StageSpec(goal="")
+    title = str(stage.get("title") or spec.goal or str(stage.get("id", "stage")))
+    objective = spec.goal or str(goal.get("objective") or title)
+    if spec.deadline_at:
+        deadline_iso = str(spec.deadline_at)
+    else:
+        deadline_iso = (now + timedelta(hours=24)).isoformat()
+    acceptance_checks: list[Any] = []
+    for raw_mach in spec.acceptance.get("all", []):
+        if isinstance(raw_mach, dict) and raw_mach.get("kind") and raw_mach.get("target"):
+            acceptance_checks.append(
+                {
+                    "kind": raw_mach.get("kind"),
+                    "target": raw_mach.get("target"),
+                    "mandatory": True,
+                }
+            )
+    if not acceptance_checks:
+        acceptance_checks = [
+            {
+                "kind": "artifact-present",
+                "target": f"stage:{stage.get('id', 'unknown')}",
+                "mandatory": True,
+            }
+        ]
+    context: dict[str, Any] = {"stage_spec": raw_spec, "stage_id": stage.get("id")}
+    if previous_evidence:
+        context["previous_evidence"] = previous_evidence
+    if spec.dependencies:
+        context["dependencies"] = list(spec.dependencies)
+    if spec.artifacts:
+        context["expected_artifacts"] = list(spec.artifacts)
+    return {
+        "title": title,
+        "objective": objective,
+        "deadline_at": deadline_iso,
+        "hard_constraints": {},
+        "acceptance": {
+            "standard": objective,
+            "checks": acceptance_checks,
+            "verifier": "cross_check",
+            "spec": raw_spec,
+            "spec_hash": spec.spec_hash() or None,
+        },
+        "workload_estimate": {"initial_hours": 1.0},
+        "budget": {
+            "max_dispatches": max(1, spec.max_dispatches),
+            "max_escalations": 2,
+            "max_concurrent_attempts": max(1, spec.max_concurrent_attempts),
+            "max_attempt_minutes": max(1, spec.max_attempt_minutes),
+            "max_output_bytes": 1_048_576,
+        },
+        "context": context,
+    }
+
+
 def _auto_create_next_stage_contract(
-    root: Path, conn: sqlite3.Connection, contract: Any, now: datetime
+    root: Path,
+    conn: sqlite3.Connection,
+    contract: Any,
+    now: datetime,
+    previous_evidence: dict[str, Any] | None = None,
 ) -> None:
     """If the goal has a next stage without a bound contract, create it.
 
-    Auto-creates only when the next stage has an inline ``draft`` (model
-    caller supplied it) and the goal is still active. Failure to
-    auto-create is silent — the next ``goal_next`` call will surface
+    Two paths to a draft:
+    1. ``stage.draft`` — model caller pre-supplied a draft. Used as-is.
+    2. ``stage.spec`` — structured stage spec. We synthesize a draft
+       from the spec (title, objective, deadline, acceptance,
+       budget). The previous stage's verifier evidence is included in
+       the new contract's ``context`` so the executor can reference
+       produced artifacts.
+
+    Failure is silent — the next ``goal_next`` call will surface
     ``create_contract`` so the caller can re-attempt with full
     authority.
     """
@@ -1062,9 +1158,19 @@ def _auto_create_next_stage_contract(
         # Already bound by a previous run.
         return
     inline_draft = next_stage.get("draft")
-    if not isinstance(inline_draft, dict):
-        # Caller is expected to supply a draft; without one we cannot
-        # synthesize a contract safely (no title, no objective, etc.).
+    if isinstance(inline_draft, dict):
+        draft = dict(inline_draft)
+        draft.setdefault("context", {})
+        if previous_evidence:
+            draft["context"]["previous_evidence"] = previous_evidence
+    elif isinstance(next_stage.get("spec"), dict):
+        draft = _synthesize_stage_draft(
+            goal,
+            next_stage,
+            previous_evidence=previous_evidence,
+            now=now,
+        )
+    else:
         return
     import uuid
 
@@ -1082,14 +1188,12 @@ def _auto_create_next_stage_contract(
             "contract_id": new_cid,
             "goal_id": contract.goal_id,
             "stage_id": str(next_stage_id),
-            "draft": inline_draft,
+            "draft": draft,
         },
     )
     try:
         handle_goal_prepare(envelope, conn=conn, now=now)
     except Exception:
-        # Surface a recoverable signal in the goal's progress so callers
-        # can retry the create_contract action explicitly.
         return
 
 

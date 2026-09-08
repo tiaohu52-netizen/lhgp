@@ -295,6 +295,7 @@ def _has_recent_plan_approval(
     contract_id: str,
     contract_revision: int,
     accepted_check_ids: list[str],
+    spec_hash: str | None,
     now: datetime,
 ) -> bool:
     """Return True iff the contract has a PLAN_APPROVED event in the
@@ -311,10 +312,13 @@ def _has_recent_plan_approval(
     - Its ``accepted_check_ids`` must equal the current set; otherwise
       acceptance criteria were edited after the plan was approved and
       the plan is no longer guaranteed to cover the new criteria.
+    - Its ``spec_hash`` must equal the contract's current spec_hash;
+      a spec edit invalidates the prior approval so the executor does
+      not act on a plan written against an older acceptance spec.
 
-    Without these three checks, an old approval would silently let
-    new acceptance criteria through.  See the P1 review of
-    2026-09-08: "old plan still valid after acceptance criteria change".
+    Without these checks, an old approval would silently let new
+    acceptance criteria or a new spec through.  See the P1 reviews of
+    2026-09-08 (acceptance criteria) and 2026-09-08 (spec binding).
     """
     cutoff_iso = (now - timedelta(seconds=PLAN_GATE_LOOKBACK_SECONDS)).isoformat()
     row = conn.execute(
@@ -341,7 +345,15 @@ def _has_recent_plan_approval(
     stored_checks = payload.get("accepted_check_ids")
     if not isinstance(stored_checks, list):
         return False
-    return list(stored_checks) == list(accepted_check_ids)
+    if list(stored_checks) != list(accepted_check_ids):
+        return False
+    # Spec hash: if the contract declares a spec, the approval must
+    # bind the same hash. A None stored value alongside a current
+    # spec means the plan was approved before the spec was attached.
+    stored_spec_hash = payload.get("spec_hash")
+    if spec_hash is not None and stored_spec_hash != spec_hash:
+        return False
+    return not (spec_hash is None and stored_spec_hash is not None)
 
 
 def _parse_plan_payload(payload_json: str | None) -> dict[str, object]:
@@ -404,6 +416,7 @@ def _dispatch_attempt(
         cid,
         contract.revision,
         list(_extract_check_identifiers(contract)),
+        contract.draft.acceptance.spec_hash,
         now,
     ):
         append_event(
@@ -434,7 +447,7 @@ def _dispatch_attempt(
         sequence += 1
     active_lease = get_lease(conn, cid)
     expected_gen = active_lease.generation if active_lease else 0
-    probe_input, _probe_consumed = build_attempt_input(
+    probe_input, _probe_consumed, _probe_ids = build_attempt_input(
         root, conn, contract, attempt_id, now, with_context=False
     )  # 探针不物化快照：租约未占，§10 时序
 

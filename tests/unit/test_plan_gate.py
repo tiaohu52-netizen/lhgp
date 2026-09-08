@@ -204,7 +204,7 @@ class TestHasRecentPlanApproval:
     def test_no_events_returns_false(self, tmp_path: Path) -> None:
         conn = _open_store(tmp_path)
         try:
-            assert _has_recent_plan_approval(conn, "lt-no-events", 1, ["ok"], NOW) is False
+            assert _has_recent_plan_approval(conn, "lt-no-events", 1, ["ok"], None, NOW) is False
         finally:
             conn.close()
 
@@ -223,7 +223,7 @@ class TestHasRecentPlanApproval:
                 now=NOW,
                 actor="daemon",
             )
-            assert _has_recent_plan_approval(conn, "lt-app", 1, ["ok"], NOW) is True
+            assert _has_recent_plan_approval(conn, "lt-app", 1, ["ok"], None, NOW) is True
         finally:
             conn.close()
 
@@ -250,7 +250,7 @@ class TestHasRecentPlanApproval:
                 now=NOW,
                 actor="daemon",
             )
-            assert _has_recent_plan_approval(conn, "lt-rej", 1, ["ok"], NOW) is False
+            assert _has_recent_plan_approval(conn, "lt-rej", 1, ["ok"], None, NOW) is False
         finally:
             conn.close()
 
@@ -277,7 +277,7 @@ class TestHasRecentPlanApproval:
                 now=NOW,
                 actor="daemon",
             )
-            assert _has_recent_plan_approval(conn, "lt-fix", 1, ["ok"], NOW) is True
+            assert _has_recent_plan_approval(conn, "lt-fix", 1, ["ok"], None, NOW) is True
         finally:
             conn.close()
 
@@ -296,7 +296,7 @@ class TestHasRecentPlanApproval:
                 now=stale,
                 actor="daemon",
             )
-            assert _has_recent_plan_approval(conn, "lt-stale", 1, ["ok"], NOW) is False
+            assert _has_recent_plan_approval(conn, "lt-stale", 1, ["ok"], None, NOW) is False
         finally:
             conn.close()
 
@@ -318,7 +318,7 @@ class TestHasRecentPlanApproval:
                 now=NOW,
                 actor="daemon",
             )
-            assert _has_recent_plan_approval(conn, "lt-rev-mismatch", 2, ["ok"], NOW) is False
+            assert _has_recent_plan_approval(conn, "lt-rev-mismatch", 2, ["ok"], None, NOW) is False
         finally:
             conn.close()
 
@@ -347,6 +347,7 @@ class TestHasRecentPlanApproval:
                     "lt-check-mismatch",
                     1,
                     ["ok", "file-exists:dist/app.js"],
+                    None,
                     NOW,
                 )
                 is False

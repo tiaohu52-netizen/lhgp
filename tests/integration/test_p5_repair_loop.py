@@ -248,7 +248,7 @@ class TestRepairBrief:
             _judge_verifier_outcomes(data_dir, conn, NOW + timedelta(minutes=2))
             view = get_contract(conn, cid)
             assert view.state == ContractState.ACTIVE  # 退回 active 等再派
-            input_, _ = build_attempt_input(
+            input_, _, _ = build_attempt_input(
                 data_dir, conn, view, "att-repair1", NOW + timedelta(minutes=3)
             )
             # 交接附言通道把修复指引带进 task_prompt（§4.1，无需新机制）

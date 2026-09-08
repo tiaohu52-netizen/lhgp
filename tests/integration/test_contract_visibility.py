@@ -91,7 +91,7 @@ class TestExecutorPromptContractVisibility:
         conn = connect(StoreConfig(db_path=data_dir / "state.db"))
         try:
             contract = get_contract(conn, cid)
-            input_, _ = build_attempt_input(data_dir, conn, contract, "att-v1", NOW)
+            input_, _, _ = build_attempt_input(data_dir, conn, contract, "att-v1", NOW)
             prompt = input_.task_prompt
             # objective：干什么
             assert "把报告写完" in prompt
@@ -122,7 +122,7 @@ class TestExecutorPromptContractVisibility:
         conn = connect(StoreConfig(db_path=data_dir / "state.db"))
         try:
             contract = get_contract(conn, cid)
-            input_, _ = build_attempt_input(data_dir, conn, contract, "att-v2", NOW)
+            input_, _, _ = build_attempt_input(data_dir, conn, contract, "att-v2", NOW)
             assert "检查项甲" in input_.task_prompt
             assert "hard_constraints" not in input_.task_prompt
         finally:
@@ -531,7 +531,7 @@ class TestUserVisibilityRegression:
         conn = connect(StoreConfig(db_path=data_dir / "state.db"))
         try:
             contract = get_contract(conn, cid)
-            input_, _ = build_attempt_input(data_dir, conn, contract, "att-v5", NOW)
+            input_, _, _ = build_attempt_input(data_dir, conn, contract, "att-v5", NOW)
             assert input_.context_snapshot_path is not None
             active = Path(input_.context_snapshot_path).read_text(encoding="utf-8")
             assert "冻结区" in active

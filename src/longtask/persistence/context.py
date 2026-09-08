@@ -223,6 +223,9 @@ def mark_directives_consumed(
     contract_id: str,
     new_id: int,
     to_agent: str | None = None,
+    *,
+    consumed_ids: list[int] | None = None,
+    now: datetime | None = None,
 ) -> bool:
     """Bump the per-(contract, agent) directive cursor to ``new_id``.
 
@@ -238,6 +241,17 @@ def mark_directives_consumed(
     (used by directed directives).  Pass ``None`` to move the
     contract-level broadcast cursor (legacy behaviour).
 
+    A2A delivery hardening (3rd-round review 2026-09-08):
+    - ``consumed_ids`` (optional): the actual list of directive
+      event_ids newly consumed by this snapshot.  Each one gets
+      written to the per-agent dedup set
+      (``acknowledged_directives::<agent>`` in ``continuity_json``)
+      so a future snapshot rebuild cannot re-apply it; the legacy
+      high-water-mark cursor still moves to ``new_id`` for the
+      common case where the snapshot is built in event order.
+    - ``now`` (optional): used to stamp the
+      ``directive/acknowledged`` event.  When omitted, the call
+      is a no-op for the confirmation event (legacy behaviour).
     Returns True iff the underlying row was actually updated (i.e.
     the cursor moved).  The cursor never rewinds; if a stale
     ``new_id`` is passed (lower than the stored cursor), the call
@@ -247,7 +261,131 @@ def mark_directives_consumed(
     if new_id <= current:
         return False
     _bump_directive_cursor(conn, contract_id, new_id, to_agent=to_agent)
+    if consumed_ids and now is not None:
+        _record_directive_acks(
+            conn, contract_id, to_agent=to_agent, consumed_ids=consumed_ids, now=now
+        )
     return True
+
+
+def _read_acknowledged_directives(
+    conn: sqlite3.Connection, contract_id: str, *, to_agent: str | None
+) -> set[int]:
+    """Return the set of directive event_ids this agent has already ack'd."""
+    row = conn.execute(
+        "SELECT continuity_json FROM contracts WHERE contract_id = ?",
+        (contract_id,),
+    ).fetchone()
+    if row is None:
+        return set()
+    raw = row[0] or "{}"
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return set()
+    if not isinstance(data, dict):
+        return set()
+    key = (
+        _DIRECTIVE_CURSOR_KEY + "_ack"
+        if to_agent is None
+        else f"{_DIRECTIVE_CURSOR_KEY}::{to_agent}::_ack"
+    )
+    value = data.get(key, [])
+    if not isinstance(value, list):
+        return set()
+    out: set[int] = set()
+    for item in value:
+        if isinstance(item, int):
+            out.add(item)
+    return out
+
+
+def _record_directive_acks(
+    conn: sqlite3.Connection,
+    contract_id: str,
+    *,
+    to_agent: str | None,
+    consumed_ids: list[int],
+    now: datetime,
+) -> None:
+    """Record per-agent directive acknowledgements and emit audit events."""
+    row = conn.execute(
+        "SELECT continuity_json FROM contracts WHERE contract_id = ?",
+        (contract_id,),
+    ).fetchone()
+    if row is None:
+        return
+    raw = row[0] or "{}"
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    key = (
+        _DIRECTIVE_CURSOR_KEY + "_ack"
+        if to_agent is None
+        else f"{_DIRECTIVE_CURSOR_KEY}::{to_agent}::_ack"
+    )
+    existing = data.get(key, [])
+    if not isinstance(existing, list):
+        existing = []
+    seen_ids: set[int] = {item for item in existing if isinstance(item, int)}
+    new_acks: list[int] = []
+    for cid in consumed_ids:
+        if not isinstance(cid, int) or cid in seen_ids:
+            continue
+        seen_ids.add(cid)
+        new_acks.append(cid)
+    if not new_acks:
+        return
+    # Bounded retention: keep at most the last 1000 acknowledged ids
+    # to prevent unbounded growth.  A contract with thousands of
+    # directives over a long-lived goal would otherwise bloat the row.
+    merged: list[int] = (existing + new_acks)[-1000:]
+    data[key] = merged
+    try:
+        conn.execute(
+            "UPDATE contracts SET continuity_json = ? WHERE contract_id = ?",
+            (json.dumps(data, ensure_ascii=False), contract_id),
+        )
+    except sqlite3.Error as exc:
+        logger.warning(
+            "directive ack write failed for contract %s (to_agent=%s): %s",
+            contract_id,
+            to_agent,
+            exc,
+        )
+        return
+    # Audit each newly acknowledged directive.  The events are
+    # written inside the same transaction so a crash between the
+    # cursor bump and the audit doesn't leave the system in a state
+    # where directives are "consumed but not audited".
+    from lhgp.persistence.events import EventType
+    from lhgp.persistence.events_query import append_event
+
+    actor_label = f"agent:{to_agent}" if to_agent else "agent:broadcast"
+    for did in new_acks:
+        try:
+            append_event(
+                conn,
+                contract_id=contract_id,
+                event_type=EventType.DIRECTIVE_ACKNOWLEDGED,
+                payload={
+                    "directive_event_id": did,
+                    "to_agent": to_agent,
+                    "cursor_position": max(merged) if merged else 0,
+                },
+                now=now,
+                actor=actor_label,
+            )
+        except sqlite3.Error as exc:
+            logger.warning(
+                "directive/acknowledged event write failed for %s/%s: %s",
+                contract_id,
+                did,
+                exc,
+            )
 
 
 def _bump_directive_cursor(
@@ -367,13 +505,17 @@ def compile_context_snapshot(
     now: datetime,
     *,
     to_agent: str | None = None,
-) -> tuple[Path, Path, int]:
+    max_age_seconds: int | None = None,
+) -> tuple[Path, Path, int, list[int]]:
     """物化该次 attempt 的上下文：active.md 快照 + scratch.md 骨架。
 
-    返回 ``(active_path, scratch_path, consumed_max_event_id)``。
+    返回 ``(active_path, scratch_path, consumed_max_event_id, consumed_directive_ids)``。
     第三个值是该快照实际内联进去的 AGENT_MESSAGE 事件 id 的最大值；
-    调用方在确认执行器子进程真正拉起之后，再调用
-    :func:`mark_directives_consumed` 推进 cursor。
+    第四个值是这次快照实际消费的 directive 事件 id 列表（不含
+    broadcast-only cursor 已经消费过的），调用方在确认执行器子进程
+    真正拉起之后传回 :func:`mark_directives_consumed` 以同时推进
+    cursor、写入 per-agent dedup set、和写 directive/acknowledged
+    审计事件。
 
     ``to_agent`` (A2A scoping): the registry executor_id of the
     agent that will receive the snapshot.  When set, the cursor
@@ -381,6 +523,12 @@ def compile_context_snapshot(
     directive addressed to one agent does not bleed into the
     other agent's snapshot.  When ``None``, the legacy contract-
     level broadcast cursor is used.
+
+    ``max_age_seconds`` (A2A delivery hardening 2026-09-08):
+    drop directives older than this many seconds from the
+    snapshot.  The directive remains in the event log for
+    audit; the filter is purely about what a fresh executor
+    should act on.
 
     P1 review（2026-09-08，第二轮）：原实现快照写盘即推 cursor，
     意味着「快照生成 → spawn 失败」之间没有任何信号时，已注入快照
@@ -443,6 +591,7 @@ def compile_context_snapshot(
     # no-op for new_id <= current (P1 review), so passing the
     # existing cursor forward is safe.
     max_event_id = directive_cursor
+    consumed_directive_ids: list[int] = []
 
     # 硬 cap:用户连发 50 条时不能让 snapshot 爆 max_bytes。每条 text
     # 截断到 240 字,够传达意图,防止单条 1MB directive 直接打爆。
@@ -451,6 +600,9 @@ def compile_context_snapshot(
         contract_id=contract.contract_id,
         after_event_id=directive_cursor,
         to_agent=to_agent,
+        now=now,
+        max_age_seconds=max_age_seconds,
+        dedup_seen=_read_acknowledged_directives(conn, contract.contract_id, to_agent=to_agent),
     )
     directives = raw_directives[:_MAX_DIRECTIVES_INJECTED]
     sections: list[str] = [
@@ -504,10 +656,10 @@ def compile_context_snapshot(
         # the capacity check fails (or disk write fails), the cursor
         # stays put and the next attempt replays the same directives.
         # The cursor never rewinds (see _bump_directive_cursor).
-        max_event_id = max(
-            (int(d["event_id"]) for d in directives if "event_id" in d),
-            default=directive_cursor,
-        )
+        consumed_directive_ids = [
+            int(d["event_id"]) for d in directives if isinstance(d.get("event_id"), int)
+        ]
+        max_event_id = max(consumed_directive_ids, default=directive_cursor)
     sections += [
         "## 合同锚点（冻结区，只读）",
         f"- objective: {draft.objective}",
@@ -601,7 +753,7 @@ def compile_context_snapshot(
         now=now,
         actor="daemon",
     )
-    return active_path, scratch_path, max_event_id
+    return active_path, scratch_path, max_event_id, consumed_directive_ids
 
 
 def _scratch_skeleton(attempt_id: str) -> str:

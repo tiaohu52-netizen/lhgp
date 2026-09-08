@@ -125,17 +125,21 @@ def build_attempt_input(
     *,
     with_context: bool = True,
     agent_id: str | None = None,
-) -> tuple[AttemptInput, int]:
+) -> tuple[AttemptInput, int, list[int]]:
     """构造 AttemptInput（DESIGN §11.6 字段表）。
 
-    Returns ``(AttemptInput, consumed_max_event_id)`` — the second
-    element is the max AGENT_MESSAGE event id actually inlined into
-    the freshly built snapshot. The caller passes it to
-    :func:`mark_directives_consumed` after Popen succeeds so the
-    per-contract directive cursor only advances when the executor
-    was actually started (P1 review, 2026-09-08, 2nd round: previously
-    the cursor was bumped at snapshot-build time, which lost
-    directives when the spawn then failed).
+    Returns ``(AttemptInput, consumed_max_event_id, consumed_directive_ids)``:
+    - the second element is the max AGENT_MESSAGE event id actually
+      inlined into the freshly built snapshot;
+    - the third element is the explicit list of directive event_ids
+      newly consumed by this snapshot. The caller passes both to
+      :func:`mark_directives_consumed` after Popen succeeds so the
+      per-contract directive cursor only advances when the executor
+      was actually started (P1 review, 2026-09-08, 2nd round: previously
+      the cursor was bumped at snapshot-build time, which lost
+      directives when the spawn then failed). The list also feeds
+      the per-agent dedup set + directive/acknowledged audit events
+      (3rd-round review 2026-09-08).
 
     ``agent_id`` is the registry executor_id of the agent that
     will receive the snapshot.  Used to filter directed directives
@@ -156,6 +160,7 @@ def build_attempt_input(
     active_lease = get_lease(conn, contract.contract_id)
     context_snapshot_path: str | None = None
     consumed_max_event_id = 0
+    consumed_directive_ids: list[int] = []
     # SPEC §11.2：被唤起的执行者必须能得知合同——task_prompt 带冻结区摘要
     # （验收条款是「做到什么算完成」的判据，硬约束是写权限边界）。只给
     # objective 等于让模型盲干：干完不知道按什么标准被验收。
@@ -165,7 +170,12 @@ def build_attempt_input(
         if addendum:
             task_prompt = f"{task_prompt}\n\n{addendum}"
         try:
-            active_path, _scratch, consumed_max_event_id = compile_context_snapshot(
+            (
+                active_path,
+                _scratch,
+                consumed_max_event_id,
+                consumed_directive_ids,
+            ) = compile_context_snapshot(
                 root,
                 conn,
                 contract,
@@ -177,24 +187,28 @@ def build_attempt_input(
         except CapacityRefusedError:
             # 容量合同不满足：按 §4.1 拒绝启动 attempt，向上传播
             raise
-    return AttemptInput(
-        attempt_id=attempt_id,
-        contract_id=contract.contract_id,
-        revision=contract.revision,
-        lease_generation=active_lease.generation if active_lease else 0,
-        role=AttemptRole.EXECUTOR,
-        contract_snapshot=draft.to_dict(),
-        handover_path=str(contract_dir(root, contract.contract_id) / HANDOVER_FILE),
-        workspace_root=contract_workspace(draft),
-        budget_remaining={
-            "max_dispatches": draft.budget.max_dispatches,
-            "max_escalations": draft.budget.max_escalations,
-            "max_output_bytes": draft.budget.max_output_bytes,
-        },
-        task_prompt=task_prompt,
-        context_snapshot_path=context_snapshot_path,
-        agent_id=agent_id,
-    ), consumed_max_event_id
+    return (
+        AttemptInput(
+            attempt_id=attempt_id,
+            contract_id=contract.contract_id,
+            revision=contract.revision,
+            lease_generation=active_lease.generation if active_lease else 0,
+            role=AttemptRole.EXECUTOR,
+            contract_snapshot=draft.to_dict(),
+            handover_path=str(contract_dir(root, contract.contract_id) / HANDOVER_FILE),
+            workspace_root=contract_workspace(draft),
+            budget_remaining={
+                "max_dispatches": draft.budget.max_dispatches,
+                "max_escalations": draft.budget.max_escalations,
+                "max_output_bytes": draft.budget.max_output_bytes,
+            },
+            task_prompt=task_prompt,
+            context_snapshot_path=context_snapshot_path,
+            agent_id=agent_id,
+        ),
+        consumed_max_event_id,
+        consumed_directive_ids,
+    )
 
 
 class AttemptRunner:
@@ -364,7 +378,7 @@ class AttemptRunner:
             )
             return False
         try:
-            input_, consumed_max_event_id = build_attempt_input(
+            input_, consumed_max_event_id, consumed_directive_ids = build_attempt_input(
                 self._root,
                 self._conn,
                 contract,
@@ -410,10 +424,20 @@ class AttemptRunner:
         # per-agent cursor moves, not the contract-level broadcast
         # one.  This way, a directive addressed to B does not burn
         # through A's cursor.
+        #
+        # A2A delivery hardening (3rd-round review 2026-09-08):
+        # pass consumed_directive_ids + now so the per-agent dedup
+        # set is updated and a directive/acknowledged event is
+        # written for each newly consumed directive.
         from longtask.persistence.context import mark_directives_consumed
 
         mark_directives_consumed(
-            self._conn, contract_id, consumed_max_event_id, to_agent=executor_id
+            self._conn,
+            contract_id,
+            consumed_max_event_id,
+            to_agent=executor_id,
+            consumed_ids=consumed_directive_ids,
+            now=now,
         )
         self._persist_handle(adapter, contract, attempt_id, now)
         lease = get_lease(self._conn, contract_id)
@@ -1072,7 +1096,9 @@ class AttemptRunner:
         """
         from longtask.persistence.context import handover_prompt_addendum
 
-        base, _consumed = build_attempt_input(self._root, self._conn, contract, attempt_id, now)
+        base, _consumed, _consumed_ids = build_attempt_input(
+            self._root, self._conn, contract, attempt_id, now
+        )
         checks_lines = []
         for c in contract.draft.acceptance.checks:
             if isinstance(c, CheckSpec):

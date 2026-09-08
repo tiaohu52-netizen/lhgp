@@ -94,6 +94,14 @@ class EventType(StrEnum):
     PLAN_SUBMITTED = "plan/submitted"
     PLAN_APPROVED = "plan/approved"
     PLAN_REJECTED = "plan/rejected"
+    # A2A per-receiver confirmation (3rd-round review 2026-09-08):
+    # a directed directive is "delivered" once the addressed agent
+    # actually consumes it (i.e., after the snapshot is built and the
+    # runner Popen has succeeded).  The acknowledgement event carries
+    # the directive event_id, the consuming agent, and the cursor
+    # position; downstream diagnostics can correlate delivery rate vs.
+    # contract activity.
+    DIRECTIVE_ACKNOWLEDGED = "directive/acknowledged"
 
 
 __all__ = ["EventType"]

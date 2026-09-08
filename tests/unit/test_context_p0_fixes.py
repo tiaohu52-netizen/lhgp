@@ -80,7 +80,7 @@ class TestDeadlineBreachWarning:
 
         view = get_contract(conn, "lt-breach")
         assert view is not None
-        active, _, _consumed = compile_context_snapshot(
+        active, _, _consumed, _consumed_ids = compile_context_snapshot(
             data_dir, conn, view, "att-breach-1", now=now
         )
         text = active.read_text(encoding="utf-8")
@@ -101,7 +101,9 @@ class TestDeadlineBreachWarning:
 
         view = get_contract(conn, "lt-ok")
         assert view is not None
-        active, _, _consumed = compile_context_snapshot(data_dir, conn, view, "att-ok-1", now=now)
+        active, _, _consumed, _consumed_ids = compile_context_snapshot(
+            data_dir, conn, view, "att-ok-1", now=now
+        )
         text = active.read_text(encoding="utf-8")
         assert "## ⚠️ 合同已超期" not in text
         conn.close()
@@ -244,7 +246,7 @@ class TestDirectiveCap:
 
         view = get_contract(conn, "lt-cap")
         assert view is not None
-        active, _, _consumed = compile_context_snapshot(
+        active, _, _consumed, _consumed_ids = compile_context_snapshot(
             data_dir, conn, view, "att-cap", now=datetime.now(UTC)
         )
         text = active.read_text(encoding="utf-8")
@@ -279,7 +281,7 @@ class TestDirectiveCap:
 
         view = get_contract(conn, "lt-long")
         assert view is not None
-        active, _, _consumed = compile_context_snapshot(
+        active, _, _consumed, _consumed_ids = compile_context_snapshot(
             data_dir, conn, view, "att-long", now=datetime.now(UTC)
         )
         text = active.read_text(encoding="utf-8")
@@ -338,7 +340,7 @@ class TestMemoryBudgetFormula:
         view = get_contract(conn, "lt-small")
         assert view is not None
         # Should not raise CapacityRefusedError.
-        active, _, _consumed = compile_context_snapshot(
+        active, _, _consumed, _consumed_ids = compile_context_snapshot(
             data_dir, conn, view, "att-small", now=datetime.now(UTC)
         )
         text = active.read_text(encoding="utf-8")
@@ -443,7 +445,7 @@ class TestDirectiveCursorAdvance:
 
         view = get_contract(conn, "lt-cursor-1")
         assert view is not None
-        _active, _, _consumed = compile_context_snapshot(
+        _active, _, _consumed, _consumed_ids = compile_context_snapshot(
             data_dir, conn, view, "att-1", now=datetime.now(UTC)
         )
         # P1 review (2026-09-08, 2nd round): cursor advance is now
@@ -478,7 +480,7 @@ class TestDirectiveCursorAdvance:
             return real_fn(*args, **kwargs)  # type: ignore[arg-type]
 
         monkeypatch.setattr(msg_module, "pending_directives", _spy)
-        _active, _, _consumed = compile_context_snapshot(
+        _active, _, _consumed, _consumed_ids = compile_context_snapshot(
             data_dir, conn, view, "att-2", now=datetime.now(UTC)
         )
         assert seen_after[0] == max_event_id
@@ -557,7 +559,7 @@ class TestCursorBumpDeferredUntilWriteSucceeds:
         view = get_contract(conn, "lt-cap-cursor")
         assert view is not None
         with pytest.raises(CapacityRefusedError):
-            _active, _, _consumed = compile_context_snapshot(
+            _active, _, _consumed, _consumed_ids = compile_context_snapshot(
                 data_dir, conn, view, "att-fail", now=datetime.now(UTC)
             )
 
@@ -607,7 +609,7 @@ class TestCursorBumpDeferredUntilWriteSucceeds:
         view = get_contract(conn, "lt-relaxed")
         assert view is not None
         with pytest.raises(CapacityRefusedError):
-            active, _, _consumed = compile_context_snapshot(
+            active, _, _consumed, _consumed_ids = compile_context_snapshot(
                 data_dir, conn, view, "att-fail", now=datetime.now(UTC)
             )
         assert _read_directive_cursor(conn, "lt-relaxed") == 0
@@ -634,7 +636,7 @@ class TestCursorBumpDeferredUntilWriteSucceeds:
         conn.commit()
         view = get_contract(conn, "lt-relaxed")
         assert view is not None
-        active, _, _consumed = compile_context_snapshot(
+        active, _, _consumed, _consumed_ids = compile_context_snapshot(
             data_dir, conn, view, "att-ok", now=datetime.now(UTC)
         )
         text = active.read_text(encoding="utf-8")

@@ -147,7 +147,7 @@ class TestContextInjection:
             # 编译上下文
             contract = get_contract(conn, "lt-msg01")
             assert contract is not None
-            _, scratch, _consumed = compile_context_snapshot(
+            _, scratch, _consumed, _consumed_ids = compile_context_snapshot(
                 tmp_path, conn, contract, "att-test", NOW
             )
             # active.md 应包含 directive
@@ -167,7 +167,7 @@ class TestContextInjection:
 
             contract = get_contract(conn, "lt-msg01")
             assert contract is not None
-            _, scratch, _consumed = compile_context_snapshot(
+            _, scratch, _consumed, _consumed_ids = compile_context_snapshot(
                 tmp_path, conn, contract, "att-test", NOW
             )
             active_path = scratch.parent / "active.md"
@@ -205,14 +205,14 @@ class TestA2AScoping:
             assert contract is not None
 
             # Agent A asks: should NOT see the message addressed to B.
-            _, scratch_a, consumed_a = compile_context_snapshot(
+            _, scratch_a, consumed_a, _ids_a = compile_context_snapshot(
                 tmp_path, conn, contract, "att-a", NOW, to_agent="agent:a"
             )
             (scratch_a.parent / "active.md").read_text(encoding="utf-8")
             assert consumed_a == 0  # nothing consumed
 
             # Agent B asks: must see the message.
-            _, scratch_b, consumed_b = compile_context_snapshot(
+            _, scratch_b, consumed_b, _ids_b = compile_context_snapshot(
                 tmp_path, conn, contract, "att-b", NOW, to_agent="agent:b"
             )
             text_b = (scratch_b.parent / "active.md").read_text(encoding="utf-8")
@@ -242,7 +242,7 @@ class TestA2AScoping:
                 # attempt_id must be a plain identifier — colon would
                 # make the path creation fail on Windows.
                 att_id = f"att-{who.replace(':', '_') if who else 'any'}"
-                _, scratch, _consumed = compile_context_snapshot(
+                _, scratch, _consumed, _consumed_ids = compile_context_snapshot(
                     tmp_path, conn, contract, att_id, NOW, to_agent=who
                 )
                 text = (scratch.parent / "active.md").read_text(encoding="utf-8")
@@ -268,7 +268,7 @@ class TestA2AScoping:
             )
             contract = get_contract(conn, "lt-msg01")
             assert contract is not None
-            _, scratch, _consumed = compile_context_snapshot(
+            _, scratch, _consumed, _consumed_ids = compile_context_snapshot(
                 tmp_path, conn, contract, "att-dev", NOW, to_agent="agent:dev"
             )
             text = (scratch.parent / "active.md").read_text(encoding="utf-8")

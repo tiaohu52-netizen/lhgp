@@ -107,7 +107,9 @@ class TestCompileSnapshot:
         from longtask.persistence.store import get_contract
 
         contract = get_contract(conn, "lt-ctx01")
-        active, scratch, _consumed = compile_context_snapshot(root, conn, contract, "att-1", NOW)
+        active, scratch, _consumed, _consumed_ids = compile_context_snapshot(
+            root, conn, contract, "att-1", NOW
+        )
 
         body = active.read_text(encoding="utf-8")
         assert "合同锚点" in body
@@ -160,7 +162,9 @@ class TestCompileSnapshot:
         )
 
         contract = get_contract(conn, cid)
-        active, _, _consumed = compile_context_snapshot(root, conn, contract, "att-2", NOW)
+        active, _, _consumed, _consumed_ids = compile_context_snapshot(
+            root, conn, contract, "att-2", NOW
+        )
         body = active.read_text(encoding="utf-8")
         assert "交接" in body
         assert "按 FIX-NOTES 修正断言" in body
@@ -186,7 +190,7 @@ class TestCompileSnapshot:
         )
         from longtask.persistence.store import get_contract
 
-        active, _, _consumed = compile_context_snapshot(
+        active, _, _consumed, _consumed_ids = compile_context_snapshot(
             root, conn, get_contract(conn, cid), "att-1", NOW
         )
         body = active.read_text(encoding="utf-8")
@@ -266,7 +270,7 @@ def test_attempt_input_carries_context_and_prompt_addendum(tmp_path: Path) -> No
     )
     contract = get_contract(conn, cid)
 
-    input_, _consumed = build_attempt_input(root, conn, contract, "att-3", NOW)
+    input_, _consumed, _consumed_ids = build_attempt_input(root, conn, contract, "att-3", NOW)
     assert input_.context_snapshot_path is not None
     assert "active.md" in input_.context_snapshot_path
     assert "验证临时上下文" in input_.task_prompt  # objective 仍在
@@ -274,7 +278,9 @@ def test_attempt_input_carries_context_and_prompt_addendum(tmp_path: Path) -> No
     assert "不可信" in input_.task_prompt  # 历史模型文本不得伪装成当前指令
 
     # probe 路径：不物化快照、无附言（§10 时序：探针先于租约）
-    probe, _consumed = build_attempt_input(root, conn, contract, "att-3", NOW, with_context=False)
+    probe, _consumed, _consumed_ids = build_attempt_input(
+        root, conn, contract, "att-3", NOW, with_context=False
+    )
     assert probe.context_snapshot_path is None
     # probe 仍带冻结区摘要（§11.2 合同可见性），但不带交接附言
     assert "验证临时上下文" in probe.task_prompt

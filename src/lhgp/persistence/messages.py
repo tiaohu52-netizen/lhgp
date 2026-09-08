@@ -95,6 +95,9 @@ def pending_directives(
     contract_id: str,
     after_event_id: int = 0,
     to_agent: str | None = None,
+    now: datetime | None = None,
+    max_age_seconds: int | None = None,
+    dedup_seen: set[int] | None = None,
 ) -> list[dict[str, Any]]:
     """Get unread directives for the working agent.
 
@@ -105,23 +108,40 @@ def pending_directives(
     caller should actually consume; pass None to receive the
     broadcast slice only (the common case for a user → all-agents
     blast).
+
+    A2A delivery hardening (3rd-round review 2026-09-08):
+    - ``max_age_seconds`` (optional): drop directives older than this
+      many seconds.  The directive remains in the event log for
+      audit; the filter is purely about what a fresh executor should
+      act on.  Expiry does not delete the event.
+    - ``dedup_seen`` (optional): an externally-tracked set of
+      directive event_ids the caller has already consumed.  When
+      provided, directives whose event_id is already in the set are
+      dropped.  Use this to avoid the same directive being re-applied
+      after a snapshot rebuild or context replay.
     """
     out: list[dict[str, Any]] = []
     for m in get_messages(
         conn, contract_id=contract_id, kind="directive", after_event_id=after_event_id
     ):
         target = m.get("to_agent")
-        if target is None:
-            # Broadcast directive (the default): goes to every agent
-            # regardless of which one is asking.
-            out.append(m)
+        if target is not None and to_agent is not None and to_agent != target:
+            # Targeted at another agent; not for us.
             continue
-        # Targeted directive: only the named agent sees it.
-        # Callers that pass to_agent=None (e.g. CLI diagnostics) see
-        # every targeted directive as well, which is fine for an
-        # inspection path that doesn't drive a cursor.
-        if to_agent is None or to_agent == target:
-            out.append(m)
+        if max_age_seconds is not None and now is not None and m.get("at"):
+            try:
+                from datetime import datetime as _dt
+
+                at = _dt.fromisoformat(m["at"])
+                if (now - at).total_seconds() > max_age_seconds:
+                    continue
+            except ValueError:
+                pass
+        if dedup_seen is not None:
+            eid = m.get("event_id")
+            if isinstance(eid, int) and eid in dedup_seen:
+                continue
+        out.append(m)
     return out
 
 

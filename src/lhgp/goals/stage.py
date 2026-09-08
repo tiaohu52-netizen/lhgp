@@ -141,15 +141,27 @@ class StageSpec:
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def coerce_stage_spec(stage: dict[str, Any]) -> dict[str, Any]:
-    """Return the stage dict as-is — currently a no-op pass-through.
+def validate_stage_entry(stage: Any) -> list[str]:
+    """Validate a single stage entry from a Goal plan.
 
-    Kept as a public extension point so callers (validator, normalizer)
-    can attach a normalized spec dict to a raw stage entry in the
-    future without changing call sites. Validation surfaces missing
-    required fields via :meth:`StageSpec.validate`.
+    Returns the list of validation errors. An empty list means the
+    stage declares a usable spec. Stages without a ``spec`` field fail
+    with a single, structured error so the daemon can surface it
+    before binding a contract.
     """
-    return stage
+    if not isinstance(stage, dict):
+        return [f"stage must be a dict, got {type(stage).__name__}"]
+    raw_spec = stage.get("spec")
+    if not isinstance(raw_spec, dict):
+        return [
+            "stage.spec is required (StageSpec needs goal / scope / acceptance / "
+            "dependencies / time_budget / budget / permissions)"
+        ]
+    try:
+        spec = StageSpec.from_dict(raw_spec)
+    except (ValueError, TypeError) as exc:
+        return [f"stage.spec invalid: {exc}"]
+    return spec.validate()
 
 
-__all__ = ["StageSpec", "coerce_stage_spec"]
+__all__ = ["StageSpec", "validate_stage_entry"]
