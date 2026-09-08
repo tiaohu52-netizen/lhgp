@@ -1057,9 +1057,20 @@ def _synthesize_stage_draft(
     ``context`` so the next executor can reference produced artifacts.
     """
     raw_spec = stage.get("spec") if isinstance(stage.get("spec"), dict) else {}
+    # raw_spec as stored under ``stage.spec`` is the boolean-logic body
+    # (e.g. ``{"all": [...]}``), not the full StageSpec envelope.
+    # ``StageSpec.from_dict`` expects the envelope shape with top-level
+    # ``acceptance`` (the boolean body) and ``goal``; we synthesise
+    # that envelope here so budget / deadline / acceptance.checks are
+    # actually populated from the spec rather than falling back to
+    # placeholders.
+    spec_envelope: dict[str, Any] = {
+        "goal": str(stage.get("title") or stage.get("id") or "stage"),
+        "acceptance": raw_spec,
+    }
     from lhgp.goals.stage import StageSpec
 
-    spec = StageSpec.from_dict(raw_spec) if raw_spec else StageSpec(goal="")
+    spec = StageSpec.from_dict(spec_envelope)
     title = str(stage.get("title") or spec.goal or str(stage.get("id", "stage")))
     objective = spec.goal or str(goal.get("objective") or title)
     if spec.deadline_at:

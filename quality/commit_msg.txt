@@ -1,0 +1,39 @@
+fix(tick) + test(e2e): spec envelope shape + true E2E loop
+
+E2E 过程中发现一个真实 bug：
+
+- stage[spec] 存的是 boolean body ({all: [...]})，不是 StageSpec 完整
+  envelope ({goal, acceptance, ...})
+- _synthesize_stage_draft 直接把 body 喂给 StageSpec.from_dict，导致
+  acceptance 永远是空，acceptance.checks 走 fallback
+  artifact-present:stage:<id>，spec.max_dispatches 等也全是默认
+- 修：synthesize 时构造 envelope {goal: stage.title, acceptance: raw_spec}
+  再交给 StageSpec.from_dict
+
+真 E2E：tests/integration/test_e2e_staged_goal_a2a.py
+- 同一 SQLite 实例上跑 5 个真实阶段
+- 1) 3 阶段 Goal + structured specs → handle_goal_prepare seed stage-1
+     → 写 PLAN_APPROVED → run_daemon_tick → 手动 append verifier
+     attempt/succeeded → 下一 tick 走 spec verdict → contract complete
+     + goal advance + auto-create stage-2 from spec
+- 2) 验证 stage-2 contract 的 acceptance.spec == spec_s2、spec_hash 有值、
+     context.previous_evidence.spec_verdict.outcome == pass、契约/完成
+     事件 payload 含 spec_verdict
+- 3) A2A：send_message(directive, to_agent=exec-a) → 真实
+     compile_context_snapshot(to_agent=exec-a) →
+     mark_directives_consumed(consumed_ids=, now=) → directive/acknowledged
+     事件 + actor=agent:exec-a
+- 4) 重复 compile 走 per-receiver dedup（consumed_ids2==[]）；重复 mark
+     幂等返回 False + 零新事件
+- 5) spec_hash 绑定：写入 PLAN_APPROVED with current spec_hash →
+     _has_recent_plan_approval 通过；patch_contract 换 spec 和 hash →
+     旧 approval 立即失效
+- 6) TTL：2 小时前的 directive 在 60s max_age 下被剔除
+- 7) spec-pending 路径：stage-2 有 user 判据，verdict=pending，
+     stage-3 不会被 auto-create
+
+所有这一轮新加的功能（spec dispatch、auto-create from spec、A2A
+TTL + dedup + ack、spec_hash gate）都在同一 contract + 同一 Goal +
+同一事件流里跑完。
+
+质量门 7/7 PASS。1200 passed, 8 skipped（1199 + 1 E2E）。
