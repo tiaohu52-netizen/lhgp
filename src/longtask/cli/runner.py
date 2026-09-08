@@ -73,6 +73,27 @@ from longtask.promoter.records import _count_verifier_attempts
 
 # 事件 payload 内 stdout/stderr 截断上限：审计够用，不撑爆 log.jsonl
 OUTPUT_TAIL_CHARS = 2000
+DEFAULT_DIRECTIVE_MAX_AGE_SECONDS = 3600
+
+
+def _resolve_directive_max_age_seconds(
+    override: int | None,
+) -> int:
+    """解析 directive TTL：调用方显式值 → env → 3600s 默认。
+
+    与 :class:`AttemptRunner` 构造时读取同一 env 变量（``LHGP_DIRECTIVE_MAX_AGE_SECONDS``）
+    保证构造期与 ``build_attempt_input`` 调用期取到一致的值——避免一边
+    实例化时 env 改了、另一边取错。1 小时默认：长于一次长 retry、短到
+    防止合同已推进时旧 directive 复活。
+    """
+    if override is not None:
+        return int(override)
+    import os
+
+    env_value = os.environ.get("LHGP_DIRECTIVE_MAX_AGE_SECONDS")
+    if env_value is not None and env_value.strip():
+        return int(env_value)
+    return DEFAULT_DIRECTIVE_MAX_AGE_SECONDS
 
 
 def _tail_text(value: object) -> str:
@@ -125,6 +146,7 @@ def build_attempt_input(
     *,
     with_context: bool = True,
     agent_id: str | None = None,
+    directive_max_age_seconds: int | None = None,
 ) -> tuple[AttemptInput, int, list[int]]:
     """构造 AttemptInput（DESIGN §11.6 字段表）。
 
@@ -155,6 +177,13 @@ def build_attempt_input(
     - 物化该 attempt 的 context/attempts/<id>/active.md + scratch.md，
       路径填 context_snapshot_path（适配器据此装配，context.required=true
       无快照即拒接，§9）。容量超限抛 CapacityRefusedError（fail-closed）。
+
+    ``directive_max_age_seconds``（A2A delivery hardening 2026-09-08）：
+    透传给 :func:`compile_context_snapshot`，丢弃快照生成时间早于
+    ``now - max_age`` 的 directive 事件。默认 3600s（可由
+    ``LHGP_DIRECTIVE_MAX_AGE_SECONDS`` env 覆盖）。当调用方持有
+    :class:`AttemptRunner` 实例时应显式传入 ``runner._directive_max_age_seconds``，
+    保证构造期与调用期取到一致值。
     """
     draft = contract.draft
     active_lease = get_lease(conn, contract.contract_id)
@@ -182,6 +211,7 @@ def build_attempt_input(
                 attempt_id,
                 now,
                 to_agent=agent_id,
+                max_age_seconds=_resolve_directive_max_age_seconds(directive_max_age_seconds),
             )
             context_snapshot_path = str(active_path)
         except CapacityRefusedError:
@@ -221,6 +251,7 @@ class AttemptRunner:
         registry: ExecutorRegistry,
         adapter_factory: Callable[[RegistryEntry], ExecutorAdapter | None] | None = None,
         emit: Callable[[str], None] | None = None,
+        directive_max_age_seconds: int | None = None,
     ) -> None:
         self._root = root
         self._conn = conn
@@ -229,6 +260,14 @@ class AttemptRunner:
         self._emit: Callable[[str], None] = emit if emit is not None else (lambda _msg: None)
         self._adapters: dict[str, ExecutorAdapter] = {}
         self._running: dict[str, dict[str, Any]] = {}
+        # TTL for directives injected into a fresh attempt's snapshot.
+        # 1 hour default: long enough to survive a long retry, short
+        # enough to keep stale directives from re-firing after the
+        # contract has moved on. Override via the env
+        # ``LHGP_DIRECTIVE_MAX_AGE_SECONDS`` or pass explicitly.
+        self._directive_max_age_seconds = _resolve_directive_max_age_seconds(
+            directive_max_age_seconds
+        )
         self.spawned_count = 0
         self.finished_count = 0
 
@@ -385,6 +424,7 @@ class AttemptRunner:
                 attempt_id,
                 now,
                 agent_id=executor_id,
+                directive_max_age_seconds=self._directive_max_age_seconds,
             )
             # Per-attempt session token（安全加固）：spawn 前生成一次性凭据
             import hashlib
@@ -1097,7 +1137,12 @@ class AttemptRunner:
         from longtask.persistence.context import handover_prompt_addendum
 
         base, _consumed, _consumed_ids = build_attempt_input(
-            self._root, self._conn, contract, attempt_id, now
+            self._root,
+            self._conn,
+            contract,
+            attempt_id,
+            now,
+            directive_max_age_seconds=self._directive_max_age_seconds,
         )
         checks_lines = []
         for c in contract.draft.acceptance.checks:

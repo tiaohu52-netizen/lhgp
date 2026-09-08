@@ -435,7 +435,9 @@ class TestMCPDiscovery:
             # attempt/resume entry point added lhgp_resume_attempt — 48 + 1 = 49.
             # 3rd-round review: plan auto-approve added lhgp_plan_signoff
             # — 49 + 1 = 50.
-            assert len(names) == 50
+            # 3rd-round follow-up: user-confirm path for CANDIDATE→PASSED
+            # added longtask_user_confirm_spec_verdict — 50 + 1 = 51.
+            assert len(names) == 51
             by_name = {item["name"]: item for item in tools["result"]["tools"]}
             assert by_name["lhgp_notifications"]["annotations"] == {
                 "readOnlyHint": True,

@@ -1132,11 +1132,14 @@ def _synthesize_stage_draft(
 
     Used when the stage entry does not pre-supply a ``draft`` (the
     model caller only wrote a spec). The synthesized draft carries
-    every field the user declared in the spec: title, objective,
-    deadline, scope, dependencies, artifacts, modifiable scope,
-    acceptance (boolean spec + typed checks for plan-gate coverage).
-    The previous stage's verifier evidence is included in ``context``
-    so the next executor can reference produced artifacts.
+    every field the user declared in the spec that ``ContractDraft``
+    can hold: title, objective, deadline, hard_constraints
+    (modifiable scope), acceptance (boolean spec + typed checks for
+    plan-gate coverage), and budget. The remaining spec fields
+    (functional/interfaces/constraints/out_of_scope, dependencies,
+    artifacts) are forwarded into ``context`` so the next executor
+    can read them. The previous stage's verifier evidence is also
+    placed in ``context.previous_evidence`` for the same reason.
     """
     raw_spec = stage.get("spec") if isinstance(stage.get("spec"), dict) else {}
     # raw_spec as stored under ``stage.spec`` is the boolean-logic
@@ -1184,6 +1187,16 @@ def _synthesize_stage_draft(
         context["expected_artifacts"] = list(spec.artifacts)
     if spec.modifiable_scope:
         context["modifiable_scope"] = list(spec.modifiable_scope)
+    if spec.functional or spec.interfaces or spec.constraints or spec.out_of_scope:
+        # The 4-tuple is a free-form scoping paragraph; surface it
+        # under ``context.scope`` so the executor reads the user's
+        # stated boundaries without parsing the acceptance spec.
+        context["scope"] = {
+            "functional": list(spec.functional),
+            "interfaces": list(spec.interfaces),
+            "constraints": list(spec.constraints),
+            "out_of_scope": list(spec.out_of_scope),
+        }
     hard_constraints: dict[str, Any] = {}
     if spec.modifiable_scope:
         hard_constraints["modifiable_scope"] = list(spec.modifiable_scope)

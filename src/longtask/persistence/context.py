@@ -352,10 +352,11 @@ def _record_directive_acks(
     # are inside one transaction. Without this, a crash between the
     # dedup write and the last ack event would leave the system in a
     # "consumed but not audited" state, which breaks the
-    # directive/acknowledged rate metric and audit trail. The runner
-    # call-site (cli/runner.py) is also expected to call this from
-    # within its own attempt-finish transaction, so nesting
-    # transactions is a no-op when one is already open.
+    # directive/acknowledged rate metric and audit trail. The inner
+    # ``with transaction(conn):`` opens its own BEGIN IMMEDIATE;
+    # if the caller already has one open, ``transaction()`` is
+    # a no-op (it checks ``conn.in_transaction``), so this is
+    # nesting-safe.
     from longtask.persistence.store import transaction
 
     with transaction(conn):

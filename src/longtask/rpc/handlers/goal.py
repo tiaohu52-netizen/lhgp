@@ -183,6 +183,28 @@ def handle_goal_prepare(
             details={"errors": errors},
         )
 
+    # 3rd-round review (2026-09-08): fail-fast on malformed stage
+    # entries. Goal plans with ``stage.spec`` missing the required
+    # fields (goal / scope / acceptance / dependencies / time_budget /
+    # budget / permissions) used to be accepted here and only blew
+    # up later in ``_auto_create_next_stage_contract``. Catch the
+    # shape error at the source.
+    from lhgp.goals.stage import validate_stage_entry
+
+    plan_raw = params.get("plan") or draft_data.get("plan") or draft_data.get("goal_plan")
+    if isinstance(plan_raw, dict):
+        for stage in plan_raw.get("stages") or []:
+            stage_errors = validate_stage_entry(stage)
+            if stage_errors:
+                raise RpcError(
+                    code=ErrorCode.VALIDATION_FAILED,
+                    message=(
+                        f"stage '{stage.get('id', '?') if isinstance(stage, dict) else '?'}' "
+                        "has invalid spec: " + "; ".join(stage_errors)
+                    ),
+                    details={"errors": stage_errors},
+                )
+
     # request_id 幂等：之前已落库则原样返回（附 offer）
     if envelope.request_id and get_events_by_request_id(conn, envelope.request_id):
         cid = str(params.get("contract_id", "")).strip()
