@@ -326,5 +326,132 @@ this list:
     a second one via ``_STATE_TO_EVENT``).  Pass extra
     fields via ``event_payload=``; let the state update
     write the single canonical event.
+11. **Trusted pre-authorization at the Goal layer**: the
+    per-contract ``auto_approve`` field is the model's
+    *request*; the trusted source is the bound Goal's
+    ``plan.pre_authorized`` (user-pinned at
+    ``goal/update`` time, Principal-gated).  A model
+    caller (``client_id="mcp"``) must NOT carry an
+    ``auto_approve`` claim — strip it at
+    ``parse_contract_draft`` boundary.  A Goal-less
+    contract, or a Goal without ``pre_authorized``, is
+    never auto-approved.  See pattern 8 below.
+12. **Goal-level execution config**: a spec-only stage
+    synthesised contract must inherit
+    ``Goal.plan.execution_config.workspace_root`` and
+    ``Goal.plan.execution_config.executor_grant``;
+    otherwise the synthesised contract has no eligible
+    executor and ends up BLOCKED(NO_EXECUTOR).  Inline
+    stage drafts that omit ``file_effects`` /
+    ``authority`` also inherit from the Goal.  An
+    explicit per-stage value always wins.  See
+    pattern 9 below.
+13. **MCP runtime → Principal-only tools**: when a
+    Principal-only tool is invoked via the MCP runtime
+    (the runtime builds a ``ctx`` without an
+    ``envelope`` key), the rejection is ``AUTH_FAILED``
+    with explicit guidance, **not** ``INTERNAL``.  The
+    model should know to escalate to the user, not see
+    a server fault.
 
-Skip a check, the 4th-round-style leak is one PR away.
+## 8. Trusted pre-authorization at the Goal layer (model self-sign fix)
+
+**Symptom (5th-round review 2026-09-08)**: ``auto_approve_drafted_contract``
+trusted the per-contract ``draft.auto_approve.enabled`` field — a
+value the model itself sets when calling the MCP path.  An
+MCP-issued ``contract/prepare`` with
+``{"auto_approve": {"enabled": true, "actions": [...]}}`` was
+auto-promoted to ACTIVE without any user sign-off, and the
+synthesised next-stage contract inherited the grant.
+
+**Unit-test pattern that misses it**: any test that
+exercises the handler in-process with a hand-crafted
+``ctx`` that has ``client_id="cli"`` and an
+``auto_approve.enabled=True`` contract.  The
+MCP-wrapped path was not exercised, so the bypass went
+unnoticed.
+
+**Fix (mandatory for any new auto-approve / pre-auth
+field)**:
+- Move the trusted source to the bound Goal's
+  ``plan.pre_authorized`` (user-pinned at
+  ``goal/update`` time, Principal-gated).  The
+  per-contract ``auto_approve`` is the model's
+  *request*; auto-approve only fires when the
+  user-pinned grant covers that request (or the user
+  pinned a generic grant with no specific actions).
+- ``parse_contract_draft`` strips ``auto_approve``
+  when the caller is ``client_id="mcp"`` so a model
+  cannot even *claim* a scope.  Defense in depth.
+- A contract with no Goal binding, or a Goal without
+  ``pre_authorized``, is never auto-approved.
+- ``synthesize_stage_draft`` initialises the new
+  contract's ``auto_approve`` from
+  ``Goal.plan.pre_authorized`` when set; the
+  per-stage inline draft path is preserved as an
+  override.
+- ``tool_submit_plan`` augments the per-contract
+  ``auto_approve`` check with the Goal's
+  ``pre_authorized`` scope so a plan whose steps are
+  inside the user's pre-grant is auto-approved even
+  when the contract's own ``auto_approve`` field is
+  empty (the MCP case after the parse-time strip).
+
+**Pinned in**:
+- ``tests/unit/test_trusted_pre_authorization.py`` —
+  7 cases: MCP cannot self-authorize, CLI can still
+  set, no Goal binding → no auto-approve,
+  grant-covers-claim → fires, claim-outside-scope →
+  rejected, generic-grant-without-claim → fires,
+  ``enabled=False`` → blocks.
+- ``tests/integration/test_3stage_submit_and_leave.py``
+  — sets ``Goal.plan.pre_authorized`` to match the
+  claimed action scope.
+
+## 9. Goal-level execution config (workspace + executor_grant)
+
+**Symptom (5th-round review 2026-09-08, follow-up)**: a
+spec-only stage synth path dropped the user's
+``workspace_root`` and ``executor_grant`` — the
+synthesised contract had no eligible executor and ended
+up ``BLOCKED(NO_EXECUTOR)``.  The same gap affected
+inline stage drafts that omitted ``file_effects`` or
+``authority``.
+
+**Unit-test pattern that misses it**: tests that
+build the inline draft by hand with the full
+``file_effects`` + ``authority`` already populated, so
+the inherit-from-Goal fallback path is never exercised.
+
+**Fix (mandatory for any new stage-synth / auto-create
+helper)**:
+- Add ``plan.execution_config`` to the Goal plan: a
+  dict with ``workspace_root`` (str) and
+  ``executor_grant`` (list of {executor_id, models,
+  roles}).
+- ``synthesize_stage_draft`` reads
+  ``Goal.plan.execution_config.workspace_root`` and
+  copies it into
+  ``hard_constraints.file_effects.workspace_root``
+  when the spec-only stage doesn't pin one (mode
+  defaults to ``workspace-write``).
+- Same for ``execution_config.executor_grant`` →
+  ``authority.executors`` (with
+  ``executor_policy='explicit_allow'`` so the
+  dispatcher can pick an eligible candidate).
+- ``auto_create_next_stage_contract`` (the
+  inline-draft branch) does the same fallback for
+  inline stage drafts that omit ``file_effects`` or
+  ``authority``.
+- An explicit per-stage ``workspace_root`` /
+  ``executor_grant`` always takes precedence over the
+  Goal-level default.
+
+**Pinned in**:
+- ``tests/unit/test_goal_execution_config.py`` —
+  5 cases: spec-only synth inherits workspace,
+  spec-only synth inherits executor grant,
+  inline-stage-draft inherits when missing, explicit
+  per-stage wins, no-executor-grant regression pin.
+
+Skip a check, the 5th-round-style leak is one PR away.
