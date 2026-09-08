@@ -314,6 +314,71 @@ class TestPathSafety:
         assert brief.attempt_id == ATTEMPT_ID
 
 
+class TestHandoverSymlinkDefense:
+    """P2 review (2026-09-08): the original implementation checked
+    the boundary on active.md but not on handover.md.  A valid
+    contract + valid attempt, with ``handover.md`` replaced by a
+    symlink to ``/tmp/secret.md`` (or any other external file),
+    caused the resume brief to inline the secret.  Fix: same
+    boundary check applied to handover.md *and* a symlink-target
+    re-resolution so a symlink that resolves outside the contract
+    dir is refused at read time."""
+
+    @pytest.mark.skipif(
+        __import__("sys").platform == "win32",
+        reason="POSIX symlink semantics (this test sets up an external target via Path.symlink_to)",
+    )
+    def test_handover_symlink_outside_contract_dir_rejected(self, tmp_path: Path) -> None:
+        # External file the symlink will point at.
+        secret = tmp_path / "secret.md"
+        secret.write_text("OUTSIDE_SECRET", encoding="utf-8")
+        # Stage the contract with active.md and a symlinked handover.md.
+        contract_dir = tmp_path / "data" / "contracts" / CONTRACT_ID
+        attempt_dir = contract_dir / "context" / "attempts" / ATTEMPT_ID
+        attempt_dir.mkdir(parents=True)
+        (attempt_dir / "active.md").write_text("ok", encoding="utf-8")
+        handover = contract_dir / "handover.md"
+        handover.symlink_to(secret)
+        with pytest.raises(ResumeBriefError, match="symlink"):
+            build_resume_brief(
+                tmp_path / "data",
+                CONTRACT_ID,
+                ATTEMPT_ID,
+                now=NOW,
+            )
+
+    def test_handover_inside_contract_dir_accepted(self, tmp_path: Path) -> None:
+        """A symlink that points *inside* the contract dir is fine —
+        it's a benign intra-project link, not an escape."""
+
+        target_dir = (
+            tmp_path / "data" / "contracts" / CONTRACT_ID / "context" / "attempts" / "att-other"
+        )
+        target_dir.mkdir(parents=True)
+        (target_dir / "active.md").write_text("ok", encoding="utf-8")
+        # Plant a legal active.md for the real attempt id.
+        real_attempt_dir = (
+            tmp_path / "data" / "contracts" / CONTRACT_ID / "context" / "attempts" / ATTEMPT_ID
+        )
+        real_attempt_dir.mkdir(parents=True, exist_ok=True)
+        (real_attempt_dir / "active.md").write_text("ok", encoding="utf-8")
+        # Symlink handover.md to a file inside the contract dir.
+        handover_target = target_dir / "active.md"
+        contract_dir = tmp_path / "data" / "contracts" / CONTRACT_ID
+        handover = contract_dir / "handover.md"
+        # Skip the symlink path on Windows where symlinks need
+        # privileges the test env may not have.
+        if not callable(Path.symlink_to):
+            pytest.skip("symlinks unavailable in this environment")
+        try:
+            handover.symlink_to(handover_target)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"symlink not supported here: {exc}")
+        # Should NOT raise; the brief should include the target's text.
+        brief = build_resume_brief(tmp_path / "data", CONTRACT_ID, ATTEMPT_ID, now=NOW)
+        assert "ok" in brief.body
+
+
 class TestActorParameter:
     """P1 review: the audit event used to record ``actor="user"`` no
     matter who called the helper.  Forensic value is lost when an

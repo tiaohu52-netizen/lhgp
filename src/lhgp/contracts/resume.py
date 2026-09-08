@@ -165,6 +165,15 @@ def build_resume_brief(
     active_path = contract_dir / _CONTEXT_DIR / _ATTEMPTS_DIR / attempt_id / _ACTIVE_FILE
     handover_path = contract_dir / _HANDOVER_FILE
     _assert_within_contract_dir(active_path, contract_dir, label="active.md path")
+    # P2 review (2026-09-08): the active.md check above stops direct
+    # path-traversal in attempt_id, but handover.md would still leak:
+    # ``is_file()`` follows symlinks, and ``read_text()`` would happily
+    # read a symlinked file that points outside the contract directory.
+    # The reviewer's repro: a valid contract + valid attempt, with
+    # ``handover.md`` replaced by a symlink to ``/tmp/secret.md``; the
+    # resume brief inlined the secret.  Fix: same boundary check as
+    # active.md, applied *before* the read.
+    _assert_within_contract_dir(handover_path, contract_dir, label="handover.md path")
 
     if conn is not None and not _attempt_belongs_to_contract(conn, contract_id, attempt_id):
         raise ResumeBriefError(
@@ -179,8 +188,23 @@ def build_resume_brief(
         )
 
     active_text = active_path.read_text(encoding="utf-8")
+    # Same symlink defense for handover.md: even if the path itself
+    # is inside the contract dir, an attacker-planted symlink can
+    # resolve to anywhere.  Resolve the *link target* and re-check
+    # the boundary before reading.
     if handover_path.is_file():
-        handover_text = handover_path.read_text(encoding="utf-8")
+        try:
+            resolved_handover = handover_path.resolve(strict=False)
+        except OSError as exc:
+            raise ResumeBriefError(f"handover.md path resolution failed: {exc}") from exc
+        contract_dir_resolved = contract_dir.resolve(strict=False)
+        if not resolved_handover.is_relative_to(contract_dir_resolved):
+            raise ResumeBriefError(
+                f"handover.md is a symlink that escapes the contract "
+                f"directory: {handover_path} -> {resolved_handover} not under "
+                f"{contract_dir_resolved}"
+            )
+        handover_text = resolved_handover.read_text(encoding="utf-8")
     else:
         handover_text = "_(no handover.md written)_"
 
