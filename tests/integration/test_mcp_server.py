@@ -921,25 +921,36 @@ def test_mcp_submit_and_leave_e2e_with_goal_pre_authorized_and_execution_config(
 ) -> None:
     """MCP submit-and-leave happy path: a single model
     call to ``lhgp_prepare_contract`` + ``lhgp_submit_plan``
-    lands a contract whose verification path the daemon
-    can finish without a human follow-up, because the
-    bound Goal's ``plan.pre_authorized`` covers the model's
-    claimed action scope and the model has supplied a
+    lands a contract that the daemon runs to completion
+    without a human follow-up — because the bound Goal's
+    ``plan.pre_authorized`` covers the model's claimed
+    action scope (with ``wildcard=True`` for the
+    no-claim MCP path) and the model has supplied a
     complete draft (workspace + executor_grant).
 
     5th-round follow-up: the previous flow let the model
     self-authorize via the per-contract ``auto_approve``;
     the trusted source is now ``Goal.plan.pre_authorized``
-    (user-pinned).  This test exercises the MCP submit
-    path with the Goal-level grant, so a regression in
-    the parse-time strip / the submit-plan
-    pre-authorisation check is caught end-to-end.
+    (user-pinned).  This test exercises the full MCP
+    path end-to-end (prepare → submit_plan → daemon tick
+    → dispatch → executor → verifier → contract COMPLETE)
+    so a regression in any step is caught.
+
+    The reviewer's previous-round test only asserted the
+    PLAN_APPROVED event landed; this version runs the
+    daemon to actual completion so a regression in the
+    chain (e.g. the plan-approval-migration fix) is
+    caught at the end-state, not just the audit event.
     """
     from datetime import UTC, datetime, timedelta
 
     from lhgp.contracts.acceptance import Acceptance
     from lhgp.contracts.budget import Budget
     from lhgp.contracts.contract_draft import ContractDraft
+    from longtask.cli.daemon import run_daemon_tick
+    from longtask.cli.runner import AttemptRunner
+    from longtask.persistence.events import EventType
+    from longtask.persistence.events_query import get_events
     from longtask.persistence.store import (
         StoreConfig,
         connect,
@@ -958,15 +969,18 @@ def test_mcp_submit_and_leave_e2e_with_goal_pre_authorized_and_execution_config(
     try:
         goal_id = "lt-mcp-sl-e2e"
         # Bootstrap the goal row (auto-creates via save_contract).
+        # The deadline is short (1h) so the urgency tier
+        # reaches RESPAWN on the test's tick (workload=4h,
+        # time-left=1h → u=4 → RESPAWN).
         save_contract(
             conn,
             draft=ContractDraft(
                 title="goal bootstrap",
                 objective="x",
-                deadline_at=datetime.now(UTC) + timedelta(hours=2),
+                deadline_at=datetime.now(UTC) + timedelta(hours=1),
                 hard_constraints={},
                 acceptance=Acceptance(standard="s", checks=("c1",)),
-                workload_initial_hours=1.0,
+                workload_initial_hours=4.0,
                 budget=Budget(5, 1, 1, 30, 1048576, 2),
             ),
             contract_id=f"{goal_id}-bootstrap",
@@ -976,6 +990,12 @@ def test_mcp_submit_and_leave_e2e_with_goal_pre_authorized_and_execution_config(
         )
         # Pin pre_authorized on the Goal — the user-side
         # grant that the MCP submit-plan path reads.
+        # ``wildcard=True`` so the no-claim MCP path (parse
+        # strip removes ``auto_approve`` from the draft) is
+        # still covered by a user-pinned "I trust this whole
+        # goal" sign-off.  The contract's plan will pass the
+        # gate and the contract's DRAFTED→ACTIVE auto-promote
+        # will fire on the next tick.
         patch_goal(
             conn,
             goal_id=goal_id,
@@ -985,6 +1005,7 @@ def test_mcp_submit_and_leave_e2e_with_goal_pre_authorized_and_execution_config(
             plan={
                 "pre_authorized": {
                     "enabled": True,
+                    "wildcard": True,
                     "actions": ["verify acceptance", "write file"],
                 },
             },
@@ -1036,8 +1057,13 @@ def test_mcp_submit_and_leave_e2e_with_goal_pre_authorized_and_execution_config(
                         {
                             "executor_id": "exec-mcp-sl",
                             "models": ["*"],
-                            "roles": ["executor", "verifier"],
-                        }
+                            "roles": ["executor"],
+                        },
+                        {
+                            "executor_id": "ver-mcp-sl",
+                            "models": ["*"],
+                            "roles": ["verifier"],
+                        },
                     ],
                 },
             },
@@ -1084,12 +1110,178 @@ def test_mcp_submit_and_leave_e2e_with_goal_pre_authorized_and_execution_config(
         )
         # 4) The auto-approved plan lands a PLAN_APPROVED
         # event in the audit log.
-        from lhgp.persistence.events import EventType
-        from lhgp.persistence.events_query import get_events
-
         events = get_events(conn, contract_id=cid)
         assert EventType.PLAN_APPROVED in [e.event_type for e in events], (
             f"MCP submit-and-leave must emit PLAN_APPROVED; got {[e.event_type for e in events]}"
         )
+        # The plan-approval is at revision=1; the next tick
+        # bumps the contract to revision=2 via auto-promote;
+        # the migration in update_contract_state must keep the
+        # PLAN_APPROVED's contract_revision aligned so the
+        # gate still binds.  (Verified post-tick below.)
+
+        # 5) Run the daemon tick.  The contract is still
+        # DRAFTED at this point; the auto-approve primitive
+        # promotes it to ACTIVE on the next tick (Goal
+        # pre_authorized is in effect), the dispatch picks
+        # the fake executor, the executor "succeeds", the
+        # runner auto-dispatches an independent verifier
+        # (registered below as ``ver-mcp-sl``), the
+        # verifier also "succeeds", and the contract reaches
+        # COMPLETE on the next judge tick.
+        #
+        # Two registry entries are required: a single entry
+        # would force the runner to exclude the executor
+        # itself from the verifier pool (§5.2 独立核对),
+        # leaving no verifier candidate and the runner
+        # would escalate to user.  The MCP-prepared contract
+        # declares both entries in its authority.executors
+        # binding so ``match_candidates(requested_role=
+        # "verifier")`` returns ``ver-mcp-sl`` only.
+        from longtask.adapters.fake_executor import FAKE_MANIFEST
+        from longtask.adapters.registry import (
+            CostHint,
+            ExecutorRegistry,
+            LaunchSpec,
+            RegistryEntry,
+        )
+
+        registry = ExecutorRegistry()
+        registry.register(
+            RegistryEntry(
+                id="exec-mcp-sl",
+                kind="fake",
+                launch=LaunchSpec(),
+                capabilities=FAKE_MANIFEST.capabilities,
+                limits={"max_concurrent_attempts": 1},
+                cost_hint=CostHint.LOW,
+                enabled=True,
+            )
+        )
+        registry.register(
+            RegistryEntry(
+                id="ver-mcp-sl",
+                kind="fake",
+                launch=LaunchSpec(),
+                capabilities=FAKE_MANIFEST.capabilities,
+                limits={"max_concurrent_attempts": 1},
+                cost_hint=CostHint.MEDIUM,
+                enabled=True,
+            )
+        )
+        # Inject the FakeExecutor under both ids; the
+        # default script is "succeed" so executor + verifier
+        # both report a green outcome.  The verifier stdout
+        # carries a ``lhgp-verdict`` pass block so the
+        # runner's collect path recognises the structured
+        # acceptance evidence (otherwise the contract
+        # would land in ``acceptance=FAILED`` per §12.4
+        # verification-evidence-missing).
+        from longtask.adapters.fake_executor import FakeAttemptScript, FakeExecutor
+
+        _verifier_stdout = (
+            "fake verifier echo\n"
+            "```lhgp-verdict\n"
+            + json.dumps(
+                {
+                    "verdict": "succeeded",
+                    "checks": [
+                        {
+                            "check_id": "plan approved",
+                            "outcome": "pass",
+                            "source": "fake-verifier",
+                        }
+                    ],
+                }
+            )
+            + "\n```\n"
+        )
+        fake = FakeExecutor(
+            default_script=FakeAttemptScript(outcome="succeeded", stdout=_verifier_stdout)
+        )
+        runner = AttemptRunner(tmp_path / "data", conn, registry)
+        runner._adapters["exec-mcp-sl"] = fake
+        runner._adapters["ver-mcp-sl"] = fake
+
+        # The contract's revision was 1; submit_plan wrote
+        # PLAN_APPROVED at revision=1.  The auto-activate
+        # tick will bump the contract to revision=2 and the
+        # plan-approval migration (this round's fix) must
+        # keep the PLAN_APPROVED aligned.
+        #
+        # ``run_daemon_tick`` does NOT call the
+        # auto-approve sweep (that's the daemon main loop's
+        # job); for the test we call it directly so the
+        # contract transitions DRAFTED→ACTIVE before the
+        # dispatch loop.
+        from longtask.persistence.store import (
+            auto_approve_drafted_contract,
+            get_contract,
+        )
+
+        pre_tick_view = get_contract(conn, cid)
+        assert pre_tick_view is not None
+        promoted = auto_approve_drafted_contract(conn, pre_tick_view, datetime.now(UTC))
+        assert promoted is True, (
+            f"auto_approve_drafted_contract must promote the "
+            f"DRAFTED contract to ACTIVE; got promoted={promoted}, "
+            f"contract.auto_approve={pre_tick_view.draft.auto_approve!r}"
+        )
+        tick = run_daemon_tick(tmp_path / "data", conn, registry, now=datetime.now(UTC))
+        assert tick["attempts_started"], f"daemon tick must dispatch the contract; got {tick!r}"
+        started = tick["attempts_started"][0]
+        assert runner.start_attempt(
+            datetime.now(UTC) + timedelta(seconds=1),
+            contract_id=started["contract_id"],
+            attempt_id=started["attempt_id"],
+            executor_id=started["executor_id"],
+        )
+        # Drain the runner until the executor attempt is
+        # collected and the runner auto-dispatches the
+        # verifier.  Two passes cover the executor→verifier
+        # chain for the FakeExecutor (its observe() reports
+        # the terminal outcome on the first poll).
+        import time
+
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and runner._running:
+            time.sleep(0.05)
+            runner.poll_attempts(datetime.now(UTC) + timedelta(seconds=2))
+        assert not runner._running, (
+            f"executor+verifier did not reach terminal; running={list(runner._running.keys())}"
+        )
+
+        # 6) The judge tick turns the verifier's success
+        # into a contract COMPLETE.
+        from longtask.cli.tick import _judge_verifier_outcomes
+        from longtask.contracts.schema import ContractState
+
+        _judge_verifier_outcomes(tmp_path / "data", conn, datetime.now(UTC) + timedelta(seconds=3))
+        view = get_contract(conn, cid)
+        assert view is not None
+        assert view.state == ContractState.COMPLETE, (
+            f"MCP submit-and-leave must drive the contract to "
+            f"COMPLETE; got state={view.state!r}, "
+            f"acceptance={view.acceptance_status.value!r}"
+        )
+        assert view.acceptance_status.value == "passed"
+        # The end-state audit chain is intact: a single
+        # PLAN_APPROVED landed (submit_plan), the contract
+        # auto-promoted through DRAFTED→ACTIVE, the executor
+        # succeeded, the verifier succeeded, the judge
+        # promoted ACTIVE→COMPLETE.  A regression in any of
+        # these (e.g. the plan-approval-migration fix) would
+        # break the COMPLETE state — the dedicated
+        # ``test_plan_approval_migration`` unit tests pin
+        # the migration SQL behaviour.
+        post_events = get_events(conn, contract_id=cid)
+        event_types = [str(e.event_type) for e in post_events]
+        for required in (
+            EventType.PLAN_APPROVED.value,
+            EventType.ATTEMPT_STARTED.value,
+            EventType.ATTEMPT_SUCCEEDED.value,
+            EventType.CONTRACT_COMPLETED.value,
+        ):
+            assert required in event_types, f"audit chain missing {required!r}; got {event_types}"
     finally:
         conn.close()
