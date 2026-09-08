@@ -136,6 +136,52 @@ def synthesize_stage_draft(
         },
         "context": context,
     }
+    # 5th-round follow-up (review #2): the spec-only synthesizer
+    # used to drop the user's execution config — without
+    # ``workspace_root`` and ``executor_grant`` the dispatcher
+    # cannot pick an eligible executor and the contract ends up
+    # BLOCKED(NO_EXECUTOR).  The trusted source is the bound
+    # Goal's ``plan.execution_config`` (user-pinned at
+    # ``goal/update`` time, Principal-gated).  Inline stage
+    # drafts still take precedence — a stage that explicitly
+    # pins its own workspace / executor wins.
+    plan_raw = goal.get("plan") if isinstance(goal, dict) else None
+    goal_execution_config = plan_raw.get("execution_config") if isinstance(plan_raw, dict) else None
+    if isinstance(goal_execution_config, dict):
+        goal_workspace = goal_execution_config.get("workspace_root")
+        if isinstance(goal_workspace, str) and goal_workspace.strip():
+            file_effects = dict(hard_constraints.get("file_effects") or {})
+            if not file_effects.get("workspace_root"):
+                file_effects["workspace_root"] = goal_workspace
+            if not file_effects.get("mode"):
+                file_effects["mode"] = "workspace-write"
+            hard_constraints["file_effects"] = file_effects
+        goal_grant = goal_execution_config.get("executor_grant")
+        if isinstance(goal_grant, list) and goal_grant:
+            existing_authority = draft.get("authority") or {}
+            existing_executors = existing_authority.get("executors") or []
+            if not existing_executors:
+                clean: list[dict[str, Any]] = []
+                for item in goal_grant:
+                    if not isinstance(item, dict):
+                        continue
+                    executor_id = str(item.get("executor_id") or "").strip()
+                    if not executor_id:
+                        continue
+                    models_raw = item.get("models") or ["*"]
+                    roles_raw = item.get("roles") or ["executor"]
+                    clean.append(
+                        {
+                            "executor_id": executor_id,
+                            "models": [str(m) for m in models_raw],
+                            "roles": [str(r) for r in roles_raw],
+                        }
+                    )
+                if clean:
+                    draft["authority"] = {
+                        "executor_policy": "explicit_allow",
+                        "executors": clean,
+                    }
     prev_auto_approve = _resolve_previous_auto_approve(goal, stage, conn)
     plan_raw = goal.get("plan") if isinstance(goal, dict) else None
     goal_pre_authorized = plan_raw.get("pre_authorized") if isinstance(plan_raw, dict) else None
