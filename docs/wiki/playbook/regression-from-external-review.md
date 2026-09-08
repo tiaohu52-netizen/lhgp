@@ -190,7 +190,71 @@ length on individual lines, not total docstring length.
   follow-up).  12 docstrings were > 5 lines; all condensed
   to 1-3 lines.
 
-## 7. The lazy "no real entry, just mock" test
+## 7. Concurrent multi-event handler without pre-read CAS
+
+**Symptom (5th-round, follow-up to `71bcfc6`)**: a handler
+appends multiple audit events and then calls
+``update_contract_state`` to flip the state.  No
+``expected_revision`` is passed; the state update is
+unconditional.  Two concurrent calls both write their
+events to the log; whichever loses the state-race still
+leaves its events in the table, and the audit trail
+shows two ``CONTRACT_COMPLETED`` / ``ACCEPTANCE_STATUS_CHANGED``
+records for a single logical transition.
+
+The failure mode is **silent on the happy path**: a single
+caller sees a clean state flip plus the events it wrote.
+Only the multi-threaded test (or two CLI tabs in the wild)
+sees the duplicate events and a confused dispatcher.
+
+**Unit-test pattern that misses it**:
+```python
+# Single-threaded: events + state update both commit,
+# revision is consistent.  Test passes.
+result = handle_contract_user_confirm(env, conn=conn, now=NOW)
+assert len(get_events(conn, contract_id=cid)) == expected
+```
+No thread pool, no shared DB, no pre-read snapshot.
+
+**Fix (mandatory for any handler that appends events then
+mutates state)**:
+- Pre-transaction snapshot of ``expected_revision`` (and
+  any other CAS field, e.g. ``acceptance_status``).
+- Wrap the event appends + state update + downstream side
+  effects (goal advance) in one
+  ``with transaction(conn):`` block.  ``transaction()`` uses
+  ``BEGIN IMMEDIATE`` so concurrent threads serialize on
+  the write lock.
+- Pass ``expected_revision=expected_revision`` to
+  ``update_contract_state``; the loser's state update
+  raises ``RevisionConflictError`` and the outer
+  transaction rolls its events back.
+- Convert ``RevisionConflictError`` to ``RpcError``
+  **after** the ``with`` block exits — Python 3.13's
+  ``contextlib.__exit__`` cannot assign ``__traceback__``
+  to a frozen/slotted ``RpcError`` raised from inside the
+  block.  Use ``raised = RpcError(...)`` then
+  ``if raised: raise raised`` outside the block.
+- One ``CONTRACT_COMPLETED`` event per transition: let
+  ``update_contract_state``'s ``_STATE_TO_EVENT`` mapping
+  write it; do not append a manual one and then call
+  ``update_contract_state`` again.  Pass the extra fields
+  via ``event_payload=`` so the auto-generated event
+  carries the verifier/user-confirm provenance.
+
+**Pinned in**:
+- `tests/integration/test_user_confirm_concurrent.py` —
+  two threads, only one survives, exactly one
+  ``ACCEPTANCE_STATUS_CHANGED`` and one ``CONTRACT_COMPLETED``
+  event in the final log
+- `tests/integration/test_auto_approve_concurrent.py` —
+  the same CAS pattern applied to the daemon-driven
+  ``auto_approve_drafted_contract`` path
+- `tests/integration/test_a2a_concurrent.py` —
+  ``mark_directives_consumed`` race fixed by atomic
+  SQL ``json_set + MAX + COALESCE``
+
+## 8. The lazy "no real entry, just mock" test
 
 **Symptom (recurring)**: a test creates a hand-crafted
 ``envelope``, calls the handler in-process, asserts the
@@ -247,5 +311,20 @@ this list:
 8. **Spec/validator/synthesizer shape parity**: any new
    ``stage.spec`` field is accepted by
    ``validate_stage_entry`` AND read by the synthesizer.
+9. **Pre-read CAS on multi-event handlers**: any handler
+   that appends events then calls
+   ``update_contract_state`` must pre-read
+   ``expected_revision`` outside the transaction, wrap
+   events + state update + downstream side effects in one
+   ``with transaction():`` block, and pass
+   ``expected_revision=`` to ``update_contract_state``.
+   Add a multi-threaded integration test that pins the
+   single-survivor outcome (see pattern 7).
+10. **One event per logical transition**: do not append a
+    manual ``CONTRACT_COMPLETED`` and then call
+    ``update_contract_state(COMPLETE, ...)`` (which writes
+    a second one via ``_STATE_TO_EVENT``).  Pass extra
+    fields via ``event_payload=``; let the state update
+    write the single canonical event.
 
 Skip a check, the 4th-round-style leak is one PR away.
