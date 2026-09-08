@@ -22,6 +22,8 @@ from datetime import time as datetime_time
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from lhgp.contracts.auto_approve import AutoApprove
+from lhgp.contracts.auto_approve import from_dict as auto_approve_from_dict
 from lhgp.contracts.budget import DEFAULT_VERIFICATION_RESERVED
 from longtask.acceptance.checks import parse_check
 from longtask.contracts.attention import from_dict as attention_from_dict
@@ -169,6 +171,7 @@ def _row_to_contract_view(row: sqlite3.Row | tuple[Any, ...]) -> ContractView:
         authority_json,
         attention_json,
         continuity_json,
+        auto_approve_json,
         created_at_str,
         updated_at_str,
         next_wakeup_at_str,
@@ -209,6 +212,7 @@ def _row_to_contract_view(row: sqlite3.Row | tuple[Any, ...]) -> ContractView:
         authority=authority_from_dict(json.loads(authority_json)),
         attention=attention_from_dict(json.loads(attention_json)),
         continuity=continuity_from_dict(json.loads(continuity_json)),
+        auto_approve=auto_approve_from_dict(json.loads(auto_approve_json or "{}")),
     )
 
     try:
@@ -245,7 +249,8 @@ def get_contract(conn: sqlite3.Connection, contract_id: str) -> ContractView | N
                acceptance_json, workload_initial_hours, budget_json,
                soft_guidance_json, context_json, execution_json,
                client_meta_json, authority_json, attention_json,
-               continuity_json, created_at, updated_at, next_wakeup_at,
+               continuity_json, auto_approve_json,
+               created_at, updated_at, next_wakeup_at,
                next_decision_at, schema_version
         FROM contracts
         WHERE contract_id = ?
@@ -541,8 +546,9 @@ def list_contracts(
         "acceptance_json, workload_initial_hours, budget_json, "
         "soft_guidance_json, context_json, execution_json, "
         "client_meta_json, authority_json, attention_json, "
-        "continuity_json, created_at, updated_at, next_wakeup_at, "
-        "next_decision_at, schema_version FROM contracts WHERE 1=1"
+        "continuity_json, auto_approve_json, created_at, updated_at, "
+        "next_wakeup_at, next_decision_at, schema_version "
+        "FROM contracts WHERE 1=1"
     )
     params: list[Any] = []
     if state is not None:
@@ -635,9 +641,13 @@ def save_contract(
                 acceptance_json, workload_initial_hours, budget_json,
                 soft_guidance_json, context_json, execution_json,
                 client_meta_json, authority_json, attention_json,
-                continuity_json, created_at, updated_at, next_wakeup_at,
-                next_decision_at, schema_version
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                continuity_json, auto_approve_json, created_at,
+                updated_at, next_wakeup_at, next_decision_at,
+                schema_version
+            ) VALUES (
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?, ?, ?
+            )
             """,
             (
                 contract_id,
@@ -680,6 +690,14 @@ def save_contract(
                 json.dumps(authority_to_dict(draft.authority), ensure_ascii=False),
                 json.dumps(attention_to_dict(draft.attention), ensure_ascii=False),
                 json.dumps(continuity_to_dict(draft.continuity), ensure_ascii=False),
+                json.dumps(
+                    (
+                        draft.auto_approve.to_dict()
+                        if isinstance(draft.auto_approve, AutoApprove)
+                        else draft.auto_approve
+                    ),
+                    ensure_ascii=False,
+                ),
                 now.isoformat(),
                 now.isoformat(),
                 next_wakeup_at.isoformat() if next_wakeup_at else None,
@@ -759,9 +777,9 @@ def _write_revision_snapshot(
             blocked_reason, title, objective, deadline_at, hard_constraints_json,
             acceptance_json, workload_initial_hours, budget_json,
             soft_guidance_json, context_json, execution_json, client_meta_json,
-            authority_json, attention_json, continuity_json,
+            authority_json, attention_json, continuity_json, auto_approve_json,
             recorded_at, recorded_by, change_reason
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             contract_id,
@@ -801,6 +819,14 @@ def _write_revision_snapshot(
             json.dumps(authority_to_dict(draft.authority), ensure_ascii=False),
             json.dumps(attention_to_dict(draft.attention), ensure_ascii=False),
             json.dumps(continuity_to_dict(draft.continuity), ensure_ascii=False),
+            json.dumps(
+                (
+                    draft.auto_approve.to_dict()
+                    if isinstance(draft.auto_approve, AutoApprove)
+                    else draft.auto_approve
+                ),
+                ensure_ascii=False,
+            ),
             recorded_at.isoformat(),
             recorded_by,
             change_reason,

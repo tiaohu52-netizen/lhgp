@@ -105,6 +105,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             authority_json TEXT NOT NULL DEFAULT '{}',  -- P2
             attention_json TEXT NOT NULL DEFAULT '{}',  -- P2
             continuity_json TEXT NOT NULL DEFAULT '{}',  -- P2
+            auto_approve_json TEXT NOT NULL DEFAULT '{}',  -- 3rd-round review
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             next_wakeup_at TEXT,
@@ -189,6 +190,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             authority_json TEXT NOT NULL DEFAULT '{}',
             attention_json TEXT NOT NULL DEFAULT '{}',
             continuity_json TEXT NOT NULL DEFAULT '{}',
+            auto_approve_json TEXT NOT NULL DEFAULT '{}',
             recorded_at TEXT NOT NULL,
             recorded_by TEXT NOT NULL,
             change_reason TEXT,
@@ -513,6 +515,8 @@ def _migrate_v1_to_v2(conn: sqlite3.Connection) -> None:
     _add_column_if_missing("contracts", "authority_json TEXT NOT NULL DEFAULT '{}'")
     _add_column_if_missing("contracts", "attention_json TEXT NOT NULL DEFAULT '{}'")
     _add_column_if_missing("contracts", "continuity_json TEXT NOT NULL DEFAULT '{}'")
+    _add_column_if_missing("contracts", "auto_approve_json TEXT NOT NULL DEFAULT '{}'")
+    _add_column_if_missing("contract_revisions", "auto_approve_json TEXT NOT NULL DEFAULT '{}'")
     _add_column_if_missing("contracts", "next_decision_at TEXT")
 
     _add_column_if_missing("events", "goal_id TEXT")
