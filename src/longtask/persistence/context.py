@@ -257,15 +257,25 @@ def mark_directives_consumed(
     ``new_id`` is passed (lower than the stored cursor), the call
     is a no-op.
     """
-    current = _read_directive_cursor(conn, contract_id, to_agent=to_agent)
-    if new_id <= current:
-        return False
-    _bump_directive_cursor(conn, contract_id, new_id, to_agent=to_agent)
-    if consumed_ids and now is not None:
-        _record_directive_acks(
-            conn, contract_id, to_agent=to_agent, consumed_ids=consumed_ids, now=now
-        )
-    return True
+    from longtask.persistence.store import transaction
+
+    moved = False
+    with transaction(conn):
+        # Cursor bump: max-guard in SQL prevents rewind on race.
+        key = _DIRECTIVE_CURSOR_KEY if to_agent is None else f"{_DIRECTIVE_CURSOR_KEY}::{to_agent}"
+        moved = _bump_directive_cursor_atomic(conn, contract_id, key, new_id)
+        # Ack recording is independent of the cursor bump:
+        # even if the cursor did not move (another thread's
+        # new_id was higher), this thread's ``consumed_ids`` are
+        # still part of the dedup set and must be recorded.
+        # Otherwise a slow thread with a lower new_id would
+        # silently lose its consumed_ids (5th-round review
+        # regression test ``test_concurrent_consumed_ids_record_all_acks``).
+        if consumed_ids and now is not None:
+            _record_directive_acks(
+                conn, contract_id, to_agent=to_agent, consumed_ids=consumed_ids, now=now
+            )
+    return moved
 
 
 def _read_acknowledged_directives(
@@ -394,6 +404,40 @@ def _record_directive_acks(
                     did,
                     exc,
                 )
+
+
+def _bump_directive_cursor_atomic(
+    conn: sqlite3.Connection,
+    contract_id: str,
+    key: str,
+    new_id: int,
+) -> bool:
+    """Atomically set the per-(contract, key) directive cursor to
+    ``MAX(existing, new_id)``.
+
+    One SQL statement combines the JSON read, the max-guard, and
+    the JSON write, so two concurrent callers cannot lose updates
+    via a classic read-merge-write race.  The caller's
+    ``with transaction(conn):`` provides the WAL write lock; the
+    SQL is the race-free piece.
+
+    Returns True iff the cursor moved (strictly forward).
+    """
+    cursor = conn.execute(
+        """
+        UPDATE contracts
+        SET continuity_json = json_set(
+            continuity_json,
+            '$.' || ?,
+            MAX(COALESCE(CAST(json_extract(continuity_json, '$.' || ?) AS INTEGER), 0), ?)
+        )
+        WHERE contract_id = ?
+          AND MAX(COALESCE(CAST(json_extract(continuity_json, '$.' || ?) AS INTEGER), 0), ?)
+              > COALESCE(CAST(json_extract(continuity_json, '$.' || ?) AS INTEGER), 0)
+        """,
+        (key, key, new_id, contract_id, key, new_id, key),
+    ).rowcount
+    return cursor > 0
 
 
 def _bump_directive_cursor(
