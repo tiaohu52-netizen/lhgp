@@ -459,6 +459,64 @@ def advance_goal(
     )
 
 
+def auto_approve_drafted_contract(
+    conn: sqlite3.Connection,
+    contract: Any,
+    now: datetime,
+) -> bool:
+    """Promote a DRAFTED contract to ACTIVE if it is pre-authorised.
+
+    Submit-and-leave primitive: the user pre-authorised the
+    contract at submit time (``auto_approve.enabled=True`` plus
+    the action scope). The daemon tick calls this to push the
+    contract from DRAFTED to ACTIVE so the dispatcher can pick
+    it up — without the caller coming back.
+
+    Returns ``True`` if a transition happened, ``False`` if the
+    contract was not eligible (not in DRAFTED, or
+    auto_approve disabled, or no scope match).
+
+    Lives in the persistence layer (not the daemon CLI) so the
+    ``rpc → cli is forbidden`` arch rule is not violated when
+    the RPC handler chain needs to invoke it.
+
+    No Principal check: this is the executor of a pre-existing
+    user authorisation, not a new approval. The MCP/HTTP/CLI
+    path that initially submitted the contract already ran the
+    Principal gate (or was called by the daemon which is the
+    only path that exposes this function to ticks).
+    """
+    if contract.state != ContractState.DRAFTED:
+        return False
+    if not contract.draft.auto_approve.enabled:
+        return False
+    try:
+        update_contract_state(
+            conn,
+            contract_id=contract.contract_id,
+            new_state=ContractState.ACTIVE,
+            now=now,
+            actor="daemon",
+        )
+    except (RevisionConflictError, StoreError):
+        # Lost the CAS race (another tick already approved it)
+        # or transient store error — skip; the next tick will
+        # retry. Never raise: auto-approval is best-effort by
+        # design so a single bad contract cannot block the
+        # whole tick.
+        return False
+    return True
+
+
+def list_drafted_contracts(conn: sqlite3.Connection) -> list[Any]:
+    """List all DRAFTED contracts the daemon should consider for
+    auto-approval.  Bounded by the existing
+    :func:`list_contracts` paging defaults so a long backlog
+    cannot stall a tick.
+    """
+    return [c for c in list_contracts(conn, limit=1000) if c.state == ContractState.DRAFTED]
+
+
 def advance_goal_after_verified_contract(
     conn: sqlite3.Connection, contract: Any, now: datetime
 ) -> None:

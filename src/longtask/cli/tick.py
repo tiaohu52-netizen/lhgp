@@ -17,6 +17,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from lhgp.contracts.auto_approve import AutoApprove
 from lhgp.persistence.events_query import count_attempts_by_role, count_events
 from lhgp.promoter.fairness import (
     ContractFairnessState,
@@ -45,6 +46,7 @@ from longtask.persistence.store import (
     StoreError,
     _notification_available_at,
     append_event,
+    auto_approve_drafted_contract,
     get_contract,
     get_events,
     get_goal,
@@ -1106,6 +1108,7 @@ def _synthesize_stage_draft(
     *,
     previous_evidence: dict[str, Any] | None,
     now: datetime,
+    conn: sqlite3.Connection | None = None,
 ) -> dict[str, Any]:
     """Build a usable contract draft from a stage's structured spec.
 
@@ -1119,6 +1122,14 @@ def _synthesize_stage_draft(
     artifacts) are forwarded into ``context`` so the next executor
     can read them. The previous stage's verifier evidence is also
     placed in ``context.previous_evidence`` for the same reason.
+
+    When ``conn`` is provided, the previous stage's contract
+    ``auto_approve`` is propagated to the synthesized draft via
+    :meth:`AutoApprove.inherit_from` so a user pre-authorised at
+    submission time remains in effect across the next-stage
+    contract.  ``conn`` defaults to ``None`` so callers without a
+    connection (unit tests, dry-runs) keep the legacy
+    no-``auto_approve`` behaviour.
     """
     raw_spec: dict[str, Any] = dict(stage["spec"]) if isinstance(stage.get("spec"), dict) else {}
     # 4th-round review (2026-09-08): ``validate_stage_entry``
@@ -1211,7 +1222,7 @@ def _synthesize_stage_draft(
     hard_constraints: dict[str, Any] = {}
     if spec.modifiable_scope:
         hard_constraints["modifiable_scope"] = list(spec.modifiable_scope)
-    return {
+    draft: dict[str, Any] = {
         "title": title,
         "objective": objective,
         "deadline_at": deadline_iso,
@@ -1233,6 +1244,57 @@ def _synthesize_stage_draft(
         },
         "context": context,
     }
+    # Propagate the user's pre-authorised auto-approve scope from
+    # the previous stage's contract so the next-stage contract can
+    # be auto-approved (submit-and-leave).  Best-effort: if the
+    # previous stage has no bound contract, ``conn`` is None, or
+    # the contract is missing, no key is added and the synthesized
+    # draft falls back to the default (enabled=False) — which is
+    # the legacy behaviour and is safe.
+    prev_auto_approve = _resolve_previous_auto_approve(goal, stage, conn)
+    if prev_auto_approve is not None:
+        draft["auto_approve"] = AutoApprove().inherit_from(prev_auto_approve).to_dict()
+    return draft
+
+
+def _resolve_previous_auto_approve(
+    goal: dict[str, Any],
+    stage: dict[str, Any],
+    conn: sqlite3.Connection | None,
+) -> AutoApprove | None:
+    """Look up the previous stage's contract and return its ``auto_approve``.
+
+    Returns ``None`` when ``conn`` is missing, the goal has no
+    plan/stages, ``stage`` is not in the plan, there is no previous
+    stage, the previous stage has no bound ``contract_id``, or the
+    contract cannot be fetched.  These are the silent-degrade cases
+    that keep the synthesized draft safe and behaviour-equivalent
+    to the pre-fix release.
+    """
+    if conn is None:
+        return None
+    plan_raw = goal.get("plan")
+    if not isinstance(plan_raw, dict):
+        return None
+    stages_raw = plan_raw.get("stages")
+    if not isinstance(stages_raw, list):
+        return None
+    try:
+        idx = stages_raw.index(stage)
+    except ValueError:
+        return None
+    if idx <= 0:
+        return None
+    prev = stages_raw[idx - 1]
+    if not isinstance(prev, dict):
+        return None
+    prev_cid = prev.get("contract_id")
+    if not prev_cid:
+        return None
+    prev_contract = get_contract(conn, str(prev_cid))
+    if prev_contract is None:
+        return None
+    return prev_contract.draft.auto_approve
 
 
 def _collect_machine_checks(node: Any, out: list[dict[str, Any]]) -> None:
@@ -1313,6 +1375,7 @@ def _auto_create_next_stage_contract(
             next_stage,
             previous_evidence=previous_evidence,
             now=now,
+            conn=conn,
         )
     else:
         return
@@ -1337,6 +1400,19 @@ def _auto_create_next_stage_contract(
     )
     try:
         handle_goal_prepare(envelope, conn=conn, now=now)
+    except Exception:
+        return
+
+    # Submit-and-leave: if the new contract is pre-authorised, push it
+    # from DRAFTED to ACTIVE so the dispatcher can pick it up without
+    # a follow-up call. Best-effort: if the per-stage auto_approve has
+    # not yet been propagated (Worker C) the helper no-ops; if anything
+    # here raises, the per-tick scan (list_drafted_contracts) will
+    # retry on the next tick.
+    try:
+        new_contract = get_contract(conn, new_cid)
+        if new_contract is not None:
+            auto_approve_drafted_contract(conn, new_contract, now)
     except Exception:
         return
 

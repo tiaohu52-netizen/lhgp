@@ -22,6 +22,12 @@ class Method(StrEnum):
     # dispatcher deliberately skips it until the user signs off.
     # This method is the only path that moves CANDIDATE → PASSED.
     CONTRACT_USER_CONFIRM = "contract/user-confirm"
+    # submit-and-leave (2026-09-08): promote a pre-authorized
+    # DRAFTED contract to ACTIVE. Used by the daemon tick when
+    # ``auto_approve.enabled=True`` and the current spec is in
+    # scope. Server-side enforces the daemon-only actor so a
+    # model client cannot trigger the promotion.
+    CONTRACT_AUTO_APPROVE = "contract/auto-approve"
     ATTEMPT_STATUS = "attempt/status"
     ATTEMPT_LOGS = "attempt/logs"
     ATTEMPT_WRITE_BACK = "attempt/write-back"
@@ -60,6 +66,7 @@ IDEMPOTENT_METHODS = frozenset(
         Method.CONTRACT_ARBITRATE,
         Method.CONTRACT_REQUEST_VERIFICATION,
         Method.CONTRACT_USER_CONFIRM,
+        Method.CONTRACT_AUTO_APPROVE,
         Method.GOAL_PREPARE,
         Method.GOAL_ADMISSION_CHECK,
         Method.CONTEXT_PROMOTE,

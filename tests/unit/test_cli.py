@@ -449,7 +449,18 @@ class TestDaemonLoop:
 
     def test_loop_runs_cycles_with_injected_clock(self, tmp_path: Path) -> None:
         data_dir = self._make_active_contract(tmp_path)
-        times = iter([NOW, NOW + timedelta(minutes=1), NOW + timedelta(minutes=2)])
+        # submit-and-leave (2026-09-08): the daemon's startup
+        # scan now calls ``now_fn`` once before the per-tick
+        # loop begins, so provide an extra timestamp for the
+        # three subsequent cycles.
+        times = iter(
+            [
+                NOW,
+                NOW + timedelta(minutes=1),
+                NOW + timedelta(minutes=2),
+                NOW + timedelta(minutes=3),
+            ]
+        )
         sleeps: list[float] = []
 
         res = run_daemon_loop(

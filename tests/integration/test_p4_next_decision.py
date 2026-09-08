@@ -407,7 +407,11 @@ class TestDaemonLoopSleepsUntilDecisionPoint:
     def _run(self, data_dir: Path, deadline: datetime) -> tuple[dict, list[float]]:
         from longtask.cli.daemon_loop import run_daemon_loop
 
-        times = iter([NOW, NOW, NOW])
+        # submit-and-leave (2026-09-08): the daemon's startup
+        # scan now consumes one ``now_fn`` call before the
+        # per-tick loop begins, so provide an extra timestamp
+        # for the three subsequent cycles.
+        times = iter([NOW, NOW, NOW, NOW])
         sleeps: list[float] = []
         conn = connect(StoreConfig(db_path=data_dir / "state.db"))
         try:

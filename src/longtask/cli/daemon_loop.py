@@ -41,10 +41,12 @@ from longtask.persistence.projections import rebuild_projection
 from longtask.persistence.store import (
     StoreConfig,
     append_event,
+    auto_approve_drafted_contract,
     connect,
     ensure_schema,
     get_events,
     list_contracts,
+    list_drafted_contracts,
 )
 from longtask.promoter.reconcile import ReconcileBranch, reconcile_attempts
 from longtask.rpc.methods import Method
@@ -109,6 +111,10 @@ def run_daemon_loop(
     clock = now_fn if now_fn is not None else (lambda: datetime.now(UTC))
     conn = connect(StoreConfig(db_path=root / "state.db"))
     ensure_schema(conn)
+    # submit-and-leave: 上一轮 daemon 退出时残留的 DRAFTED 合同在重启后由本轮
+    # 入口立刻扫描升级，避免等满一个 tick interval 才被 dispatcher 看见。
+    # 幂等：第二次启动若已无残留，就是一次零成本遍历。
+    _auto_approve_drafted_contracts(conn, clock(), emit_fn)
     rpc_stop = threading.Event()
     wake_event = threading.Event()
     fired_tasks: SimpleQueue[str] = SimpleQueue()
@@ -175,6 +181,12 @@ def run_daemon_loop(
             now_val = clock()
             registry = ExecutorRegistry.load_from_file(root / REGISTRY_FILE)
             runner.replace_registry(registry)
+            # submit-and-leave: 每轮 tick 顶部把新落库（运行中通过 MCP/HTTP 提交）
+            # 的 DRAFTED 合同按 auto_approve 范围升级为 ACTIVE。放在 reconcile 之前
+            # 是为了确保 dispatcher（run_daemon_tick）以及 reconcile 看到的合同状态
+            # 已经收敛过；与 RPC 线程可能并发的 contract/auto-approve 走同一 store
+            # 原语，CAS 解决竞争，重复扫描是 no-op。
+            _auto_approve_drafted_contracts(conn, now_val, emit_fn)
             # §9 步骤 2 / §11.3：先 reconcile 外部 attempt，再谈其它。
             # 本进程仍持有活句柄的 attempt 让给 runner 自己管（locally_tracked）。
             reconciled = reconcile_attempts(
@@ -718,3 +730,37 @@ def _enforce_deadlines(
     if emit is not None and actions:
         emit(render_text(actions))
     return actions
+
+
+def _auto_approve_drafted_contracts(
+    conn: sqlite3.Connection,
+    now: datetime,
+    emit_fn: Callable[[str], None] | None,
+) -> int:
+    """submit-and-leave 扫尾：把 DRAFTED 合同按 auto_approve 范围升级为 ACTIVE。
+
+    入口（daemon 启动）+ 每轮 tick 顶部都会调一次；store 原语
+    :func:`auto_approve_drafted_contract` 自身已吞掉
+    RevisionConflictError / StoreError 并返回 False，因此
+    - 第二次连扫同集合合同全部是 no-op（DRAFTED → ACTIVE 已发生，不在结果里）；
+    - 任何单一合同的失败不会传染到本轮 tick 其它合同或 dispatcher。
+    本函数再加一层 try/except 是 belt-and-suspenders：哪怕 store 抛出
+    未声明的异常（例如 contract 视图字段异常触发 AttributeError），
+    sweep 仍能给剩余合同一个机会，并把异常信息降级成一条 emit。
+    """
+    try:
+        drafted = list_drafted_contracts(conn)
+    except Exception as exc:
+        if emit_fn is not None:
+            emit_fn(f"contract/auto-approve: list failed: {exc}")
+        return 0
+    approved = 0
+    for contract in drafted:
+        try:
+            if auto_approve_drafted_contract(conn, contract, now):
+                approved += 1
+        except Exception as exc:
+            if emit_fn is not None:
+                emit_fn(f"contract/auto-approve: {contract.contract_id} skipped: {exc}")
+            continue
+    return approved
