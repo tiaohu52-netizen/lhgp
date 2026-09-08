@@ -459,6 +459,54 @@ def advance_goal(
     )
 
 
+def advance_goal_after_verified_contract(
+    conn: sqlite3.Connection, contract: Any, now: datetime
+) -> None:
+    """Advance a stage only when its bound contract has verifier evidence.
+
+    Lives in ``longtask.persistence.store`` (not the daemon
+    ``longtask.cli.tick``) so the contract RPC handler can call
+    it without crossing the arch layer boundary
+    (rpc → cli is forbidden).  The previous home in
+    :mod:`longtask.cli.tick` made user-confirm from the MCP path
+    impossible to thread back into Goal advancement.
+    """
+    goal = get_goal(conn, contract.goal_id)
+    if goal is None or not isinstance(goal.get("plan"), dict):
+        return
+    stages = goal["plan"].get("stages")
+    if not isinstance(stages, list):
+        return
+    bound = next(
+        (
+            stage
+            for stage in stages
+            if isinstance(stage, dict) and stage.get("contract_id") == contract.contract_id
+        ),
+        None,
+    )
+    if bound is None:
+        return
+    current = goal.get("progress", {}).get("current")
+    stage_id = str(bound.get("id", ""))
+    if current is not None and str(current) != stage_id:
+        return
+    try:
+        advance_goal(
+            conn,
+            goal_id=contract.goal_id,
+            complete_stage=stage_id,
+            now=now,
+            expected_revision=int(goal["revision"]),
+            actor="verifier",
+        )
+    except Exception:
+        # Contract completion is authoritative; Goal progress
+        # can be retried safely on the next read/advance without
+        # hiding verifier evidence.
+        return
+
+
 def goal_next_action(conn: sqlite3.Connection, *, goal_id: str) -> dict[str, Any]:
     """Return a deterministic, read-only next action for model callers."""
     goal = get_goal(conn, goal_id)

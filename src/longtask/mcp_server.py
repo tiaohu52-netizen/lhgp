@@ -203,8 +203,18 @@ def tool_user_confirm_spec_verdict(args: dict[str, Any], ctx: dict[str, Any]) ->
     criterion transitions to ``CANDIDATE`` after a verifier pass.
     The dispatcher deliberately skips CANDIDATE contracts so the
     user has the final say.  This tool is the only path that
-    moves the contract to ``PASSED``; it is server-side gated to
-    user-class clients — model callers will get AUTH_FAILED.
+    moves the contract to ``PASSED``.
+
+    4th-round review (2026-09-08): the Principal gate lives in
+    :func:`handle_contract_user_confirm`, not here.  The previous
+    wrapper-level gate was bypassable: when ``ctx["envelope"]`` was
+    absent (the default MCP stdio context for model clients), the
+    ``if caller_envelope is not None`` branch silently skipped
+    the check, the synthetic envelope was built with
+    ``client_id="mcp"``, and the handler recorded ``actor=model``.
+    The handler now runs ``require_principal`` on the routed
+    envelope regardless of wrapper-side state, so the only
+    authoritative gate is the one inside the handler.
 
     A typical model-caller workflow:
     1. ``contract.get`` to see ``acceptance_status``.
@@ -215,13 +225,6 @@ def tool_user_confirm_spec_verdict(args: dict[str, Any], ctx: dict[str, Any]) ->
     """
     caller_envelope = ctx.get("envelope")
     caller_client_id = caller_envelope.client_id if caller_envelope is not None else "mcp"
-    if caller_envelope is not None:
-        # Principal gate runs on the caller's envelope, not the
-        # synthetic one we build for routing — the synthetic envelope
-        # would carry ``client_id="mcp"`` and reject every caller.
-        from lhgp.rpc.handlers._common import require_principal
-
-        require_principal(caller_envelope, args, action="contract/user-confirm")
     envelope = parse_envelope(
         {
             "method": Method.CONTRACT_USER_CONFIRM.value,
@@ -234,8 +237,6 @@ def tool_user_confirm_spec_verdict(args: dict[str, Any], ctx: dict[str, Any]) ->
             },
         }
     )
-    # The user_confirm path is a state-only transition — no executor
-    # dispatch — so the registry is optional.
     return route(envelope, conn=ctx["conn"], now=_now(), registry=ctx.get("registry"))
 
 

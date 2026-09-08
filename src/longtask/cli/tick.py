@@ -44,7 +44,6 @@ from longtask.persistence.projections import rebuild_projection
 from longtask.persistence.store import (
     StoreError,
     _notification_available_at,
-    advance_goal,
     append_event,
     get_contract,
     get_events,
@@ -923,40 +922,20 @@ def _completed_attempt_durations(
 def _advance_goal_after_verified_contract(
     conn: sqlite3.Connection, contract: Any, now: datetime
 ) -> None:
-    """Advance a stage only when its bound contract has verifier evidence."""
-    goal = get_goal(conn, contract.goal_id)
-    if goal is None or not isinstance(goal.get("plan"), dict):
-        return
-    stages = goal["plan"].get("stages")
-    if not isinstance(stages, list):
-        return
-    bound = next(
-        (
-            stage
-            for stage in stages
-            if isinstance(stage, dict) and stage.get("contract_id") == contract.contract_id
-        ),
-        None,
+    """Thin alias to :func:`advance_goal_after_verified_contract`.
+
+    Kept as a module-level wrapper so the daemon's existing
+    call sites (``_handle_verifier_success`` and friends) keep
+    their import.  The canonical implementation lives in
+    :mod:`longtask.persistence.store` so the contract RPC
+    handler can call it without violating the
+    ``rpc → cli is forbidden`` arch rule.
+    """
+    from longtask.persistence.store import (
+        advance_goal_after_verified_contract as _impl,
     )
-    if bound is None:
-        return
-    current = goal.get("progress", {}).get("current")
-    stage_id = str(bound.get("id", ""))
-    if current is not None and str(current) != stage_id:
-        return
-    try:
-        advance_goal(
-            conn,
-            goal_id=contract.goal_id,
-            complete_stage=stage_id,
-            now=now,
-            expected_revision=int(goal["revision"]),
-            actor="verifier",
-        )
-    except Exception:
-        # Contract completion is authoritative; Goal progress can be retried
-        # safely on the next read/advance without hiding verifier evidence.
-        return
+
+    _impl(conn, contract, now)
 
 
 def _evaluate_contract_spec(contract: Any, verifier_payload: dict[str, Any]) -> Any | None:
@@ -1141,20 +1120,47 @@ def _synthesize_stage_draft(
     can read them. The previous stage's verifier evidence is also
     placed in ``context.previous_evidence`` for the same reason.
     """
-    raw_spec = stage.get("spec") if isinstance(stage.get("spec"), dict) else {}
-    # raw_spec as stored under ``stage.spec`` is the boolean-logic
-    # body (``{"all": [...]}`` or ``{"any": [...]}``). The full
-    # StageSpec envelope (``goal``/``scope``/``acceptance``/etc.) lives
-    # on the stage itself; merge so the user's full intent is
-    # preserved, not just the boolean body.
-    spec_envelope: dict[str, Any] = {
-        "goal": str(stage.get("title") or stage.get("id") or "stage"),
-        "acceptance": raw_spec,
+    raw_spec: dict[str, Any] = dict(stage["spec"]) if isinstance(stage.get("spec"), dict) else {}
+    # 4th-round review (2026-09-08): ``validate_stage_entry``
+    # treats ``stage.spec`` as a full StageSpec envelope
+    # (``goal``/``scope``/``acceptance``/etc.) and rejects a
+    # plain boolean body.  The previous synthesizer read it as
+    # the boolean body, so a user who passed the validator with
+    # a proper envelope saw the synthesizer build a draft from a
+    # malformed raw_spec, the next-stage contract never created.
+    # Align: read the envelope directly when the spec looks like
+    # an envelope (any of the structured keys is present); fall
+    # back to the legacy boolean-body shape for old plans.
+    envelope_keys: set[str] = {
+        "goal",
+        "scope",
+        "acceptance",
+        "dependencies",
+        "artifacts",
+        "time_budget",
+        "budget",
+        "permissions",
     }
-    for opt_key in ("scope", "dependencies", "artifacts", "time_budget", "budget", "permissions"):
-        v = stage.get(opt_key)
-        if v is not None:
-            spec_envelope[opt_key] = v
+    if envelope_keys.intersection(raw_spec.keys()):
+        spec_envelope: dict[str, Any] = dict(raw_spec)
+        if "goal" not in spec_envelope or not str(spec_envelope["goal"]).strip():
+            spec_envelope["goal"] = str(stage.get("title") or stage.get("id") or "stage")
+    else:
+        spec_envelope = {
+            "goal": str(stage.get("title") or stage.get("id") or "stage"),
+            "acceptance": raw_spec,
+        }
+        for opt_key in (
+            "scope",
+            "dependencies",
+            "artifacts",
+            "time_budget",
+            "budget",
+            "permissions",
+        ):
+            v = stage.get(opt_key)
+            if v is not None:
+                spec_envelope[opt_key] = v
     from lhgp.goals.stage import StageSpec
 
     spec = StageSpec.from_dict(spec_envelope)
@@ -1167,9 +1173,11 @@ def _synthesize_stage_draft(
     # Recursively walk the boolean spec (all/any + leaf criteria) so
     # a plan author can mention any of the substantive machine
     # criteria; the legacy "only ``all``" path left ``any`` branches
-    # as the placeholder.
+    # as the placeholder.  The boolean body is the ``acceptance``
+    # field of the envelope (or the legacy raw_spec for old plans).
+    boolean_body: Any = spec_envelope.get("acceptance", raw_spec)
     acceptance_checks: list[Any] = []
-    _collect_machine_checks(raw_spec, acceptance_checks)
+    _collect_machine_checks(boolean_body, acceptance_checks)
     if not acceptance_checks:
         acceptance_checks = [
             {
@@ -1178,7 +1186,10 @@ def _synthesize_stage_draft(
                 "mandatory": True,
             }
         ]
-    context: dict[str, Any] = {"stage_spec": raw_spec, "stage_id": stage.get("id")}
+    context: dict[str, Any] = {
+        "stage_spec": boolean_body,
+        "stage_id": stage.get("id"),
+    }
     if previous_evidence:
         context["previous_evidence"] = previous_evidence
     if spec.dependencies:
@@ -1209,7 +1220,7 @@ def _synthesize_stage_draft(
             "standard": objective,
             "checks": acceptance_checks,
             "verifier": "cross_check",
-            "spec": raw_spec,
+            "spec": boolean_body,
             "spec_hash": spec.spec_hash() or None,
         },
         "workload_estimate": {"initial_hours": 1.0},

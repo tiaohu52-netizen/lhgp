@@ -104,7 +104,17 @@ def require_principal(envelope: RequestEnvelope, params: dict[str, Any], *, acti
 
 
 def parse_contract_draft(params: dict[str, Any]) -> ContractDraft:
-    """从请求入参解析并校验 ContractDraft（DESIGN §4、§11.6）。"""
+    """从请求入参解析并校验 ContractDraft（DESIGN §4、§11.6）。
+
+    4th-round review (2026-09-08): ``contract/prepare`` builds the
+    Acceptance via the legacy namespace helper, which used to
+    silently drop the structured ``spec`` and ``spec_hash``
+    fields.  Spec dispatch and plan-gate would then bind to a
+    null spec.  The ``lhgp`` namespace helper was already fixed
+    in the 3rd round; the ``longtask`` namespace is the actual
+    call site for the contract RPC handler, so it gets the same
+    fix here.
+    """
     draft_data: dict[str, Any] = params.get("draft", params)
     try:
         title = str(draft_data["title"])
@@ -117,10 +127,16 @@ def parse_contract_draft(params: dict[str, Any]) -> ContractDraft:
 
         hard_constraints = dict(draft_data["hard_constraints"])
         acc_raw = draft_data["acceptance"]
+        spec_raw = acc_raw.get("spec")
+        spec_obj = spec_raw if isinstance(spec_raw, dict) else None
+        spec_hash_raw = acc_raw.get("spec_hash")
+        spec_hash = spec_hash_raw if isinstance(spec_hash_raw, str) and spec_hash_raw else None
         acceptance = Acceptance(
             standard=str(acc_raw["standard"]),
             checks=tuple(parse_check(c) for c in acc_raw["checks"]),
             verifier=str(acc_raw.get("verifier", "cross_check")),
+            spec=spec_obj,
+            spec_hash=spec_hash,
         )
 
         workload_estimate = draft_data.get("workload_estimate")

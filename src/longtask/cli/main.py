@@ -1239,6 +1239,13 @@ def main(argv: list[str] | None = None) -> int:
             from lhgp.contracts.plan import Plan, _extract_check_identifiers
             from lhgp.persistence.events import EventType
 
+            # 4th-round review (2026-09-08): append_event was
+            # previously imported only inside the ``lhgp plan
+            # submit`` branch; this branch hit UnboundLocalError
+            # at runtime.  Import it here, not later, so the
+            # call site is unambiguous.
+            from lhgp.persistence.events_query import append_event
+
             payload = _read_plan_input(args.from_file)
             steps = _steps_from_raw(payload.get("steps") or [])
 
