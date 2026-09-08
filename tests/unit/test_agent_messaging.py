@@ -147,7 +147,9 @@ class TestContextInjection:
             # 编译上下文
             contract = get_contract(conn, "lt-msg01")
             assert contract is not None
-            _, scratch = compile_context_snapshot(tmp_path, conn, contract, "att-test", NOW)
+            _, scratch, _consumed = compile_context_snapshot(
+                tmp_path, conn, contract, "att-test", NOW
+            )
             # active.md 应包含 directive
             active_path = scratch.parent / "active.md"
             content = active_path.read_text(encoding="utf-8")
@@ -165,7 +167,9 @@ class TestContextInjection:
 
             contract = get_contract(conn, "lt-msg01")
             assert contract is not None
-            _, scratch = compile_context_snapshot(tmp_path, conn, contract, "att-test", NOW)
+            _, scratch, _consumed = compile_context_snapshot(
+                tmp_path, conn, contract, "att-test", NOW
+            )
             active_path = scratch.parent / "active.md"
             content = active_path.read_text(encoding="utf-8")
             assert "用户指令" not in content

@@ -437,3 +437,64 @@ def test_concurrency_cap_enforced_across_two_contracts(tmp_path: Path) -> None:
     finally:
         conn.close()
     assert (ws1 / "result.txt").read_text(encoding="utf-8") == "ok"
+
+
+def test_capacity_full_contract_recovers_when_executor_frees(
+    tmp_path: Path,
+) -> None:
+    """P1 review (2026-09-08, 2nd round): when two contracts share an
+    executor with cap=1, the second contract goes BLOCKED.  The
+    previous fix only enforced the cap; this one additionally
+    classifies the block as CAPACITY_FULL (recoverable) and wakes
+    the contract on the next tick once the executor is free.
+    """
+
+    ws1 = tmp_path / "ws1"
+    ws2 = tmp_path / "ws2"
+    ws1.mkdir()
+    ws2.mkdir()
+    conn = connect(StoreConfig(db_path=tmp_path / "state.db"))
+    ensure_schema(conn)
+    try:
+        _save_active(conn, "lt-e2e-recov1", ws1)
+        _save_active(conn, "lt-e2e-recov2", ws2)
+        registry = _build_registry(with_verifier=False, max_concurrent=1)
+        runner = AttemptRunner(tmp_path, conn, registry)
+
+        first = run_daemon_tick(tmp_path, conn, registry, now=NOW + timedelta(seconds=1))
+        assert first["dispatched"] == 1
+        first_attempt = first["attempts_started"][0]
+        runner.start_attempt(
+            NOW + timedelta(seconds=1),
+            contract_id=first_attempt["contract_id"],
+            attempt_id=first_attempt["attempt_id"],
+            executor_id=first_attempt["executor_id"],
+        )
+        _wait_for_attempt_to_finish(runner, ws1)
+
+        # The other contract must be CAPACITY_FULL (not NO_EXECUTOR) —
+        # the wake-up only fires on CAPACITY_FULL.
+        blocked = get_contract(conn, "lt-e2e-recov2")
+        assert blocked is not None
+        assert blocked.state == ContractState.BLOCKED
+        from lhgp.contracts.contract_view import BlockReason
+
+        assert blocked.blocked_reason == BlockReason.CAPACITY_FULL
+
+        # The next tick should auto-recover it (executor is free now)
+        # and dispatch.
+        second = run_daemon_tick(tmp_path, conn, registry, now=NOW + timedelta(seconds=2))
+        assert second["dispatched"] == 1
+        second_attempt = second["attempts_started"][0]
+        assert second_attempt["contract_id"] == "lt-e2e-recov2"
+        runner.start_attempt(
+            NOW + timedelta(seconds=2),
+            contract_id=second_attempt["contract_id"],
+            attempt_id=second_attempt["attempt_id"],
+            executor_id=second_attempt["executor_id"],
+        )
+        _wait_for_attempt_to_finish(runner, ws2)
+    finally:
+        conn.close()
+    assert (ws1 / "result.txt").read_text(encoding="utf-8") == "ok"
+    assert (ws2 / "result.txt").read_text(encoding="utf-8") == "ok"

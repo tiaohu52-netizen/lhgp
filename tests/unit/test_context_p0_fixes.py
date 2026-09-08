@@ -80,7 +80,9 @@ class TestDeadlineBreachWarning:
 
         view = get_contract(conn, "lt-breach")
         assert view is not None
-        active, _ = compile_context_snapshot(data_dir, conn, view, "att-breach-1", now=now)
+        active, _, _consumed = compile_context_snapshot(
+            data_dir, conn, view, "att-breach-1", now=now
+        )
         text = active.read_text(encoding="utf-8")
         assert "## ⚠️ 合同已超期" in text
         assert text.index("## ⚠️") < text.index("## 合同锚点")
@@ -99,7 +101,7 @@ class TestDeadlineBreachWarning:
 
         view = get_contract(conn, "lt-ok")
         assert view is not None
-        active, _ = compile_context_snapshot(data_dir, conn, view, "att-ok-1", now=now)
+        active, _, _consumed = compile_context_snapshot(data_dir, conn, view, "att-ok-1", now=now)
         text = active.read_text(encoding="utf-8")
         assert "## ⚠️ 合同已超期" not in text
         conn.close()
@@ -242,7 +244,9 @@ class TestDirectiveCap:
 
         view = get_contract(conn, "lt-cap")
         assert view is not None
-        active, _ = compile_context_snapshot(data_dir, conn, view, "att-cap", now=datetime.now(UTC))
+        active, _, _consumed = compile_context_snapshot(
+            data_dir, conn, view, "att-cap", now=datetime.now(UTC)
+        )
         text = active.read_text(encoding="utf-8")
         section = text.split("## ⚡ 用户指令（必须遵守）", 1)[1].split("## 合同锚点", 1)[0]
         bullet_lines = [ln for ln in section.splitlines() if ln.startswith("- **")]
@@ -275,7 +279,7 @@ class TestDirectiveCap:
 
         view = get_contract(conn, "lt-long")
         assert view is not None
-        active, _ = compile_context_snapshot(
+        active, _, _consumed = compile_context_snapshot(
             data_dir, conn, view, "att-long", now=datetime.now(UTC)
         )
         text = active.read_text(encoding="utf-8")
@@ -328,7 +332,7 @@ class TestMemoryBudgetFormula:
         view = get_contract(conn, "lt-small")
         assert view is not None
         # Should not raise CapacityRefusedError.
-        active, _ = compile_context_snapshot(
+        active, _, _consumed = compile_context_snapshot(
             data_dir, conn, view, "att-small", now=datetime.now(UTC)
         )
         text = active.read_text(encoding="utf-8")
@@ -433,7 +437,19 @@ class TestDirectiveCursorAdvance:
 
         view = get_contract(conn, "lt-cursor-1")
         assert view is not None
-        compile_context_snapshot(data_dir, conn, view, "att-1", now=datetime.now(UTC))
+        _active, _, _consumed = compile_context_snapshot(
+            data_dir, conn, view, "att-1", now=datetime.now(UTC)
+        )
+        # P1 review (2026-09-08, 2nd round): cursor advance is now
+        # deferred to spawn confirmation. The test pins both:
+        # - compile_context_snapshot returns the max event id it
+        #   included so the caller knows what to mark consumed
+        # - mark_directives_consumed must be called explicitly to
+        #   advance the cursor (Popen success = advance)
+        from longtask.persistence.context import mark_directives_consumed
+
+        assert _read_directive_cursor(conn, "lt-cursor-1") == 0
+        mark_directives_consumed(conn, "lt-cursor-1", _consumed)
         assert _read_directive_cursor(conn, "lt-cursor-1") == max_event_id
 
         new_obj = append_event(
@@ -456,8 +472,18 @@ class TestDirectiveCursorAdvance:
             return real_fn(*args, **kwargs)  # type: ignore[arg-type]
 
         monkeypatch.setattr(msg_module, "pending_directives", _spy)
-        compile_context_snapshot(data_dir, conn, view, "att-2", now=datetime.now(UTC))
+        _active, _, _consumed = compile_context_snapshot(
+            data_dir, conn, view, "att-2", now=datetime.now(UTC)
+        )
         assert seen_after[0] == max_event_id
+        # P1 review (2026-09-08, 2nd round): cursor advance moved out
+        # of compile_context_snapshot; the runner does it after
+        # Popen via mark_directives_consumed.  The test now calls
+        # that helper explicitly to keep the assertion meaningful.
+        from longtask.persistence.context import mark_directives_consumed
+
+        assert _read_directive_cursor(conn, "lt-cursor-1") == max_event_id
+        mark_directives_consumed(conn, "lt-cursor-1", _consumed)
         assert _read_directive_cursor(conn, "lt-cursor-1") == new_obj.event_id
         conn.close()
 
@@ -525,7 +551,9 @@ class TestCursorBumpDeferredUntilWriteSucceeds:
         view = get_contract(conn, "lt-cap-cursor")
         assert view is not None
         with pytest.raises(CapacityRefusedError):
-            compile_context_snapshot(data_dir, conn, view, "att-fail", now=datetime.now(UTC))
+            _active, _, _consumed = compile_context_snapshot(
+                data_dir, conn, view, "att-fail", now=datetime.now(UTC)
+            )
 
         # Cursor must not have advanced despite the user having
         # visible directives in flight. Next attempt replays them.
@@ -573,7 +601,9 @@ class TestCursorBumpDeferredUntilWriteSucceeds:
         view = get_contract(conn, "lt-relaxed")
         assert view is not None
         with pytest.raises(CapacityRefusedError):
-            compile_context_snapshot(data_dir, conn, view, "att-fail", now=datetime.now(UTC))
+            active, _, _consumed = compile_context_snapshot(
+                data_dir, conn, view, "att-fail", now=datetime.now(UTC)
+            )
         assert _read_directive_cursor(conn, "lt-relaxed") == 0
 
         # Loosen the contract via a raw UPDATE (the contracts schema
@@ -598,8 +628,19 @@ class TestCursorBumpDeferredUntilWriteSucceeds:
         conn.commit()
         view = get_contract(conn, "lt-relaxed")
         assert view is not None
-        active, _ = compile_context_snapshot(data_dir, conn, view, "att-ok", now=datetime.now(UTC))
+        active, _, _consumed = compile_context_snapshot(
+            data_dir, conn, view, "att-ok", now=datetime.now(UTC)
+        )
         text = active.read_text(encoding="utf-8")
         assert "## ⚡ 用户指令（必须遵守）" in text
+        # P1 review (2026-09-08, 2nd round): the cursor advance was
+        # previously in compile_context_snapshot. With the fix it
+        # moves to mark_directives_consumed, called by the runner
+        # after Popen succeeds. The test now exercises that
+        # post-spawn path explicitly.
+        from longtask.persistence.context import mark_directives_consumed
+
+        assert _read_directive_cursor(conn, "lt-relaxed") == 0
+        mark_directives_consumed(conn, "lt-relaxed", _consumed)
         assert _read_directive_cursor(conn, "lt-relaxed") == max_event_id
         conn.close()

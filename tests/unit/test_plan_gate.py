@@ -44,6 +44,7 @@ from longtask.cli.dispatch import (
     _has_recent_plan_approval,
     _plan_gate_required,
     wake_blocked_after_plan_approval,
+    wake_blocked_capacity_full,
 )
 from longtask.contracts.contract_view import ContractState
 from longtask.contracts.schema import (
@@ -547,5 +548,145 @@ class TestWakeBlockedAfterPlanApproval:
             assert after is not None
             assert after.state == ContractState.BLOCKED
             assert after.blocked_reason == BlockReason.BUDGET_EXHAUSTED
+        finally:
+            conn.close()
+
+    def test_does_not_overwrite_concurrent_cancellation(self, tmp_path: Path) -> None:
+        """P1 review (2026-09-08, 2nd round): the wake helper used to
+        read state outside the transaction, then write — a concurrent
+        user cancellation could complete between the read and the
+        write and the wake would silently overwrite a CANCELLED
+        state back to ACTIVE.  Fix: the UPDATE pins state+revision,
+        so a row mutated in between fails the WHERE clause and the
+        wake is a no-op."""
+
+        from lhgp.contracts.contract_view import BlockReason
+
+        conn = _open_store(tmp_path)
+        try:
+            view = _save_active(conn, "lt-cancel-race", gate="plan", root=tmp_path)
+            update_contract_state(
+                conn,
+                contract_id=view.contract_id,
+                new_state=ContractState.BLOCKED,
+                now=NOW,
+                blocked_reason=BlockReason.NO_EXECUTOR,
+            )
+            # Simulate a user cancellation that completes before the
+            # wake's UPDATE runs.  We bump the revision to invalidate
+            # the wake's expected_revision CAS.
+            cancelled_view = get_contract(conn, "lt-cancel-race")
+            assert cancelled_view is not None
+            update_contract_state(
+                conn,
+                contract_id="lt-cancel-race",
+                new_state=ContractState.CANCELLED,
+                now=NOW + timedelta(seconds=1),
+            )
+            # The wake must observe the new (CANCELLED) state via the
+            # CAS guard and not touch the row.
+            woken = wake_blocked_after_plan_approval(
+                conn, "lt-cancel-race", NOW + timedelta(seconds=2)
+            )
+            assert woken is False
+            after = get_contract(conn, "lt-cancel-race")
+            assert after is not None
+            assert after.state == ContractState.CANCELLED
+        finally:
+            conn.close()
+
+
+class TestWakeBlockedCapacityFull:
+    """P1 review (2026-09-08, 2nd round): once every eligible executor
+    is at its max_concurrent_attempts, the contract must go to
+    ``BLOCKED(CAPACITY_FULL)`` — distinct from ``NO_EXECUTOR`` so a
+    wake-up can find it when the pool frees up.  The wake helper
+    pins state+revision (TOCTOU defense) and only acts on
+    ``CAPACITY_FULL`` contracts."""
+
+    def test_active_contract_left_alone(self, tmp_path: Path) -> None:
+        conn = _open_store(tmp_path)
+        try:
+            _save_active(conn, "lt-cap-active", root=tmp_path)
+            assert wake_blocked_capacity_full(conn, "lt-cap-active", NOW) is False
+        finally:
+            conn.close()
+
+    def test_blocked_no_executor_left_alone(self, tmp_path: Path) -> None:
+        """A plan-approval wake or a non-cap block must not be reclaimed
+        by the capacity wake helper — they have different triggers."""
+
+        from lhgp.contracts.contract_view import BlockReason
+
+        conn = _open_store(tmp_path)
+        try:
+            _save_active(conn, "lt-cap-noexec", root=tmp_path)
+            update_contract_state(
+                conn,
+                contract_id="lt-cap-noexec",
+                new_state=ContractState.BLOCKED,
+                now=NOW,
+                blocked_reason=BlockReason.NO_EXECUTOR,
+            )
+            assert wake_blocked_capacity_full(conn, "lt-cap-noexec", NOW) is False
+            after = get_contract(conn, "lt-cap-noexec")
+            assert after is not None
+            assert after.state == ContractState.BLOCKED
+            assert after.blocked_reason == BlockReason.NO_EXECUTOR
+        finally:
+            conn.close()
+
+    def test_capacity_full_wakes_to_active(self, tmp_path: Path) -> None:
+        from lhgp.contracts.contract_view import BlockReason
+
+        conn = _open_store(tmp_path)
+        try:
+            _save_active(conn, "lt-cap-wake", root=tmp_path)
+            update_contract_state(
+                conn,
+                contract_id="lt-cap-wake",
+                new_state=ContractState.BLOCKED,
+                now=NOW,
+                blocked_reason=BlockReason.CAPACITY_FULL,
+            )
+            woken = wake_blocked_capacity_full(conn, "lt-cap-wake", NOW)
+            assert woken is True
+            after = get_contract(conn, "lt-cap-wake")
+            assert after is not None
+            assert after.state == ContractState.ACTIVE
+            assert after.blocked_reason is None
+            assert after.next_decision_at is not None
+            assert after.next_decision_at <= NOW
+        finally:
+            conn.close()
+
+    def test_does_not_overwrite_cancellation(self, tmp_path: Path) -> None:
+        """Same TOCTOU defense as wake_blocked_after_plan_approval: a
+        concurrent user cancel must not be overwritten by the wake."""
+
+        from lhgp.contracts.contract_view import BlockReason
+
+        conn = _open_store(tmp_path)
+        try:
+            _save_active(conn, "lt-cap-cancel", root=tmp_path)
+            update_contract_state(
+                conn,
+                contract_id="lt-cap-cancel",
+                new_state=ContractState.BLOCKED,
+                now=NOW,
+                blocked_reason=BlockReason.CAPACITY_FULL,
+            )
+            # Concurrent cancel before the wake's UPDATE runs.
+            update_contract_state(
+                conn,
+                contract_id="lt-cap-cancel",
+                new_state=ContractState.CANCELLED,
+                now=NOW + timedelta(seconds=1),
+            )
+            woken = wake_blocked_capacity_full(conn, "lt-cap-cancel", NOW + timedelta(seconds=2))
+            assert woken is False
+            after = get_contract(conn, "lt-cap-cancel")
+            assert after is not None
+            assert after.state == ContractState.CANCELLED
         finally:
             conn.close()
