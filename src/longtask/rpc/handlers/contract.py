@@ -173,33 +173,13 @@ def handle_contract_auto_approve(
     now: datetime,
     **kwargs: Any,
 ) -> dict[str, Any]:
-    """Daemon-driven auto-approval of a pre-authorised DRAFTED contract.
+    """Daemon-driven DRAFTED → ACTIVE promotion (no Principal gate).
 
-    Used by the ``run_daemon_tick`` loop to push a contract from
-    DRAFTED → ACTIVE when ``auto_approve.enabled=True`` and the
-    current spec is in scope.  The user pre-authorised the scope
-    at submit time (or via ``lhgp plan signoff``); this endpoint
-    is the daemon's executor of that pre-authorisation, not a
-    new approval.
-
-    The handler is **not** Principal-gated — only the daemon
-    actor class is allowed (``AUTO_APPROVE_ALLOWED_CLIENTS``).
-    The promotion still uses the same ``update_contract_state``
-    state-machine path as :func:`handle_contract_approve`, so
-    revision CAS, audit event, and projection rebuild are
-    identical to a user-driven approval.
-
-    Submit-and-leave flow:
-
-    1. Model caller submits goal with stage specs, including
-       ``auto_approve.enabled=True`` and the action scope.
-    2. Daemon tick scans DRAFTED contracts, calls
-       ``contract/auto-approve`` for those in scope.
-    3. Contract moves to ACTIVE, dispatcher picks it up, executor
-       runs.
-    4. On verifier success, ``_auto_create_next_stage_contract``
-       creates the next stage's contract; the next tick (or the
-       same one) auto-approves it; the chain continues.
+    The user pre-authorised the contract at submit time
+    (``auto_approve.enabled=True``); this endpoint is the
+    daemon's executor of that pre-authorisation.  Only the
+    daemon-class client is allowed (``_AUTO_APPROVE_ALLOWED_CLIENTS``);
+    a model client cannot promote its own contract.
     """
     contract_id = require_contract_id(envelope.params)
     if envelope.client_id not in _AUTO_APPROVE_ALLOWED_CLIENTS:

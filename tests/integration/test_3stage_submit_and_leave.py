@@ -97,14 +97,9 @@ def _caps() -> Capabilities:
 
 
 def _executor_code() -> str:
-    """Real subprocess body used by every stage's executor.
-
-    The script reads the contract's objective from the task_prompt
-    (last argv element), extracts the target file name, and writes
-    the artifact. For ``summary.md`` it uses a marker file so the
-    first invocation produces an empty file (which the
-    ``file-not-empty`` typed check rejects) and subsequent
-    invocations produce a valid artifact.
+    """Real subprocess body: writes the target file; first
+    invocation against ``summary.md`` is rigged to fail (empty
+    file) so the failure+retry path can be exercised.
     """
     return (
         "import re, sys\n"
@@ -128,19 +123,8 @@ def _executor_code() -> str:
 
 
 def _verifier_code() -> str:
-    """Verifier subprocess body — reads the contract's
-    acceptance checks from the task_prompt, performs each
-    machine check against the workspace, and emits a
-    ``model_verdict`` block carrying the per-check outcome.
-
-    The runner's typed-check evaluation also runs when the
-    contract declares a ``workspace_root`` in its
-    hard_constraints; this script's per-check results are
-    cross-checked by the runner so the verdict block is
-    non-empty (which is what makes
-    ``parse_verdict_block`` return a ``ModelVerdict`` and
-    keeps the runner from flagging the attempt as
-    ``verification-evidence-missing``).
+    """Verifier subprocess body: read the contract's
+    acceptance checks, run each, emit a lhgp-verdict block.
     """
     return (
         "import json, re, sys\n"
@@ -168,12 +152,8 @@ def _verifier_code() -> str:
 
 
 def _build_registry(workspace: Path) -> ExecutorRegistry:
-    """One executor + one verifier, both real subprocesses.
-
-    Both run in the shared workspace dir via ``LaunchSpec.cwd``
-    so the contract's hard_constraints need not carry a
-    ``workspace_root``; the adapter falls back to launch.cwd
-    for synthesized contracts that omit it.
+    """One executor + one verifier, both real subprocesses,
+    sharing the test's workspace dir.
     """
     registry = ExecutorRegistry()
     registry.register(
@@ -244,20 +224,11 @@ def _stage_spec(stage_id: str, target: str, kind: str) -> dict:
 def _stage_draft(stage_id: str, target: str, kind: str, workspace: Path) -> dict:
     """Inline draft for an auto-created stage.
 
-    The spec-only synthesizer path builds hard_constraints from
-    the spec envelope and does not propagate a workspace_root;
-    the runner's typed-check evaluation needs ``workspace_root``
-    on the persisted contract to know where to read the
-    artifact for verification. To keep the chain end-to-end
-    without touching the synthesizer, we attach a small inline
-    draft (the spec remains the source of truth for the
-    acceptance criteria) so ``_auto_create_next_stage_contract``
-    uses the inline path. The auto-create path itself — fresh
-    contract_id, goal-prepare, auto-approve — is still
-    exercised. The inline draft carries ``auto_approve`` so the
-    submit-and-leave path can promote it without a follow-up
-    RPC, matching the per-stage pre-authorisation a real
-    submitter would have declared on the spec.
+    The spec-only synthesizer does not propagate ``workspace_root``;
+    the inline draft carries one so the runner's typed-check
+    evaluation can read the artifact.  ``auto_approve`` is
+    included so the submit-and-leave path promotes the new
+    contract to ACTIVE without a follow-up RPC.
     """
     return {
         "title": f"{stage_id} 合同",
@@ -309,17 +280,12 @@ def _stage_draft(stage_id: str, target: str, kind: str, workspace: Path) -> dict
 
 
 def _insert_goal_with_3_stages(conn: sqlite3.Connection, workspace: Path) -> None:
-    """Goal plan with stage 1 bound to the inline-draft contract
-    and stages 2/3 carrying both a spec and an inline draft.
-
-    Each stage is pre-authorised (``auto_approve.enabled=True``
-    on the spec side and on the bootstrap contract for stage 1)
-    so the chain can be promoted without a caller follow-up.
-    The inline drafts for stages 2/3 are needed because the
-    spec-only synthesizer path does not currently propagate a
-    ``workspace_root``; the auto-create path
-    (``_auto_create_next_stage_contract``) is still exercised
-    in full — fresh contract_id, goal/prepare, auto-approve.
+    """Goal plan: stage 1 bound to the inline-draft contract;
+    stages 2/3 carry both a spec and an inline draft (the
+    latter because the spec-only synthesizer does not yet
+    propagate ``workspace_root``).  Every stage declares
+    ``auto_approve.enabled=True`` so the chain runs without
+    a follow-up RPC.
     """
     plan = {
         "stages": [
@@ -440,16 +406,11 @@ def _drain_attempts(
     *,
     timeout: float = 8.0,
 ) -> None:
-    """Drive the runner until no attempt for the contract is
-    running AND no new attempt is being spawned.
+    """Drive the runner until the contract's attempt set is
+    empty AND no new attempt is being spawned.
 
-    The runner's ``_dispatch_verifier`` adds a fresh verifier
-    attempt to ``_running`` right after the executor's
-    ``_finish_attempt`` releases the executor, so the dict
-    briefly looks empty between the two. The drain must
-    therefore observe a stable empty state across two
-    consecutive polls (no new dispatch sneaks in between)
-    before returning.
+    Two consecutive empty polls (the executor finishes, the
+    verifier is queued) are required before returning.
     """
     deadline = time.monotonic() + timeout
     stable_since: float | None = None
@@ -474,9 +435,8 @@ def _start_attempt(
     runner: AttemptRunner,
     tick_result: dict,
 ) -> None:
-    """Spawn the subprocess for the single attempt ``run_daemon_tick``
-    dispatched this round. Asserts exactly one attempt was
-    dispatched to keep the test focused on the chain.
+    """Spawn the subprocess for the single attempt dispatched
+    this tick (asserts exactly one).
     """
     started = tick_result.get("attempts_started", [])
     assert len(started) == 1, f"expected exactly 1 dispatched attempt per tick, got {started}"
@@ -684,14 +644,8 @@ def test_3stage_submit_and_leave_with_restart(tmp_path: Path) -> None:
     # either case, the next tick is the one that sees
     # stage-2 COMPLETE and triggers the goal advance + stage-3
     # auto-create.
-    tick5 = run_daemon_tick(root, conn, registry, now=NOW + timedelta(seconds=8))
-    print("DEBUG tick5 attempts_started:", tick5.get("attempts_started"))
-    print("DEBUG tick5 events:", tick5.get("events_emitted"))
+    run_daemon_tick(root, conn, registry, now=NOW + timedelta(seconds=8))
     stage2_final = get_contract(conn, stage2_cid)
-    print(
-        f"DEBUG stage 2 state after tick5: {stage2_final.state},"
-        f" acceptance: {stage2_final.acceptance_status}"
-    )
     assert stage2_final is not None
     assert stage2_final.state == ContractState.COMPLETE
     assert stage2_final.acceptance_status.value == "passed"
@@ -711,11 +665,9 @@ def test_3stage_submit_and_leave_with_restart(tmp_path: Path) -> None:
             (GOAL_ID, STAGE_1_CID, stage2_cid),
         ).fetchall()
     ]
-    print(f"DEBUG stage3_cids after tick5: {stage3_cids}")
     assert len(stage3_cids) == 1
     stage3_cid = stage3_cids[0]
     stage3 = get_contract(conn, stage3_cid)
-    print(f"DEBUG stage 3 state: {stage3.state}")
     assert stage3 is not None
     assert stage3.state == ContractState.ACTIVE, (
         f"stage-3 must be ACTIVE via auto-approve; got {stage3.state}"

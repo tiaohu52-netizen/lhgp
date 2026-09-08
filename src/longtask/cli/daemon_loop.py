@@ -737,16 +737,15 @@ def _auto_approve_drafted_contracts(
     now: datetime,
     emit_fn: Callable[[str], None] | None,
 ) -> int:
-    """submit-and-leave 扫尾：把 DRAFTED 合同按 auto_approve 范围升级为 ACTIVE。
+    """Sweep DRAFTED contracts through auto_approve → ACTIVE.
 
-    入口（daemon 启动）+ 每轮 tick 顶部都会调一次；store 原语
-    :func:`auto_approve_drafted_contract` 自身已吞掉
-    RevisionConflictError / StoreError 并返回 False，因此
-    - 第二次连扫同集合合同全部是 no-op（DRAFTED → ACTIVE 已发生，不在结果里）；
-    - 任何单一合同的失败不会传染到本轮 tick 其它合同或 dispatcher。
-    本函数再加一层 try/except 是 belt-and-suspenders：哪怕 store 抛出
-    未声明的异常（例如 contract 视图字段异常触发 AttributeError），
-    sweep 仍能给剩余合同一个机会，并把异常信息降级成一条 emit。
+    Called at daemon startup and at the top of each tick; the
+    store primitive swallows the documented race errors and
+    returns False, so a second sweep is a no-op.  An extra
+    try/except around the per-contract call turns unexpected
+    errors (e.g. AttributeError on a stale view) into an
+    emit, so the sweep keeps going for the rest of the
+    contracts.
     """
     try:
         drafted = list_drafted_contracts(conn)

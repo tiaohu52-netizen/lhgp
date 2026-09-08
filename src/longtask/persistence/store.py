@@ -464,38 +464,30 @@ def auto_approve_drafted_contract(
     contract: Any,
     now: datetime,
 ) -> bool:
-    """Promote a DRAFTED contract to ACTIVE if it is pre-authorised.
-
-    Submit-and-leave primitive: the user pre-authorised the
-    contract at submit time (``auto_approve.enabled=True`` plus
-    the action scope). The daemon tick calls this to push the
-    contract from DRAFTED to ACTIVE so the dispatcher can pick
-    it up — without the caller coming back.
-
-    Returns ``True`` if a transition happened, ``False`` if the
-    contract was not eligible (not in DRAFTED, or
-    auto_approve disabled, or no scope match).
+    """Promote a DRAFTED contract to ACTIVE when pre-authorised.
 
     Lives in the persistence layer (not the daemon CLI) so the
-    ``rpc → cli is forbidden`` arch rule is not violated when
-    the RPC handler chain needs to invoke it.
-
-    No Principal check: this is the executor of a pre-existing
-    user authorisation, not a new approval. The MCP/HTTP/CLI
-    path that initially submitted the contract already ran the
-    Principal gate (or was called by the daemon which is the
-    only path that exposes this function to ticks).
+    ``rpc → cli is forbidden`` arch rule holds.  Best-effort:
+    returns False on RevisionConflictError / StoreError so a
+    single bad contract cannot block the tick.
     """
     if contract.state != ContractState.DRAFTED:
         return False
     if not contract.draft.auto_approve.enabled:
         return False
     try:
+        # Revision CAS engaged (4th-round verifier 2 finding):
+        # passing expected_revision prevents a duplicate state
+        # write + extra revision bump + duplicate
+        # CONTRACT_STATE_CHANGED event if the contract was
+        # promoted by another path between the snapshot and
+        # the per-contract call.
         update_contract_state(
             conn,
             contract_id=contract.contract_id,
             new_state=ContractState.ACTIVE,
             now=now,
+            expected_revision=int(contract.revision),
             actor="daemon",
         )
     except (RevisionConflictError, StoreError):

@@ -1110,26 +1110,14 @@ def _synthesize_stage_draft(
     now: datetime,
     conn: sqlite3.Connection | None = None,
 ) -> dict[str, Any]:
-    """Build a usable contract draft from a stage's structured spec.
+    """Build a contract draft from a stage's structured spec.
 
-    Used when the stage entry does not pre-supply a ``draft`` (the
-    model caller only wrote a spec). The synthesized draft carries
-    every field the user declared in the spec that ``ContractDraft``
-    can hold: title, objective, deadline, hard_constraints
-    (modifiable scope), acceptance (boolean spec + typed checks for
-    plan-gate coverage), and budget. The remaining spec fields
-    (functional/interfaces/constraints/out_of_scope, dependencies,
-    artifacts) are forwarded into ``context`` so the next executor
-    can read them. The previous stage's verifier evidence is also
-    placed in ``context.previous_evidence`` for the same reason.
-
-    When ``conn`` is provided, the previous stage's contract
-    ``auto_approve`` is propagated to the synthesized draft via
-    :meth:`AutoApprove.inherit_from` so a user pre-authorised at
-    submission time remains in effect across the next-stage
-    contract.  ``conn`` defaults to ``None`` so callers without a
-    connection (unit tests, dry-runs) keep the legacy
-    no-``auto_approve`` behaviour.
+    Carries every spec field the ``ContractDraft`` can hold
+    (title/objective/deadline/acceptance/budget) and forwards
+    the rest (scope, dependencies, artifacts) into ``context``.
+    When ``conn`` is given, the previous stage's ``auto_approve``
+    is propagated via :meth:`AutoApprove.inherit_from` so
+    pre-authorisation carries across stages.
     """
     raw_spec: dict[str, Any] = dict(stage["spec"]) if isinstance(stage.get("spec"), dict) else {}
     # 4th-round review (2026-09-08): ``validate_stage_entry``
@@ -1262,14 +1250,9 @@ def _resolve_previous_auto_approve(
     stage: dict[str, Any],
     conn: sqlite3.Connection | None,
 ) -> AutoApprove | None:
-    """Look up the previous stage's contract and return its ``auto_approve``.
-
-    Returns ``None`` when ``conn`` is missing, the goal has no
-    plan/stages, ``stage`` is not in the plan, there is no previous
-    stage, the previous stage has no bound ``contract_id``, or the
-    contract cannot be fetched.  These are the silent-degrade cases
-    that keep the synthesized draft safe and behaviour-equivalent
-    to the pre-fix release.
+    """Return the previous stage's contract ``auto_approve``,
+    or ``None`` for any silent-degrade case (no conn, no plan,
+    no prev stage, no contract_id, contract missing).
     """
     if conn is None:
         return None
