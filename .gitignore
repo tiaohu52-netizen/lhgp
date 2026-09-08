@@ -47,3 +47,25 @@ promo/demo-data/
 
 # 一次性 scratch / 调试日志（被移动到 .scratch-trash/ 后由本规则忽略）
 .scratch-trash/
+# 老路径 scratch-trash/（已弃用，但仍可能留有调试文件）
+scratch-trash/
+# 一次性的 quality probe / 调试日志（不是 .quality/）
+quality/probe_*.py
+quality/check_*.py
+quality/debug_*.py
+quality/fix_*.py
+quality/inline_*.py
+quality/update_*.py
+quality/find_*.py
+quality/clean_*.py
+quality/patch_*.py
+quality/poll_*.py
+quality/probe_*.py
+quality/msg.txt
+quality/commit_msg*.txt
+quality/gate-run*.log
+quality/last-gate.log
+quality/pytest-run.log
+quality/qg_test.log
+quality/probe_save.py
+quality/probe_sql.py

@@ -909,3 +909,187 @@ class TestMCPErrors:
                 assert expected in resp["error"]["message"]
         finally:
             _stop_mcp(proc)
+
+
+# ── 5th-round follow-up: end-to-end MCP submit-and-leave
+# with Goal-level pre_authorized + execution_config
+# ────────────────────────────────────────────────────────
+
+
+def test_mcp_submit_and_leave_e2e_with_goal_pre_authorized_and_execution_config(
+    tmp_path: Path,
+) -> None:
+    """MCP submit-and-leave happy path: a single model
+    call to ``lhgp_prepare_contract`` + ``lhgp_submit_plan``
+    lands a contract whose verification path the daemon
+    can finish without a human follow-up, because the
+    bound Goal's ``plan.pre_authorized`` covers the model's
+    claimed action scope and the model has supplied a
+    complete draft (workspace + executor_grant).
+
+    5th-round follow-up: the previous flow let the model
+    self-authorize via the per-contract ``auto_approve``;
+    the trusted source is now ``Goal.plan.pre_authorized``
+    (user-pinned).  This test exercises the MCP submit
+    path with the Goal-level grant, so a regression in
+    the parse-time strip / the submit-plan
+    pre-authorisation check is caught end-to-end.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from lhgp.contracts.acceptance import Acceptance
+    from lhgp.contracts.budget import Budget
+    from lhgp.contracts.contract_draft import ContractDraft
+    from longtask.persistence.store import (
+        StoreConfig,
+        connect,
+        ensure_schema,
+        patch_goal,
+        save_contract,
+    )
+
+    root = tmp_path / "data"
+    root.mkdir()
+    workspace = root / "ws"
+    workspace.mkdir()
+
+    conn = connect(StoreConfig(db_path=root / "state.db"))
+    ensure_schema(conn)
+    try:
+        goal_id = "lt-mcp-sl-e2e"
+        # Bootstrap the goal row (auto-creates via save_contract).
+        save_contract(
+            conn,
+            draft=ContractDraft(
+                title="goal bootstrap",
+                objective="x",
+                deadline_at=datetime.now(UTC) + timedelta(hours=2),
+                hard_constraints={},
+                acceptance=Acceptance(standard="s", checks=("c1",)),
+                workload_initial_hours=1.0,
+                budget=Budget(5, 1, 1, 30, 1048576, 2),
+            ),
+            contract_id=f"{goal_id}-bootstrap",
+            now=datetime.now(UTC),
+            actor="user",
+            goal_id=goal_id,
+        )
+        # Pin pre_authorized on the Goal — the user-side
+        # grant that the MCP submit-plan path reads.
+        patch_goal(
+            conn,
+            goal_id=goal_id,
+            now=datetime.now(UTC),
+            expected_revision=1,
+            actor="user",
+            plan={
+                "pre_authorized": {
+                    "enabled": True,
+                    "actions": ["verify acceptance", "write file"],
+                },
+            },
+        )
+        from longtask.adapters.fake_executor import FAKE_MANIFEST
+        from longtask.adapters.registry import (
+            CostHint,
+            ExecutorRegistry,
+            LaunchSpec,
+            RegistryEntry,
+        )
+        from longtask.mcp_server import tool_prepare_contract, tool_submit_plan
+        from longtask.persistence.store import get_contract
+
+        registry = ExecutorRegistry()
+        registry.register(
+            RegistryEntry(
+                id="exec-mcp-sl",
+                kind="fake",
+                launch=LaunchSpec(),
+                capabilities=FAKE_MANIFEST.capabilities,
+                limits={"max_concurrent_attempts": 1},
+                cost_hint=CostHint.LOW,
+                enabled=True,
+            )
+        )
+
+        # 1) lhgp_prepare_contract — the model supplies a
+        # full draft (workspace + executor grant inline).
+        # The MCP path strips any client-side auto_approve
+        # and binds the contract to the Goal.
+        prepared = tool_prepare_contract(
+            {
+                "title": "submit-and-leave happy path",
+                "objective": "verify acceptance — write the verdict block",
+                "deadline_at": (datetime.now(UTC) + timedelta(hours=2)).isoformat(),
+                "acceptance_standard": "plan approved",
+                "acceptance_checks": ["plan approved"],
+                "goal_id": goal_id,
+                "hard_constraints": {
+                    "file_effects": {
+                        "mode": "workspace-write",
+                        "workspace_root": str(workspace),
+                    }
+                },
+                "authority": {
+                    "executor_policy": "explicit_allow",
+                    "executors": [
+                        {
+                            "executor_id": "exec-mcp-sl",
+                            "models": ["*"],
+                            "roles": ["executor", "verifier"],
+                        }
+                    ],
+                },
+            },
+            {"conn": conn, "registry": registry, "root": tmp_path},
+        )
+        assert prepared.get("ok") is True
+        cid = prepared["result"]["contract_id"]
+
+        view = get_contract(conn, cid)
+        assert view is not None
+        # 2) The MCP path stripped the model's
+        # auto_approve (if any) — the contract has no
+        # self-sign.
+        assert view.draft.auto_approve.enabled is False, (
+            f"MCP-prepared contract must NOT carry the model's "
+            f"auto_approve claim; got {view.draft.auto_approve!r}"
+        )
+        # 3) lhgp_submit_plan — the plan claims the
+        # ``verify acceptance`` action which is inside the
+        # Goal's pre_authorized scope.  The MCP path's
+        # submit-plan check (now reading the Goal's grant)
+        # auto-approves the plan.
+        result = tool_submit_plan(
+            {
+                "contract_id": cid,
+                "steps": [
+                    {
+                        "step_id": 1,
+                        "action": "verify acceptance",
+                        "target": "plan approved",
+                        "rationale": (
+                            "verify acceptance of objective 'submit-and-leave happy path'"
+                        ),
+                        "expected_outcome": "plan approved",
+                    }
+                ],
+            },
+            {"conn": conn, "registry": registry, "root": tmp_path},
+        )
+        assert result["approved"] is True, (
+            f"MCP submit_plan must auto-approve when the claimed "
+            f"action is inside the Goal's pre_authorized scope; "
+            f"got {result!r}"
+        )
+        # 4) The auto-approved plan lands a PLAN_APPROVED
+        # event in the audit log.
+        from lhgp.persistence.events import EventType
+        from lhgp.persistence.events_query import get_events
+
+        events = get_events(conn, contract_id=cid)
+        assert EventType.PLAN_APPROVED in [e.event_type for e in events], (
+            f"MCP submit-and-leave must emit PLAN_APPROVED; got {[e.event_type for e in events]}"
+        )
+    finally:
+        conn.close()
