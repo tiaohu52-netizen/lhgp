@@ -309,3 +309,142 @@ class TestPlanStepDataclass:
         # No __dict__ means a typo on assignment cannot silently create an
         # extra attribute — surfaces bugs at write time.
         assert "__dict__" not in dir(make_step())
+
+
+class TestAutoApproveScope:
+    """3rd-round review (2026-09-08): the user can declare an
+    auto-approve scope on the contract.  Plans that stay inside
+    the scope are auto-approved; plans that step outside are
+    flagged for sign-off (validated but not dispatched)."""
+
+    def _view(
+        self,
+        enabled: bool = True,
+        actions: tuple[str, ...] = ("write file", "run command"),
+    ):
+        from dataclasses import replace as dc_replace
+
+        from lhgp.contracts.auto_approve import AutoApprove
+
+        base = make_view(
+            objective="fix the login bug",
+            checks=("file-exists:result.txt",),
+        )
+        return dc_replace(
+            base,
+            draft=dc_replace(
+                base.draft,
+                auto_approve=AutoApprove(enabled=enabled, actions=actions),
+            ),
+        )
+
+    def test_in_scope_action_auto_approves(self) -> None:
+        from lhgp.contracts.plan import Plan as PlanModel
+        from lhgp.contracts.plan import PlanStep
+
+        view = self._view(enabled=True, actions=("write file", "run command"))
+        plan = PlanModel(
+            contract_id="lt-aa01",
+            steps=(
+                PlanStep(
+                    step_id=1,
+                    action="write file",
+                    target="result.txt",
+                    rationale="fix the login bug; landing result.txt",
+                    expected_outcome="file-exists:result.txt",
+                ),
+            ),
+            submitted_at=NOW,
+            submitted_by="agent:dev",
+        )
+        result = plan.validate(view)
+        assert result.approved is True
+        assert result.requires_signoff is False
+
+    def test_out_of_scope_action_requires_signoff(self) -> None:
+        from lhgp.contracts.plan import Plan as PlanModel
+        from lhgp.contracts.plan import PlanStep
+
+        # Scope only covers "read file", not "write file".
+        view = self._view(enabled=True, actions=("read file",))
+        plan = PlanModel(
+            contract_id="lt-aa02",
+            steps=(
+                PlanStep(
+                    step_id=1,
+                    action="write file",
+                    target="result.txt",
+                    rationale="fix the login bug; landing result.txt",
+                    expected_outcome="file-exists:result.txt",
+                ),
+            ),
+            submitted_at=NOW,
+            submitted_by="agent:dev",
+        )
+        result = plan.validate(view)
+        # Structurally valid but the action is out of scope.
+        assert result.approved is True
+        assert result.requires_signoff is True
+
+    def test_disabled_scope_always_requires_signoff(self) -> None:
+        from lhgp.contracts.plan import Plan as PlanModel
+        from lhgp.contracts.plan import PlanStep
+
+        # enabled=False with any actions list — still requires sign-off.
+        view = self._view(enabled=False, actions=("write file",))
+        plan = PlanModel(
+            contract_id="lt-aa03",
+            steps=(
+                PlanStep(
+                    step_id=1,
+                    action="write file",
+                    target="result.txt",
+                    rationale="fix the login bug; landing result.txt",
+                    expected_outcome="file-exists:result.txt",
+                ),
+            ),
+            submitted_at=NOW,
+            submitted_by="agent:dev",
+        )
+        result = plan.validate(view)
+        assert result.approved is True
+        assert result.requires_signoff is True
+
+    def test_structural_failure_does_not_set_signoff_flag(self) -> None:
+        from lhgp.contracts.plan import Plan as PlanModel
+        from lhgp.contracts.plan import PlanStep
+
+        view = self._view(enabled=True, actions=("write file", "run command"))
+        # Empty rationale is a structural rejection — must not be
+        # mis-categorised as "needs signoff".
+        plan = PlanModel(
+            contract_id="lt-aa04",
+            steps=(
+                PlanStep(
+                    step_id=1,
+                    action="write file",
+                    target="result.txt",
+                    rationale="   ",
+                    expected_outcome="file-exists:result.txt",
+                ),
+            ),
+            submitted_at=NOW,
+            submitted_by="agent:dev",
+        )
+        result = plan.validate(view)
+        assert result.approved is False
+        assert result.requires_signoff is False
+        assert any("rationale" in r for r in result.rejection_reasons)
+
+    def test_serialisation_round_trip(self) -> None:
+        from lhgp.contracts.auto_approve import AutoApprove, from_dict
+
+        original = AutoApprove(
+            enabled=True,
+            actions=("read file", "run command"),
+            max_budget_increment=2,
+            max_spec_changes=1,
+        )
+        d = original.to_dict()
+        restored = from_dict(d)
+        assert restored == original

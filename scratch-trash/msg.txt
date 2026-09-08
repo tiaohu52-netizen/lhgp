@@ -1,0 +1,21 @@
+﻿feat(context): auto-handover detector on active.md size
+
+New check_handover_due(conn, contract_id, attempt_id, low_water=0.6,
+high_water=0.9) in src/longtask/persistence/context.py decides
+when an attempt is at risk of running out of context window:
+
+- >90% of max_bytes → True (overdue)
+- >60% with no HANDOVER_DUE in last 60s → True (warm warning)
+- otherwise False
+
+The daemon loop will call this between attempts and trigger a
+handover.md write + HANDOVER_DUE event when True. The existing
+compile_context_snapshot / _handover_data / directive cursor
+functions are untouched.
+
+TODO: switch the hardcoded event_type string to
+EventType.HANDOVER_DUE once the events.py consolidation commit
+lands.
+
+New tests/unit/test_auto_handover.py covers: missing file,
+small file, overdue, warm warning without/with recent event.

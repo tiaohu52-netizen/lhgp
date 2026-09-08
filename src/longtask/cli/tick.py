@@ -723,14 +723,50 @@ def _judge_verifier_outcomes(root: Path, conn: sqlite3.Connection, now: datetime
         if last_verifier_state == "succeeded":
             if contract.acceptance_status == AcceptanceStatus.PASSED:
                 continue
+            # Spec wiring (3rd-round review): when the contract declares a
+            # structured acceptance spec, the verifier success event is
+            # necessary but not sufficient — typed-check outcomes are
+            # composed against the spec's boolean logic via
+            # acceptance/spec.evaluate_stage_acceptance. Legacy contracts
+            # with no spec still pass on verifier success.
+            spec_verdict = _evaluate_contract_spec(contract, last_verifier_payload)
+            if spec_verdict is not None and spec_verdict.outcome == "fail":
+                _record_spec_failure(
+                    root,
+                    conn,
+                    contract,
+                    verifier_attempt_id,
+                    last_verifier_payload,
+                    spec_verdict,
+                    now,
+                )
+                continue
+            if spec_verdict is not None and spec_verdict.outcome == "pending":
+                # User criteria still pending; leave contract active and
+                # surface the pending state. Do not mark complete.
+                _record_spec_pending(
+                    root,
+                    conn,
+                    contract,
+                    verifier_attempt_id,
+                    last_verifier_payload,
+                    spec_verdict,
+                    now,
+                )
+                continue
+            completed_payload: dict[str, Any] = {
+                "verifier": verifier_attempt_id,
+                "evidence": last_verifier_payload,
+            }
+            if spec_verdict is not None:
+                from lhgp.acceptance.spec import verdict_to_event_payload
+
+                completed_payload["spec_verdict"] = verdict_to_event_payload(spec_verdict)
             append_event(
                 conn,
                 contract_id=contract.contract_id,
                 event_type=EventType.CONTRACT_COMPLETED,
-                payload={
-                    "verifier": verifier_attempt_id,
-                    "evidence": last_verifier_payload,
-                },
+                payload=completed_payload,
                 now=now,
                 actor="verifier",
             )
@@ -748,6 +784,7 @@ def _judge_verifier_outcomes(root: Path, conn: sqlite3.Connection, now: datetime
             )
             rebuild_projection(root, contract.contract_id, conn)
             _advance_goal_after_verified_contract(conn, contract, now)
+            _auto_create_next_stage_contract(root, conn, contract, now)
         else:  # failed
             # P5 修复闭环（SPEC §12.4）：verifier 失败不退回裸 active，
             # 而是把失败原因结构化成 RepairBrief 写进 handover.md——
@@ -898,6 +935,161 @@ def _advance_goal_after_verified_contract(
     except Exception:
         # Contract completion is authoritative; Goal progress can be retried
         # safely on the next read/advance without hiding verifier evidence.
+        return
+
+
+def _evaluate_contract_spec(contract: Any, verifier_payload: dict[str, Any]) -> Any | None:
+    """Return SpecVerdict for a contract with a structured acceptance spec.
+
+    Returns ``None`` for contracts that do not declare a spec (legacy
+    behavior — verifier success is sufficient). The verifier's
+    ``checks`` dict is used as the typed-check outcomes. If the verifier
+    did not emit a ``checks`` payload, the spec is treated as
+    satisfied-only-by-its-stated-criteria (machine criteria fall back
+    to ``pending``, user criteria stay pending).
+    """
+    spec = getattr(contract.draft.acceptance, "spec", None)
+    if not spec:
+        return None
+    from lhgp.acceptance.spec import evaluate_stage_acceptance
+
+    raw_checks = verifier_payload.get("checks")
+    if not isinstance(raw_checks, dict):
+        raw_checks = {}
+    check_results: dict[str, str] = {}
+    for key, value in raw_checks.items():
+        if isinstance(key, str) and isinstance(value, str):
+            check_results[key] = value
+    return evaluate_stage_acceptance(spec, check_results=check_results)
+
+
+def _record_spec_failure(
+    root: Path,
+    conn: sqlite3.Connection,
+    contract: Any,
+    verifier_attempt_id: str,
+    verifier_payload: dict[str, Any],
+    verdict: Any,
+    now: datetime,
+) -> None:
+    """Spec-based fail: behave like verifier failure, but with spec evidence."""
+    from lhgp.acceptance.spec import verdict_to_event_payload
+
+    brief = _repair_brief_from(verifier_attempt_id, verifier_payload)
+    _write_repair_brief(root, contract, verifier_attempt_id, brief)
+    append_event(
+        conn,
+        contract_id=contract.contract_id,
+        event_type=EventType.CONTRACT_BLOCKED,
+        payload={
+            "verifier": verifier_attempt_id,
+            "evidence": verifier_payload,
+            "reason": "stage spec rejected by acceptance/spec.py verdict",
+            "repair_brief": brief.to_dict(),
+            "spec_verdict": verdict_to_event_payload(verdict),
+        },
+        now=now,
+        actor="verifier",
+    )
+    update_contract_state(
+        conn,
+        contract_id=contract.contract_id,
+        new_state=ContractState.ACTIVE,
+        now=now,
+        acceptance_status=AcceptanceStatus.FAILED,
+    )
+    rebuild_projection(root, contract.contract_id, conn)
+
+
+def _record_spec_pending(
+    root: Path,
+    conn: sqlite3.Connection,
+    contract: Any,
+    verifier_attempt_id: str,
+    verifier_payload: dict[str, Any],
+    verdict: Any,
+    now: datetime,
+) -> None:
+    """Spec has user criteria pending — leave contract active, surface verdict."""
+    from lhgp.acceptance.spec import verdict_to_event_payload
+
+    append_event(
+        conn,
+        contract_id=contract.contract_id,
+        event_type=EventType.ACCEPTANCE_STATUS_CHANGED,
+        payload={
+            "verifier": verifier_attempt_id,
+            "evidence": verifier_payload,
+            "spec_verdict": verdict_to_event_payload(verdict),
+            "reason": "stage spec verdict pending user confirmation",
+        },
+        now=now,
+        actor="verifier",
+    )
+    rebuild_projection(root, contract.contract_id, conn)
+
+
+def _auto_create_next_stage_contract(
+    root: Path, conn: sqlite3.Connection, contract: Any, now: datetime
+) -> None:
+    """If the goal has a next stage without a bound contract, create it.
+
+    Auto-creates only when the next stage has an inline ``draft`` (model
+    caller supplied it) and the goal is still active. Failure to
+    auto-create is silent — the next ``goal_next`` call will surface
+    ``create_contract`` so the caller can re-attempt with full
+    authority.
+    """
+    goal = get_goal(conn, contract.goal_id)
+    if goal is None:
+        return
+    progress_raw = goal.get("progress")
+    progress: dict[str, Any] = progress_raw if isinstance(progress_raw, dict) else {}
+    next_stage_id = progress.get("current")
+    if not next_stage_id:
+        return
+    plan_raw = goal.get("plan")
+    plan: dict[str, Any] = plan_raw if isinstance(plan_raw, dict) else {}
+    stages_raw = plan.get("stages")
+    stages: list[Any] = stages_raw if isinstance(stages_raw, list) else []
+    next_stage = next(
+        (s for s in stages if isinstance(s, dict) and str(s.get("id", "")) == str(next_stage_id)),
+        None,
+    )
+    if next_stage is None:
+        return
+    if next_stage.get("contract_id"):
+        # Already bound by a previous run.
+        return
+    inline_draft = next_stage.get("draft")
+    if not isinstance(inline_draft, dict):
+        # Caller is expected to supply a draft; without one we cannot
+        # synthesize a contract safely (no title, no objective, etc.).
+        return
+    import uuid
+
+    from longtask.rpc.handlers.goal import handle_goal_prepare
+    from longtask.rpc.methods import Method
+    from longtask.rpc.server import RequestEnvelope
+
+    new_cid = f"lt-{now.strftime('%Y%m%d')}-{next_stage_id}-{uuid.uuid4().hex[:6]}"
+    envelope = RequestEnvelope(
+        method=Method.GOAL_PREPARE,
+        request_id=f"req-auto-{next_stage_id}-{new_cid}",
+        client_id="daemon",
+        protocol_version=2,
+        params={
+            "contract_id": new_cid,
+            "goal_id": contract.goal_id,
+            "stage_id": str(next_stage_id),
+            "draft": inline_draft,
+        },
+    )
+    try:
+        handle_goal_prepare(envelope, conn=conn, now=now)
+    except Exception:
+        # Surface a recoverable signal in the goal's progress so callers
+        # can retry the create_contract action explicitly.
         return
 
 

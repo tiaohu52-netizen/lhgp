@@ -166,6 +166,10 @@ def test_mcp_submit_plan_approved_emits_audit_events(tmp_path: Path) -> None:
                 "deadline_at": (datetime.now(UTC) + timedelta(hours=2)).isoformat(),
                 "acceptance_standard": "plan approved",
                 "acceptance_checks": ["plan approved"],
+                "auto_approve": {
+                    "enabled": True,
+                    "actions": ["verify acceptance"],
+                },
             },
             {"conn": conn, "registry": ExecutorRegistry(), "root": tmp_path},
         )
@@ -429,7 +433,9 @@ class TestMCPDiscovery:
             # lhgp_deadline_report — 41 + 6 = 47.
             # Plan-mode gate added lhgp_submit_plan — 47 + 1 = 48.
             # attempt/resume entry point added lhgp_resume_attempt — 48 + 1 = 49.
-            assert len(names) == 49
+            # 3rd-round review: plan auto-approve added lhgp_plan_signoff
+            # — 49 + 1 = 50.
+            assert len(names) == 50
             by_name = {item["name"]: item for item in tools["result"]["tools"]}
             assert by_name["lhgp_notifications"]["annotations"] == {
                 "readOnlyHint": True,

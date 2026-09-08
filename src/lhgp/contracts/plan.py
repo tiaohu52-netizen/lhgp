@@ -201,7 +201,25 @@ class Plan:
             )
 
         approved = not reasons
-        return PlanValidation(approved=approved, rejection_reasons=tuple(reasons))
+        # If the plan structurally passes the validator but every
+        # step's action is outside the contract's auto-approve
+        # scope, mark it for explicit sign-off.  The runner cannot
+        # dispatch against it until the user calls
+        # ``lhgp_plan_signoff`` (or the call is via the MCP
+        # tool that already has sign-off baked in).
+        requires_signoff = False
+        if approved and not contract.draft.auto_approve.enabled:
+            requires_signoff = True
+        elif approved:
+            for step in self.steps:
+                if not contract.draft.auto_approve.covers_action(step.action):
+                    requires_signoff = True
+                    break
+        return PlanValidation(
+            approved=approved,
+            rejection_reasons=tuple(reasons),
+            requires_signoff=requires_signoff,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -210,11 +228,18 @@ class PlanValidation:
 
     approved: bool
     rejection_reasons: tuple[str, ...]
+    # True when the plan structurally passes the validator but
+    # is outside the contract's auto-approve scope — the user
+    # must sign off via ``lhgp_plan_signoff`` before the runner
+    # can dispatch against it.  Default False: a rejected plan
+    # is rejected on its merits, not because it needs sign-off.
+    requires_signoff: bool = False
 
     def to_dict(self) -> dict[str, object]:
         return {
             "approved": self.approved,
             "rejection_reasons": list(self.rejection_reasons),
+            "requires_signoff": self.requires_signoff,
         }
 
 

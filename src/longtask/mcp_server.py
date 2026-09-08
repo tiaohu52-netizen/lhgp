@@ -173,6 +173,7 @@ def tool_prepare_contract(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str
         "authority": args.get("authority", {}),
         "attention": args.get("attention", {}),
         "continuity": args.get("continuity", {}),
+        "auto_approve": args.get("auto_approve", {}),
         "context": args.get("context", {}),
         "execution": args.get("execution", {}),
         "client_meta": args.get("client_meta", {}),
@@ -291,6 +292,7 @@ def tool_prepare_goal(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, An
         "authority": args.get("authority", {}),
         "attention": args.get("attention", {}),
         "continuity": args.get("continuity", {}),
+        "auto_approve": args.get("auto_approve", {}),
         "context": args.get("context", {}),
         "execution": args.get("execution", {}),
         "client_meta": args.get("client_meta", {}),
@@ -687,7 +689,10 @@ def tool_submit_plan(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any
         now=now,
         actor=submitted_by,
     )
-    if validation.approved:
+    if validation.approved and not validation.requires_signoff:
+        # 3rd-round review: inside the contract's auto-approve
+        # scope.  The runner can dispatch without an explicit
+        # human sign-off.
         append_event(
             conn,
             contract_id=contract_id,
@@ -698,6 +703,7 @@ def tool_submit_plan(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any
                 "contract_revision": view.revision,
                 "content_hash": plan.content_hash,
                 "accepted_check_ids": list(accepted_check_ids),
+                "auto_approved": True,
             },
             now=now,
             actor="daemon",
@@ -710,6 +716,30 @@ def tool_submit_plan(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any
         from longtask.cli.dispatch import wake_blocked_after_plan_approval
 
         wake_blocked_after_plan_approval(conn, contract_id, now)
+    elif validation.approved and validation.requires_signoff:
+        # 3rd-round review: structurally valid but outside the
+        # contract's auto-approve scope.  Recorded as
+        # PLAN_SUBMITTED (not PLAN_APPROVED) with the out-of-scope
+        # actions listed; the user must call ``lhgp_plan_signoff``
+        # to convert it to PLAN_APPROVED.  No wake here — the
+        # contract stays BLOCKED until the sign-off lands.
+        oos_actions = sorted(
+            {s.action for s in steps if not view.draft.auto_approve.covers_action(s.action)}
+        )
+        append_event(
+            conn,
+            contract_id=contract_id,
+            event_type=EventType.PLAN_REJECTED,
+            payload={
+                "submitted_by": submitted_by,
+                "step_count": len(steps),
+                "rejection_reasons": ["requires_signoff"],
+                "out_of_scope_actions": oos_actions,
+                "auto_approve_enabled": view.draft.auto_approve.enabled,
+            },
+            now=now,
+            actor="daemon",
+        )
     else:
         append_event(
             conn,
@@ -726,9 +756,122 @@ def tool_submit_plan(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any
     return {
         "contract_id": contract_id,
         "approved": validation.approved,
+        "requires_signoff": validation.requires_signoff,
         "rejection_reasons": list(validation.rejection_reasons),
         "step_count": len(steps),
         "submitted_at": now.isoformat(),
+    }
+
+
+def tool_plan_signoff(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    """User explicitly signs off on an out-of-scope plan.
+
+    3rd-round review (2026-09-08): ``lhgp_submit_plan`` auto-approves
+    plans whose every step is inside the contract's ``auto_approve``
+    scope.  Plans that are structurally valid but use actions
+    outside that scope (or have ``auto_approve.enabled=False``) are
+    recorded as ``PLAN_REJECTED`` with a ``requires_signoff`` flag
+    instead.  ``lhgp_plan_signoff`` is the human-in-the-loop
+    channel that promotes one such submission to a real
+    ``PLAN_APPROVED`` event.
+
+    The caller passes the same ``contract_id`` + ``steps`` they
+    submitted, plus a ``signoff_by`` (free-form actor identity,
+    e.g. ``user:human``) and an optional ``note`` for the audit
+    trail.  The validator re-runs to confirm the plan is still
+    structurally valid; if it isn't, no sign-off is recorded and
+    the rejection reasons come back.  The bound plan
+    (``content_hash``) is written to the approval event so
+    subsequent audits can prove which exact plan the user signed.
+    """
+    from datetime import UTC, datetime
+
+    from lhgp.contracts.plan import Plan, PlanStep
+    from lhgp.persistence.events import EventType
+    from lhgp.persistence.events_query import append_event
+    from lhgp.persistence.store import get_contract
+
+    contract_id = str(args.get("contract_id") or "").strip()
+    if not contract_id:
+        raise ValueError("contract_id is required")
+    steps_raw = args.get("steps")
+    if not isinstance(steps_raw, list) or not steps_raw:
+        raise ValueError("steps must be a non-empty array")
+    signoff_by = str(args.get("signoff_by") or "user:human").strip()
+    note = str(args.get("note") or "").strip() or None
+
+    conn = ctx["conn"]
+    view = get_contract(conn, contract_id)
+    if view is None:
+        from longtask.rpc.errors import ErrorCode, RpcError
+
+        raise RpcError(
+            code=ErrorCode.UNKNOWN_CONTRACT,
+            message=f"contract {contract_id} not found",
+        )
+
+    steps: list[PlanStep] = []
+    for index, raw in enumerate(steps_raw, start=1):
+        if not isinstance(raw, dict):
+            raise ValueError(f"steps[{index}] must be an object")
+        try:
+            steps.append(
+                PlanStep(
+                    step_id=int(raw.get("step_id", index)),
+                    action=str(raw.get("action") or ""),
+                    target=str(raw.get("target") or ""),
+                    rationale=str(raw.get("rationale") or ""),
+                    expected_outcome=str(raw.get("expected_outcome") or ""),
+                )
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"steps[{index}] is malformed: {exc}") from exc
+
+    now = datetime.now(UTC)
+    plan = Plan(
+        contract_id=contract_id,
+        steps=tuple(steps),
+        submitted_at=now,
+        submitted_by=signoff_by,
+    )
+    validation = plan.validate(view)
+    if not validation.approved:
+        return {
+            "contract_id": contract_id,
+            "signed_off": False,
+            "rejection_reasons": list(validation.rejection_reasons),
+            "step_count": len(steps),
+        }
+
+    from lhgp.contracts.plan import _extract_check_identifiers
+
+    accepted_check_ids = list(_extract_check_identifiers(view))
+    append_event(
+        conn,
+        contract_id=contract_id,
+        event_type=EventType.PLAN_APPROVED,
+        payload={
+            "signed_off_by": signoff_by,
+            "note": note,
+            "step_count": len(steps),
+            "contract_revision": view.revision,
+            "content_hash": plan.content_hash,
+            "accepted_check_ids": accepted_check_ids,
+            "auto_approved": False,
+        },
+        now=now,
+        actor=signoff_by,
+    )
+    from longtask.cli.dispatch import wake_blocked_after_plan_approval
+
+    wake_blocked_after_plan_approval(conn, contract_id, now)
+    return {
+        "contract_id": contract_id,
+        "signed_off": True,
+        "step_count": len(steps),
+        "signed_off_by": signoff_by,
+        "signed_off_at": now.isoformat(),
+        "content_hash": plan.content_hash,
     }
 
 
@@ -1142,6 +1285,14 @@ TOOLS: dict[
                     },
                     "attention": {"type": "object"},
                     "continuity": {"type": "object"},
+                    "auto_approve": {
+                        "type": "object",
+                        "description": (
+                            "Pre-authorised scope for plan auto-approval.  "
+                            "{enabled, actions, max_budget_increment, max_spec_changes}.  "
+                            "Empty = sign-off always required."
+                        ),
+                    },
                     "context": {"type": "object"},
                     "execution": {"type": "object"},
                     "client_meta": {"type": "object"},
@@ -1305,6 +1456,14 @@ TOOLS: dict[
                     "authority": {"type": "object"},
                     "attention": {"type": "object"},
                     "continuity": {"type": "object"},
+                    "auto_approve": {
+                        "type": "object",
+                        "description": (
+                            "Pre-authorised scope for plan auto-approval.  "
+                            "{enabled: bool, actions: [str], max_budget_increment: int, "
+                            "max_spec_changes: int}.  Empty object = sign-off always required."
+                        ),
+                    },
                     "context": {"type": "object"},
                     "execution": {"type": "object"},
                     "client_meta": {"type": "object"},
@@ -1712,6 +1871,42 @@ TOOLS.update(
                 },
             },
         ),
+        "lhgp_plan_signoff": (
+            tool_plan_signoff,
+            {
+                "description": (
+                    "User sign-off for a plan that lhgp_submit_plan flagged "
+                    "as requires_signoff (out of auto-approve scope).  Re-runs "
+                    "the validator, then writes PLAN_APPROVED on success and "
+                    "wakes the contract.  Returns signed_off=True/False plus "
+                    "rejection_reasons when the plan is no longer structurally "
+                    "valid."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "required": ["contract_id", "steps"],
+                    "properties": {
+                        "contract_id": {"type": "string"},
+                        "signoff_by": {"type": "string"},
+                        "note": {"type": "string"},
+                        "steps": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "required": ["action", "target", "rationale", "expected_outcome"],
+                                "properties": {
+                                    "step_id": {"type": "integer"},
+                                    "action": {"type": "string"},
+                                    "target": {"type": "string"},
+                                    "rationale": {"type": "string"},
+                                    "expected_outcome": {"type": "string"},
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        ),
         "lhgp_compute_diff": (
             tool_compute_diff,
             {
@@ -1909,6 +2104,7 @@ _DESTRUCTIVE_TOOLS = {
     "lhgp_evolve_templates",
     # Plan-mode gate
     "lhgp_submit_plan",
+    "lhgp_plan_signoff",
 }
 _READ_ONLY_TOOLS = {
     "longtask_health",

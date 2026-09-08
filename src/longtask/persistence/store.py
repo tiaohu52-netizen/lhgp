@@ -184,6 +184,8 @@ def _row_to_contract_view(row: sqlite3.Row | tuple[Any, ...]) -> ContractView:
         standard=acceptance_dict["standard"],
         checks=_parse_acceptance_checks(acceptance_dict["checks"]),
         verifier=acceptance_dict.get("verifier", "cross_check"),
+        spec=acceptance_dict.get("spec"),
+        spec_hash=acceptance_dict.get("spec_hash"),
     )
     budget_dict = json.loads(budget_json)
     budget = Budget(
@@ -666,6 +668,8 @@ def save_contract(
                         "standard": draft.acceptance.standard,
                         "checks": _serialize_acceptance_checks(draft.acceptance.checks),
                         "verifier": draft.acceptance.verifier,
+                        "spec": draft.acceptance.spec,
+                        "spec_hash": draft.acceptance.spec_hash,
                     },
                     ensure_ascii=False,
                 ),
@@ -797,6 +801,8 @@ def _write_revision_snapshot(
                     "standard": draft.acceptance.standard,
                     "checks": _serialize_acceptance_checks(draft.acceptance.checks),
                     "verifier": draft.acceptance.verifier,
+                    "spec": draft.acceptance.spec,
+                    "spec_hash": draft.acceptance.spec_hash,
                 },
                 ensure_ascii=False,
             ),
@@ -1124,6 +1130,8 @@ def patch_contract(
                         "standard": new_acceptance.standard,
                         "checks": _serialize_acceptance_checks(new_acceptance.checks),
                         "verifier": new_acceptance.verifier,
+                        "spec": new_acceptance.spec,
+                        "spec_hash": new_acceptance.spec_hash,
                     },
                     ensure_ascii=False,
                 ),

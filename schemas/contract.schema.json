@@ -121,6 +121,15 @@
           "enum": ["cross_check", "none"],
           "default": "cross_check",
           "description": "DESIGN §5.2：默认另派只读核对 attempt"
+        },
+        "spec": {
+          "type": ["object", "null"],
+          "description": "结构化验收 spec（acceptance/spec.py）：dispatch loop 据此合成 verdict",
+          "additionalProperties": true
+        },
+        "spec_hash": {
+          "type": ["string", "null"],
+          "description": "spec 内容哈希，绑合同修订"
         }
       },
       "additionalProperties": false

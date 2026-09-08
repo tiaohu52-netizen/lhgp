@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from lhgp.acceptance.checks import CheckSpec, parse_check
@@ -17,6 +17,16 @@ class Acceptance:
     standard: str
     checks: tuple[str | CheckSpec, ...]
     verifier: str = "cross_check"
+    # Structured acceptance spec (acceptance/spec.py). When present, the
+    # dispatch loop composes typed-check outcomes against the spec's boolean
+    # structure instead of treating verifier success as automatic pass.
+    # Stays ``None`` on contracts that do not declare a staged spec; legacy
+    # behavior (verifier success == pass) is preserved for those.
+    spec: dict[str, Any] | None = None
+    # Hash of the spec content captured when the contract was prepared. The
+    # gate enforcer rejects any later spec edit that does not bump the
+    # contract revision, so the spec binding cannot be silently swapped.
+    spec_hash: str | None = field(default=None)
 
     def validate(self) -> list[str]:
         errors: list[str] = []
@@ -32,16 +42,27 @@ class Acceptance:
                 errors.append(f"acceptance.checks[{index}] must be a non-empty string or object")
         if self.verifier not in VALID_VERIFIER_KINDS:
             errors.append(f"acceptance.verifier unknown: {self.verifier}")
+        if self.spec is not None:
+            from lhgp.acceptance.spec import validate_spec
+
+            errors.extend(f"acceptance.spec.{e}" for e in validate_spec(self.spec))
         return errors
 
     @classmethod
     def from_values(
-        cls, standard: str, checks: tuple[str | dict[str, Any], ...], verifier: str
+        cls,
+        standard: str,
+        checks: tuple[str | dict[str, Any], ...],
+        verifier: str,
+        spec: dict[str, Any] | None = None,
+        spec_hash: str | None = None,
     ) -> Acceptance:
         return cls(
             standard=standard,
             checks=tuple(parse_check(item) for item in checks),
             verifier=verifier,
+            spec=spec,
+            spec_hash=spec_hash,
         )
 
 

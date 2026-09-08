@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """LHGP promo video renderer (Windows-native fallback for `vhs promo/demo.tape`).
 
 Pipeline:
@@ -18,7 +17,6 @@ import os
 import re
 import shutil
 import subprocess
-import sys
 import tempfile
 import unicodedata
 from pathlib import Path
@@ -58,10 +56,17 @@ FOOTER = "lhgp \u00b7 deadline contract hub"
 FPS = 30
 
 NAMED = {
-    "green": GREEN, "red": RED, "yellow": YELLOW,
-    "cyan": CYAN, "magenta": MAUVE, "blue": (0x89, 0xB4, 0xFA),
-    "white": (0xFF, 0xFF, 0xFF), "black": (0x00, 0x00, 0x00),
-    "brown": (0xFA, 0xB3, 0x87), "grey": DIM, "default": FG,
+    "green": GREEN,
+    "red": RED,
+    "yellow": YELLOW,
+    "cyan": CYAN,
+    "magenta": MAUVE,
+    "blue": (0x89, 0xB4, 0xFA),
+    "white": (0xFF, 0xFF, 0xFF),
+    "black": (0x00, 0x00, 0x00),
+    "brown": (0xFA, 0xB3, 0x87),
+    "grey": DIM,
+    "default": FG,
 }
 
 
@@ -70,7 +75,7 @@ def find_font(names):
         p = Path("C:/Windows/Fonts") / n
         if p.exists():
             return str(p)
-    raise SystemExit("font not found: %s" % names)
+    raise SystemExit(f"font not found: {names}")
 
 
 FONT_PATH = find_font(["consola.ttf"])
@@ -113,20 +118,22 @@ def colorize_cli_output(text: str) -> str:
     text = text.replace("[FAIL]", "\x1b[31m[FAIL]\x1b[0m")
     text = text.replace("ALL SYSTEMS GO", "\x1b[32m\x1b[1mALL SYSTEMS GO\x1b[0m")
     text = re.sub(r"^(Error \[)", "\x1b[31m\\1", text, flags=re.M)
-    text = text.replace("deadline_at must carry an explicit timezone",
-                        "deadline_at must carry an explicit timezone\x1b[0m")
+    text = text.replace(
+        "deadline_at must carry an explicit timezone",
+        "deadline_at must carry an explicit timezone\x1b[0m",
+    )
     text = text.replace("[watch]", "\x1b[36m[watch]\x1b[0m")
     return text
 
 
 # ------------------------------------------------------------ demo steps ----
 PREPARE_REJECT = (
-    'lhgp --data-dir promo/demo-data prepare --contract-id lt-20260905-demo '
+    "lhgp --data-dir promo/demo-data prepare --contract-id lt-20260905-demo "
     '--title "Quarterly report" --objective "Publish Q3 report with reviewed '
     'financials" --deadline "2026-10-05T18:00:00"'
 )
 PREPARE_OK = (
-    'lhgp --data-dir promo/demo-data prepare --contract-id lt-20260905-demo '
+    "lhgp --data-dir promo/demo-data prepare --contract-id lt-20260905-demo "
     '--title "Quarterly report" --objective "Publish Q3 report with reviewed '
     'financials" --deadline "2026-10-05T18:00:00+08:00" --workload-hours 12'
 )
@@ -138,8 +145,9 @@ WATCH_CMD = (
 
 def run(args) -> str:
     env = dict(os.environ, PYTHONUTF8="1")
-    p = subprocess.run(args, cwd=ROOT, env=env, capture_output=True, text=True,
-                       encoding="utf-8", timeout=120)
+    p = subprocess.run(
+        args, cwd=ROOT, env=env, capture_output=True, text=True, encoding="utf-8", timeout=120
+    )
     return (p.stdout + p.stderr).replace("\r\n", "\n").rstrip("\n")
 
 
@@ -155,24 +163,72 @@ def build_outputs():
 
     base = [str(LHGP), "--data-dir", DATA_DIR]
     outs = []
-    outs.append(run(base + ["doctor"]))
-    outs.append(run(base + ["prepare", "--contract-id", "lt-20260905-demo",
-                            "--title", "Quarterly report",
-                            "--objective", "Publish Q3 report with reviewed financials",
-                            "--deadline", "2026-10-05T18:00:00"]))
-    outs.append(run(base + ["prepare", "--contract-id", "lt-20260905-demo",
-                            "--title", "Quarterly report",
-                            "--objective", "Publish Q3 report with reviewed financials",
-                            "--deadline", "2026-10-05T18:00:00+08:00",
-                            "--workload-hours", "12"]))
-    outs.append(run(base + ["get", "lt-20260905-demo",
-                            "--decision-limit", "1", "--attempt-limit", "1"]))
-    outs.append(run(base + ["approve", "lt-20260905-demo"]))
-    outs.append(run(base + ["request-verification", "lt-20260905-demo",
-                            "--reason", "Deliverables ready for acceptance review"]))
-    outs.append(run([str(VENV_PY), "-m", "longtask.cli.watch",
-                     "--data-dir", DATA_DIR,
-                     "--contract", "lt-20260905-demo", "--follow", "--for", "6"]))
+    outs.append(run([*base, "doctor"]))
+    outs.append(
+        run(
+            [
+                *base,
+                "prepare",
+                "--contract-id",
+                "lt-20260905-demo",
+                "--title",
+                "Quarterly report",
+                "--objective",
+                "Publish Q3 report with reviewed financials",
+                "--deadline",
+                "2026-10-05T18:00:00",
+            ]
+        )
+    )
+    outs.append(
+        run(
+            [
+                *base,
+                "prepare",
+                "--contract-id",
+                "lt-20260905-demo",
+                "--title",
+                "Quarterly report",
+                "--objective",
+                "Publish Q3 report with reviewed financials",
+                "--deadline",
+                "2026-10-05T18:00:00+08:00",
+                "--workload-hours",
+                "12",
+            ]
+        )
+    )
+    outs.append(
+        run([*base, "get", "lt-20260905-demo", "--decision-limit", "1", "--attempt-limit", "1"])
+    )
+    outs.append(run([*base, "approve", "lt-20260905-demo"]))
+    outs.append(
+        run(
+            [
+                *base,
+                "request-verification",
+                "lt-20260905-demo",
+                "--reason",
+                "Deliverables ready for acceptance review",
+            ]
+        )
+    )
+    outs.append(
+        run(
+            [
+                str(VENV_PY),
+                "-m",
+                "longtask.cli.watch",
+                "--data-dir",
+                DATA_DIR,
+                "--contract",
+                "lt-20260905-demo",
+                "--follow",
+                "--for",
+                "6",
+            ]
+        )
+    )
     return outs
 
 
@@ -186,12 +242,13 @@ def cell_color(ch, default):
     if isinstance(fg, str) and fg.isdigit():
         return FG  # 256-palette: keep base (demo output does not use it)
     if isinstance(fg, str) and re.fullmatch(r"[0-9a-fA-F]{6}", fg or ""):
-        return tuple(int(fg[i:i + 2], 16) for i in (0, 2, 4))
+        return tuple(int(fg[i : i + 2], 16) for i in (0, 2, 4))
     return default
 
 
-def render_terminal(sess: Session, cursor: bool = True, slogan: bool = False,
-                    slogan_phase: int = 0) -> Image.Image:
+def render_terminal(
+    sess: Session, cursor: bool = True, slogan: bool = False, slogan_phase: int = 0
+) -> Image.Image:
     img = Image.new("RGB", (W, H), BG)
     d = ImageDraw.Draw(img)
 
@@ -269,8 +326,8 @@ class Encoder:
             f.write("ffconcat version 1.0\n")
             for name, k in self.entries:
                 dur = k / FPS
-                f.write("file '%s'\nduration %.4f\n" % (name, dur))
-            f.write("file '%s'\nduration %.4f\n" % (self.entries[-1][0], 1 / FPS))
+                f.write(f"file '{name}'\nduration {dur:.4f}\n")
+            f.write(f"file '{self.entries[-1][0]}'\nduration {1 / FPS:.4f}\n")
         ffmpeg = shutil.which("ffmpeg")
         if not ffmpeg:
             cand = Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft/WinGet/Links/ffmpeg.exe"
@@ -278,11 +335,33 @@ class Encoder:
                 ffmpeg = str(cand)
         if not ffmpeg:
             raise SystemExit("ffmpeg not found")
-        subprocess.run([ffmpeg, "-y", "-f", "concat", "-safe", "0", "-i", str(lst),
-                        "-vsync", "cfr", "-r", str(FPS), "-c:v", "libx264",
-                        "-pix_fmt", "yuv420p", "-crf", "20",
-                        "-movflags", "+faststart", str(out)],
-                       check=True, capture_output=True)
+        subprocess.run(
+            [
+                ffmpeg,
+                "-y",
+                "-f",
+                "concat",
+                "-safe",
+                "0",
+                "-i",
+                str(lst),
+                "-vsync",
+                "cfr",
+                "-r",
+                str(FPS),
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-crf",
+                "20",
+                "-movflags",
+                "+faststart",
+                str(out),
+            ],
+            check=True,
+            capture_output=True,
+        )
 
 
 def main():
@@ -324,8 +403,9 @@ def main():
     show_output(outs[2], 3.2)
 
     # 4. get
-    type_line("lhgp --data-dir promo/demo-data get lt-20260905-demo "
-              "--decision-limit 1 --attempt-limit 1")
+    type_line(
+        "lhgp --data-dir promo/demo-data get lt-20260905-demo --decision-limit 1 --attempt-limit 1"
+    )
     show_output(outs[3], 2.6)
 
     # 5. approve
@@ -333,14 +413,16 @@ def main():
     show_output(outs[4], 2.6)
 
     # 6. request-verification
-    type_line('lhgp --data-dir promo/demo-data request-verification '
-              'lt-20260905-demo --reason "Deliverables ready for acceptance review"')
+    type_line(
+        "lhgp --data-dir promo/demo-data request-verification "
+        'lt-20260905-demo --reason "Deliverables ready for acceptance review"'
+    )
     show_output(outs[5], 2.6)
 
     # 7. watch: reveal the event stream line by line
     type_line(WATCH_CMD)
     lines = outs[6].split("\n")
-    for i, ln in enumerate(lines):
+    for _i, ln in enumerate(lines):
         sess.feed(colorize_cli_output(ln) + "\r\n")
         enc.push(render_terminal(sess), frames=1)
         enc.hold(1.1 if not ln.startswith("[watch idle") else 0.9)
@@ -357,11 +439,13 @@ def main():
     enc.push(render_terminal(sess, cursor=False, slogan=True, slogan_phase=1), frames=1)
     enc.hold(2.6)
 
-    print("encoding %d clips (~%.1f s)..." % (len(enc.entries), sum(k for _, k in enc.entries) / FPS))
+    print(
+        "encoding %d clips (~%.1f s)..." % (len(enc.entries), sum(k for _, k in enc.entries) / FPS)
+    )
     enc.encode(OUT_MP4)
     shutil.rmtree(enc.dir, ignore_errors=True)
     size = OUT_MP4.stat().st_size
-    print("wrote %s (%.1f KB)" % (OUT_MP4, size / 1024))
+    print(f"wrote {OUT_MP4} ({size / 1024:.1f} KB)")
 
 
 if __name__ == "__main__":

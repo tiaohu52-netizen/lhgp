@@ -13,6 +13,8 @@ from lhgp.contracts.attention import Attention
 from lhgp.contracts.attention import from_dict as attention_from_dict
 from lhgp.contracts.authority import Authority
 from lhgp.contracts.authority import from_dict as authority_from_dict
+from lhgp.contracts.auto_approve import AutoApprove
+from lhgp.contracts.auto_approve import from_dict as auto_approve_from_dict
 from lhgp.contracts.budget import DEFAULT_VERIFICATION_RESERVED, Budget
 from lhgp.contracts.continuity import Continuity
 from lhgp.contracts.continuity import from_dict as continuity_from_dict
@@ -57,6 +59,7 @@ class ContractDraft:
     authority: Authority = field(default_factory=Authority)
     attention: Attention = field(default_factory=Attention)
     continuity: Continuity = field(default_factory=Continuity)
+    auto_approve: AutoApprove = field(default_factory=AutoApprove)
     soft_guidance: dict[str, Any] = field(default_factory=dict)
     context: dict[str, Any] = field(default_factory=dict)
     execution: dict[str, Any] = field(default_factory=dict)
@@ -97,6 +100,8 @@ class ContractDraft:
                     for check in self.acceptance.checks
                 ],
                 "verifier": self.acceptance.verifier,
+                "spec": self.acceptance.spec,
+                "spec_hash": self.acceptance.spec_hash,
             },
             "workload_estimate": {"initial_hours": self.workload_initial_hours},
             "workload_initial_hours": self.workload_initial_hours,
@@ -111,6 +116,7 @@ class ContractDraft:
             "authority": authority_to_dict(self.authority),
             "attention": attention_to_dict(self.attention),
             "continuity": continuity_to_dict(self.continuity),
+            "auto_approve": self.auto_approve.to_dict(),
             "soft_guidance": self.soft_guidance,
             "context": self.context,
             "execution": self.execution,
@@ -130,6 +136,8 @@ def from_dict(data: dict[str, Any]) -> ContractDraft:
         standard=str(acceptance_raw["standard"]),
         checks=tuple(parse_check(c) for c in acceptance_raw.get("checks") or ()),
         verifier=str(acceptance_raw.get("verifier") or "cross_check"),
+        spec=acceptance_raw.get("spec"),
+        spec_hash=acceptance_raw.get("spec_hash"),
     )
     workload_raw = data.get("workload_estimate") or {}
     if "initial_hours" in workload_raw:
@@ -163,6 +171,7 @@ def from_dict(data: dict[str, Any]) -> ContractDraft:
         authority=authority_from_dict(data.get("authority")),
         attention=attention_from_dict(data.get("attention")),
         continuity=continuity_from_dict(data.get("continuity")),
+        auto_approve=auto_approve_from_dict(data.get("auto_approve")),
         soft_guidance=dict(data.get("soft_guidance") or {}),
         context=dict(data.get("context") or {}),
         execution=dict(data.get("execution") or {}),

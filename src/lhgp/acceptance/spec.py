@@ -288,13 +288,60 @@ def spec_from_dict(raw: str | dict[str, Any]) -> dict[str, Any] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
+def evaluate_stage_acceptance(
+    spec: dict[str, Any],
+    *,
+    check_results: dict[str, str],
+) -> SpecVerdict:
+    """Wire acceptance/spec.py into the main execution loop.
+
+    The dispatch loop calls this with the stage's spec and the typed-check
+    outcomes collected during the contract run. Machine verdicts are
+    composed against the spec's boolean structure; user criteria stay
+    pending until explicit confirmation.
+
+    Returns a ``SpecVerdict`` whose ``outcome`` is one of:
+    - ``pass``: every machine check passed, no user criteria pending
+    - ``fail``: any machine check failed
+    - ``pending``: machine checks all passed but user confirmation required
+    """
+    if not isinstance(spec, dict):
+        raise ValueError("acceptance spec must be a dict")
+    machine_results = evaluate_machine_checks(spec, check_results=check_results)
+    return compose_verdict(spec, machine_results=machine_results)
+
+
+def verdict_to_event_payload(verdict: SpecVerdict) -> dict[str, Any]:
+    """Project a SpecVerdict to a contract event payload."""
+    return {
+        "outcome": verdict.outcome,
+        "summary": verdict.summary,
+        "machine_pass": verdict.machine_pass,
+        "machine_fail": verdict.machine_fail,
+        "user_pending": verdict.user_pending,
+        "results": [
+            {
+                "judge": r.judge,
+                "kind": r.kind,
+                "target": r.target,
+                "outcome": r.outcome,
+                "detail": r.detail,
+                "source": r.source,
+            }
+            for r in verdict.results
+        ],
+    }
+
+
 __all__ = [
     "VALID_JUDGES",
     "CheckResult",
     "SpecVerdict",
     "compose_verdict",
     "evaluate_machine_checks",
+    "evaluate_stage_acceptance",
     "spec_from_dict",
     "spec_to_dict",
     "validate_spec",
+    "verdict_to_event_payload",
 ]

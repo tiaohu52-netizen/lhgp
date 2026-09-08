@@ -22,6 +22,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from lhgp.contracts.plan import PlanStep
 from longtask import PROTOCOL_VERSION, __version__
 from longtask.adapters.registry import ExecutorRegistry
 from longtask.cli.daemon import (
@@ -57,6 +58,51 @@ def _open_read_conn(data_dir: str | None) -> sqlite3.Connection:
     conn = connect(StoreConfig(db_path=root / "state.db"))
     ensure_schema(conn)
     return conn
+
+
+def _read_plan_input(from_file: str | None) -> dict[str, Any]:
+    """Read a plan JSON payload from --from path or stdin and decode it.
+
+    Used by both ``lhgp plan submit`` and ``lhgp plan signoff`` so the
+    file/stdin contract is consistent.
+    """
+    raw = Path(from_file).read_text(encoding="utf-8") if from_file else sys.stdin.read()
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"Error: invalid JSON: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise SystemExit("Error: plan payload must be a JSON object")
+    return payload
+
+
+def _steps_from_raw(raw_steps: list[Any]) -> list[PlanStep]:
+    """Parse the ``steps`` array of a plan payload into a list of
+    :class:`PlanStep` instances.  Mirrors the MCP-side validation —
+    emits SystemExit on the first malformed entry so the CLI fails
+    loud and fast.
+    """
+    from lhgp.contracts.plan import PlanStep
+
+    if not isinstance(raw_steps, list) or not raw_steps:
+        raise SystemExit("plan.steps must be a non-empty array")
+    out: list[PlanStep] = []
+    for index, raw_step in enumerate(raw_steps, start=1):
+        if not isinstance(raw_step, dict):
+            raise SystemExit(f"Error: steps[{index}] must be an object")
+        try:
+            out.append(
+                PlanStep(
+                    step_id=int(raw_step.get("step_id", index)),
+                    action=str(raw_step.get("action") or ""),
+                    target=str(raw_step.get("target") or ""),
+                    rationale=str(raw_step.get("rationale") or ""),
+                    expected_outcome=str(raw_step.get("expected_outcome") or ""),
+                )
+            )
+        except (TypeError, ValueError) as exc:
+            raise SystemExit(f"Error: steps[{index}] is malformed: {exc}") from exc
+    return out
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -363,6 +409,29 @@ def build_parser() -> argparse.ArgumentParser:
         help="submitter identity (default 'agent:cli')",
     )
     plan_submit.add_argument(
+        "--from",
+        dest="from_file",
+        type=str,
+        default=None,
+        help="read plan JSON from this file (default: stdin)",
+    )
+
+    # 3rd-round review: explicit user sign-off for plans that the
+    # auto-approve scope rejected with ``requires_signoff=True``.
+    # Re-runs the validator and writes PLAN_APPROVED on success.
+    plan_signoff = plan_sub.add_parser(
+        "signoff",
+        help="user sign-off for an out-of-scope plan (reads plan JSON from stdin)",
+    )
+    plan_signoff.add_argument("contract_id", type=str, help="target contract ID")
+    plan_signoff.add_argument(
+        "--signoff-by",
+        type=str,
+        default="user:cli",
+        help="signer identity (default 'user:cli')",
+    )
+    plan_signoff.add_argument("--note", type=str, default=None, help="optional audit note")
+    plan_signoff.add_argument(
         "--from",
         dest="from_file",
         type=str,
@@ -1040,7 +1109,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "plan":
         if args.plan_cmd == "submit":
-            from lhgp.contracts.plan import Plan, PlanStep
+            from lhgp.contracts.plan import Plan
             from lhgp.persistence.events import EventType
             from lhgp.persistence.events_query import append_event
             from lhgp.persistence.schema import transaction as _tx
@@ -1058,29 +1127,7 @@ def main(argv: list[str] | None = None) -> int:
             if not isinstance(payload, dict):
                 print("Error: plan payload must be a JSON object", file=sys.stderr)
                 return 2
-            raw_steps = payload.get("steps")
-            if not isinstance(raw_steps, list) or not raw_steps:
-                print("Error: plan.steps must be a non-empty array", file=sys.stderr)
-                return 2
-
-            steps: list[PlanStep] = []
-            for index, raw_step in enumerate(raw_steps, start=1):
-                if not isinstance(raw_step, dict):
-                    print(f"Error: steps[{index}] must be an object", file=sys.stderr)
-                    return 2
-                try:
-                    steps.append(
-                        PlanStep(
-                            step_id=int(raw_step.get("step_id", index)),
-                            action=str(raw_step.get("action") or ""),
-                            target=str(raw_step.get("target") or ""),
-                            rationale=str(raw_step.get("rationale") or ""),
-                            expected_outcome=str(raw_step.get("expected_outcome") or ""),
-                        )
-                    )
-                except (TypeError, ValueError) as exc:
-                    print(f"Error: steps[{index}] malformed: {exc}", file=sys.stderr)
-                    return 2
+            steps = _steps_from_raw(payload.get("steps") or [])
 
             conn = _open_read_conn(args.data_dir)
             try:
@@ -1109,7 +1156,7 @@ def main(argv: list[str] | None = None) -> int:
                         now=now,
                         actor=args.submitted_by,
                     )
-                    if plan_validation.approved:
+                    if plan_validation.approved and not plan_validation.requires_signoff:
                         from lhgp.contracts.plan import _extract_check_identifiers
                         from longtask.cli.dispatch import (
                             wake_blocked_after_plan_approval,
@@ -1125,6 +1172,7 @@ def main(argv: list[str] | None = None) -> int:
                                 "contract_revision": view.revision,
                                 "content_hash": new_plan.content_hash,
                                 "accepted_check_ids": list(_extract_check_identifiers(view)),
+                                "auto_approved": True,
                             },
                             now=now,
                             actor="daemon",
@@ -1133,6 +1181,32 @@ def main(argv: list[str] | None = None) -> int:
                         # contracts that were BLOCKED(NO_EXECUTOR) waiting
                         # for this plan.
                         wake_blocked_after_plan_approval(conn, args.contract_id, now)
+                    elif plan_validation.approved and plan_validation.requires_signoff:
+                        # 3rd-round review: structurally valid but outside
+                        # the contract's auto-approve scope.  Recorded as
+                        # PLAN_REJECTED with requires_signoff; the user
+                        # must run ``lhgp plan signoff`` to promote.
+                        oos_actions = sorted(
+                            {
+                                s.action
+                                for s in steps
+                                if not view.draft.auto_approve.covers_action(s.action)
+                            }
+                        )
+                        append_event(
+                            conn,
+                            contract_id=args.contract_id,
+                            event_type=EventType.PLAN_REJECTED,
+                            payload={
+                                "submitted_by": args.submitted_by,
+                                "step_count": len(steps),
+                                "rejection_reasons": ["requires_signoff"],
+                                "out_of_scope_actions": oos_actions,
+                                "auto_approve_enabled": view.draft.auto_approve.enabled,
+                            },
+                            now=now,
+                            actor="daemon",
+                        )
                     else:
                         append_event(
                             conn,
@@ -1150,12 +1224,89 @@ def main(argv: list[str] | None = None) -> int:
             plan_result = {
                 "contract_id": args.contract_id,
                 "approved": plan_validation.approved,
+                "requires_signoff": plan_validation.requires_signoff,
                 "rejection_reasons": list(plan_validation.rejection_reasons),
                 "step_count": len(steps),
                 "submitted_at": now.isoformat(),
             }
             print(json.dumps(plan_result, ensure_ascii=False, indent=2))
             return 0 if plan_validation.approved else 1
+
+        if args.plan_cmd == "signoff":
+            # User sign-off path for a plan that lhgp_plan submit
+            # rejected with requires_signoff.  Reads the same JSON
+            # shape, re-validates, then writes PLAN_APPROVED on
+            # success and wakes the contract.
+            from lhgp.contracts.plan import Plan, _extract_check_identifiers
+            from lhgp.persistence.events import EventType
+
+            payload = _read_plan_input(args.from_file)
+            steps = _steps_from_raw(payload.get("steps") or [])
+
+            conn = _open_read_conn(args.data_dir)
+            try:
+                view = get_contract(conn, args.contract_id)
+                if view is None:
+                    raise SystemExit(f"contract {args.contract_id} not found")
+                now = datetime.now(UTC)
+                plan_obj = Plan(
+                    contract_id=args.contract_id,
+                    steps=tuple(steps),
+                    submitted_at=now,
+                    submitted_by=args.signoff_by,
+                )
+                validation = plan_obj.validate(view)
+                if not validation.approved:
+                    print(
+                        json.dumps(
+                            {
+                                "contract_id": args.contract_id,
+                                "signed_off": False,
+                                "rejection_reasons": list(validation.rejection_reasons),
+                                "step_count": len(steps),
+                            },
+                            ensure_ascii=False,
+                            indent=2,
+                        )
+                    )
+                    return 1
+                append_event(
+                    conn,
+                    contract_id=args.contract_id,
+                    event_type=EventType.PLAN_APPROVED,
+                    payload={
+                        "signed_off_by": args.signoff_by,
+                        "note": args.note,
+                        "step_count": len(steps),
+                        "contract_revision": view.revision,
+                        "content_hash": plan_obj.content_hash,
+                        "accepted_check_ids": list(_extract_check_identifiers(view)),
+                        "auto_approved": False,
+                    },
+                    now=now,
+                    actor=args.signoff_by,
+                )
+                from longtask.cli.dispatch import wake_blocked_after_plan_approval
+
+                wake_blocked_after_plan_approval(conn, args.contract_id, now)
+            finally:
+                conn.close()
+            print(
+                json.dumps(
+                    {
+                        "contract_id": args.contract_id,
+                        "signed_off": True,
+                        "signed_off_by": args.signoff_by,
+                        "signed_off_at": now.isoformat(),
+                        "step_count": len(steps),
+                        "content_hash": plan_obj.content_hash,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            return 0
+
         parser.parse_args(["plan", "--help"])
         return 0
 
@@ -1331,10 +1482,10 @@ def main(argv: list[str] | None = None) -> int:
             # E3 校验：apply 时用同一套校验（提案和落地结构一致）
             from lhgp.promoter.proposals import validate_proposed_plan
 
-            validation = validate_proposed_plan(plan)
-            if not validation.ok:
+            proposal_validation = validate_proposed_plan(plan)
+            if not proposal_validation.ok:
                 print(
-                    f"error: plan validation failed: {'; '.join(validation.errors)}",
+                    f"error: plan validation failed: {'; '.join(proposal_validation.errors)}",
                     file=sys.stderr,
                 )
                 return 1
