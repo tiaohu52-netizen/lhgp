@@ -181,3 +181,37 @@ def test_unknown_client_rejected(tmp_path: Path) -> None:
         tool_plan_signoff(envelope.params, ctx={"conn": conn, "now": NOW, "envelope": envelope})
     assert exc_info.value.code == ErrorCode.AUTH_FAILED
     conn.close()
+
+
+def test_mcp_runtime_without_envelope_rejected_with_principal_only_guidance(
+    tmp_path: Path,
+) -> None:
+    """5th-round follow-up: when ``tool_plan_signoff`` is invoked
+    via the MCP runtime (the runtime builds a ``ctx`` without
+    an ``envelope`` key — the model is not in the RPC path),
+    the previous INTERNAL error was a poor diagnosis.  The
+    tool is Principal-only; surface it as ``AUTH_FAILED``
+    with guidance to escalate to the user via CLI.
+    """
+    conn, _cid = _seed_contract_with_plan_gate(tmp_path)
+    with pytest.raises(RpcError) as exc_info:
+        # ctx without envelope key — the real MCP runtime shape.
+        tool_plan_signoff(
+            {
+                "contract_id": "lt-uc-mcp",
+                "steps": [
+                    {
+                        "step_id": 1,
+                        "action": "write file",
+                        "target": "build/c1",
+                        "rationale": "for the spec",
+                        "expected_outcome": "file appears",
+                    }
+                ],
+            },
+            ctx={"conn": conn, "now": NOW},  # no envelope
+        )
+    assert exc_info.value.code == ErrorCode.AUTH_FAILED
+    assert "Principal" in str(exc_info.value)
+    assert "CLI" in str(exc_info.value)
+    conn.close()

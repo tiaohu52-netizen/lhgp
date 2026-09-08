@@ -872,9 +872,21 @@ def tool_plan_signoff(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, An
     if not isinstance(envelope, RequestEnvelope):
         from longtask.rpc.errors import ErrorCode, RpcError
 
+        # 5th-round follow-up: the MCP runtime builds a
+        # ``ctx`` without an ``envelope`` key (the model is
+        # not in the RPC path).  The previous INTERNAL error
+        # was a poor error code — the real diagnosis is
+        # "this tool is Principal-only; ask the user to run
+        # it via CLI".  Surface it as AUTH_FAILED with
+        # guidance so a model caller knows to escalate.
         raise RpcError(
-            code=ErrorCode.INTERNAL,
-            message="missing RPC envelope in tool context",
+            code=ErrorCode.AUTH_FAILED,
+            message=(
+                "lhgp_plan_signoff is Principal-only; the MCP runtime "
+                "does not carry a Principal envelope.  Ask the user "
+                "to run it via the CLI: lhgp plan signoff <contract_id> "
+                "<plan.json>"
+            ),
         )
     principal_actor = require_principal(envelope, args, action="lhgp_plan_signoff")
 
