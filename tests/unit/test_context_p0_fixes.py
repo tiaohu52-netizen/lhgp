@@ -248,7 +248,7 @@ class TestDirectiveCap:
             data_dir, conn, view, "att-cap", now=datetime.now(UTC)
         )
         text = active.read_text(encoding="utf-8")
-        section = text.split("## ⚡ 用户指令（必须遵守）", 1)[1].split("## 合同锚点", 1)[0]
+        section = text.split("## ⚡ 收到的指令（必须遵守）", 1)[1].split("## 合同锚点", 1)[0]
         bullet_lines = [ln for ln in section.splitlines() if ln.startswith("- **")]
         assert len(bullet_lines) == _MAX_DIRECTIVES_INJECTED
         assert "more directives truncated" in section
@@ -283,15 +283,21 @@ class TestDirectiveCap:
             data_dir, conn, view, "att-long", now=datetime.now(UTC)
         )
         text = active.read_text(encoding="utf-8")
-        # The long directive's bullet is truncated to _DIRECTIVE_TEXT_CHARS
-        # chars of x; the bullet wrapper "- **" + "**" adds 6 chars.
-        section = text.split("## ⚡ 用户指令（必须遵守）", 1)[1].split("## 合同锚点", 1)[0]
+        # The long directive's text body is truncated to
+        # _DIRECTIVE_TEXT_CHARS; the rendered line is
+        # ``- **<text>**  —  from `<sender>``` (3rd-round review:
+        # directive header shows real sender).  We parse out the
+        # bolded body for the length assertion.
+        section = text.split("## ⚡ 收到的指令（必须遵守）", 1)[1].split("## 合同锚点", 1)[0]
         bullet = next(ln for ln in section.splitlines() if ln.startswith("- **"))
-        assert len(bullet) <= _DIRECTIVE_TEXT_CHARS + 6
-        # Specifically the text content (after "- **" and before "**")
-        # is capped to _DIRECTIVE_TEXT_CHARS exactly.
-        inner = bullet[len("- **") : -len("**")]
-        assert len(inner) == _DIRECTIVE_TEXT_CHARS
+        # bullet starts with "- **" and the bolded body ends at the
+        # next "**" — strip that pair, then strip the optional
+        # "  —  from …" tail.
+        inner = bullet[len("- **") :]
+        bold_end = inner.find("**")
+        assert bold_end != -1
+        text_body = inner[:bold_end]
+        assert len(text_body) == _DIRECTIVE_TEXT_CHARS
         conn.close()
 
 
@@ -632,7 +638,7 @@ class TestCursorBumpDeferredUntilWriteSucceeds:
             data_dir, conn, view, "att-ok", now=datetime.now(UTC)
         )
         text = active.read_text(encoding="utf-8")
-        assert "## ⚡ 用户指令（必须遵守）" in text
+        assert "## ⚡ 收到的指令（必须遵守）" in text
         # P1 review (2026-09-08, 2nd round): the cursor advance was
         # previously in compile_context_snapshot. With the fix it
         # moves to mark_directives_consumed, called by the runner

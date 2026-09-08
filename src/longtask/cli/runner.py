@@ -124,6 +124,7 @@ def build_attempt_input(
     now: datetime,
     *,
     with_context: bool = True,
+    agent_id: str | None = None,
 ) -> tuple[AttemptInput, int]:
     """构造 AttemptInput（DESIGN §11.6 字段表）。
 
@@ -135,6 +136,11 @@ def build_attempt_input(
     was actually started (P1 review, 2026-09-08, 2nd round: previously
     the cursor was bumped at snapshot-build time, which lost
     directives when the spawn then failed).
+
+    ``agent_id`` is the registry executor_id of the agent that
+    will receive the snapshot.  Used to filter directed directives
+    (those with ``to_agent`` set) so a message addressed to one
+    agent does not leak into another's snapshot (A2A scoping).
 
     lease_generation 动态取当前租约：租约获取前作 prepare 探针（旧代次），
     租约获取后作 spawn 入参（attempt 实际持有的新代次，§5.1 不可变五元组）。
@@ -160,7 +166,12 @@ def build_attempt_input(
             task_prompt = f"{task_prompt}\n\n{addendum}"
         try:
             active_path, _scratch, consumed_max_event_id = compile_context_snapshot(
-                root, conn, contract, attempt_id, now
+                root,
+                conn,
+                contract,
+                attempt_id,
+                now,
+                to_agent=agent_id,
             )
             context_snapshot_path = str(active_path)
         except CapacityRefusedError:
@@ -182,6 +193,7 @@ def build_attempt_input(
         },
         task_prompt=task_prompt,
         context_snapshot_path=context_snapshot_path,
+        agent_id=agent_id,
     ), consumed_max_event_id
 
 
@@ -353,7 +365,12 @@ class AttemptRunner:
             return False
         try:
             input_, consumed_max_event_id = build_attempt_input(
-                self._root, self._conn, contract, attempt_id, now
+                self._root,
+                self._conn,
+                contract,
+                attempt_id,
+                now,
+                agent_id=executor_id,
             )
             # Per-attempt session token（安全加固）：spawn 前生成一次性凭据
             import hashlib
@@ -388,9 +405,16 @@ class AttemptRunner:
         # silently lost the directives the failed snapshot had
         # inlined — the next attempt's snapshot would see the
         # advanced cursor and skip them.  See mark_directives_consumed.
+        #
+        # A2A scoping (3rd-round review): pass to_agent so the
+        # per-agent cursor moves, not the contract-level broadcast
+        # one.  This way, a directive addressed to B does not burn
+        # through A's cursor.
         from longtask.persistence.context import mark_directives_consumed
 
-        mark_directives_consumed(self._conn, contract_id, consumed_max_event_id)
+        mark_directives_consumed(
+            self._conn, contract_id, consumed_max_event_id, to_agent=executor_id
+        )
         self._persist_handle(adapter, contract, attempt_id, now)
         lease = get_lease(self._conn, contract_id)
         self._running[attempt_id] = {

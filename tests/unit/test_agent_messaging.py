@@ -154,7 +154,7 @@ class TestContextInjection:
             active_path = scratch.parent / "active.md"
             content = active_path.read_text(encoding="utf-8")
             assert "use approach B instead of A" in content
-            assert "用户指令" in content
+            assert "收到的指令" in content
         finally:
             conn.close()
 
@@ -172,6 +172,108 @@ class TestContextInjection:
             )
             active_path = scratch.parent / "active.md"
             content = active_path.read_text(encoding="utf-8")
-            assert "用户指令" not in content
+            assert "收到的指令" not in content
+        finally:
+            conn.close()
+
+
+class TestA2AScoping:
+    """3rd-round review (2026-09-08): the message layer's ``to_agent``
+    field was being ignored.  Two agents working the same contract
+    both saw each other's targeted directives, and the contract-
+    level broadcast cursor advanced even when only one agent
+    consumed a directive.  Fix: per-agent cursor + per-agent
+    filter in pending_directives."""
+
+    def test_targeted_directive_only_seen_by_named_agent(self, tmp_path: Path) -> None:
+        from lhgp.persistence.store import get_contract
+        from longtask.persistence.context import compile_context_snapshot
+
+        conn = _conn(tmp_path)
+        try:
+            _contract(conn)
+            send_message(
+                conn,
+                contract_id="lt-msg01",
+                from_actor="agent:a",
+                to_agent="agent:b",
+                kind="directive",
+                text="handoff the bugfix branch to B",
+                now=NOW,
+            )
+            contract = get_contract(conn, "lt-msg01")
+            assert contract is not None
+
+            # Agent A asks: should NOT see the message addressed to B.
+            _, scratch_a, consumed_a = compile_context_snapshot(
+                tmp_path, conn, contract, "att-a", NOW, to_agent="agent:a"
+            )
+            (scratch_a.parent / "active.md").read_text(encoding="utf-8")
+            assert consumed_a == 0  # nothing consumed
+
+            # Agent B asks: must see the message.
+            _, scratch_b, consumed_b = compile_context_snapshot(
+                tmp_path, conn, contract, "att-b", NOW, to_agent="agent:b"
+            )
+            text_b = (scratch_b.parent / "active.md").read_text(encoding="utf-8")
+            assert "handoff the bugfix branch to B" in text_b
+            assert consumed_b > 0
+        finally:
+            conn.close()
+
+    def test_broadcast_directive_seen_by_every_agent(self, tmp_path: Path) -> None:
+        from lhgp.persistence.store import get_contract
+        from longtask.persistence.context import compile_context_snapshot
+
+        conn = _conn(tmp_path)
+        try:
+            _contract(conn)
+            send_message(
+                conn,
+                contract_id="lt-msg01",
+                from_actor="user",
+                kind="directive",
+                text="general steering for all agents",
+                now=NOW,
+            )
+            contract = get_contract(conn, "lt-msg01")
+            assert contract is not None
+            for who in ("agent:a", "agent:b", None):
+                # attempt_id must be a plain identifier — colon would
+                # make the path creation fail on Windows.
+                att_id = f"att-{who.replace(':', '_') if who else 'any'}"
+                _, scratch, _consumed = compile_context_snapshot(
+                    tmp_path, conn, contract, att_id, NOW, to_agent=who
+                )
+                text = (scratch.parent / "active.md").read_text(encoding="utf-8")
+                assert "general steering for all agents" in text
+        finally:
+            conn.close()
+
+    def test_directive_section_preserves_sender(self, tmp_path: Path) -> None:
+        from lhgp.persistence.store import get_contract
+        from longtask.persistence.context import compile_context_snapshot
+
+        conn = _conn(tmp_path)
+        try:
+            _contract(conn)
+            send_message(
+                conn,
+                contract_id="lt-msg01",
+                from_actor="agent:reviewer",
+                to_agent="agent:dev",
+                kind="directive",
+                text="please add a regression test",
+                now=NOW,
+            )
+            contract = get_contract(conn, "lt-msg01")
+            assert contract is not None
+            _, scratch, _consumed = compile_context_snapshot(
+                tmp_path, conn, contract, "att-dev", NOW, to_agent="agent:dev"
+            )
+            text = (scratch.parent / "active.md").read_text(encoding="utf-8")
+            # Real sender preserved, not collapsed to "user"
+            assert "from `agent:reviewer`" in text
+            assert "to `agent:dev`" in text
         finally:
             conn.close()

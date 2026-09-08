@@ -185,12 +185,18 @@ def _record_handover_incomplete(
         )
 
 
-def _read_directive_cursor(conn: sqlite3.Connection, contract_id: str) -> int:
+def _read_directive_cursor(
+    conn: sqlite3.Connection, contract_id: str, to_agent: str | None = None
+) -> int:
     """Last AGENT_MESSAGE event id this contract's attempts have consumed.
 
-    Stored in the ``continuity_json`` column under a reserved key
-    (``_directive_cursor``). Returns 0 if no cursor has been recorded
-    yet (i.e. consume all events from the beginning).
+    Stored in the ``continuity_json`` column under a per-scope key:
+    ``_directive_cursor`` for the legacy contract-level broadcast
+    cursor, ``_directive_cursor::<agent>`` for a per-agent cursor
+    (A2A scoping — only that agent's own cursor moves when it
+    consumes a directive addressed to it).  Returns 0 if no cursor
+    has been recorded yet (i.e. consume all events from the
+    beginning).
     """
     row = conn.execute(
         "SELECT continuity_json FROM contracts WHERE contract_id = ?",
@@ -204,15 +210,21 @@ def _read_directive_cursor(conn: sqlite3.Connection, contract_id: str) -> int:
         return 0
     if not isinstance(data, dict):
         return 0
-    val = data.get(_DIRECTIVE_CURSOR_KEY, 0)
+    key = _DIRECTIVE_CURSOR_KEY if to_agent is None else f"{_DIRECTIVE_CURSOR_KEY}::{to_agent}"
+    val = data.get(key, 0)
     try:
         return int(val)
     except (TypeError, ValueError):
         return 0
 
 
-def mark_directives_consumed(conn: sqlite3.Connection, contract_id: str, new_id: int) -> bool:
-    """Bump the per-contract directive cursor to ``new_id``.
+def mark_directives_consumed(
+    conn: sqlite3.Connection,
+    contract_id: str,
+    new_id: int,
+    to_agent: str | None = None,
+) -> bool:
+    """Bump the per-(contract, agent) directive cursor to ``new_id``.
 
     Called by the runner **after** Popen succeeds for a spawned
     attempt, so the cursor only advances when the executor has
@@ -222,22 +234,33 @@ def mark_directives_consumed(conn: sqlite3.Connection, contract_id: str, new_id:
     failed snapshot had inlined — the next attempt's snapshot
     would see the advanced cursor and skip them.
 
+    A2A scoping: pass ``to_agent`` to move the per-agent cursor
+    (used by directed directives).  Pass ``None`` to move the
+    contract-level broadcast cursor (legacy behaviour).
+
     Returns True iff the underlying row was actually updated (i.e.
     the cursor moved).  The cursor never rewinds; if a stale
     ``new_id`` is passed (lower than the stored cursor), the call
     is a no-op.
     """
-    current = _read_directive_cursor(conn, contract_id)
+    current = _read_directive_cursor(conn, contract_id, to_agent=to_agent)
     if new_id <= current:
         return False
-    _bump_directive_cursor(conn, contract_id, new_id)
+    _bump_directive_cursor(conn, contract_id, new_id, to_agent=to_agent)
     return True
 
 
-def _bump_directive_cursor(conn: sqlite3.Connection, contract_id: str, new_id: int) -> None:
+def _bump_directive_cursor(
+    conn: sqlite3.Connection, contract_id: str, new_id: int, to_agent: str | None = None
+) -> None:
     """Persist the new cursor. ``new_id`` is always set to the max of
     the existing value and the new value so a stale write cannot
     rewind the cursor.
+
+    A2A scoping: per-agent cursors live under
+    ``_directive_cursor::<agent>`` so an agent that consumes only
+    its own directed directives does not also burn through the
+    contract-level broadcast cursor.
     """
     row = conn.execute(
         "SELECT continuity_json FROM contracts WHERE contract_id = ?",
@@ -252,13 +275,14 @@ def _bump_directive_cursor(conn: sqlite3.Connection, contract_id: str, new_id: i
         data = {}
     if not isinstance(data, dict):
         data = {}
+    key = _DIRECTIVE_CURSOR_KEY if to_agent is None else f"{_DIRECTIVE_CURSOR_KEY}::{to_agent}"
     try:
-        current = int(data.get(_DIRECTIVE_CURSOR_KEY, 0))
+        current = int(data.get(key, 0))
     except (TypeError, ValueError):
         current = 0
     if new_id <= current:
         return  # don't rewind
-    data[_DIRECTIVE_CURSOR_KEY] = int(new_id)
+    data[key] = int(new_id)
     try:
         conn.execute(
             "UPDATE contracts SET continuity_json = ? WHERE contract_id = ?",
@@ -341,6 +365,8 @@ def compile_context_snapshot(
     contract: ContractView,
     attempt_id: str,
     now: datetime,
+    *,
+    to_agent: str | None = None,
 ) -> tuple[Path, Path, int]:
     """物化该次 attempt 的上下文：active.md 快照 + scratch.md 骨架。
 
@@ -348,6 +374,13 @@ def compile_context_snapshot(
     第三个值是该快照实际内联进去的 AGENT_MESSAGE 事件 id 的最大值；
     调用方在确认执行器子进程真正拉起之后，再调用
     :func:`mark_directives_consumed` 推进 cursor。
+
+    ``to_agent`` (A2A scoping): the registry executor_id of the
+    agent that will receive the snapshot.  When set, the cursor
+    is read from a per-agent slot in ``continuity_json`` so a
+    directive addressed to one agent does not bleed into the
+    other agent's snapshot.  When ``None``, the legacy contract-
+    level broadcast cursor is used.
 
     P1 review（2026-09-08，第二轮）：原实现快照写盘即推 cursor，
     意味着「快照生成 → spawn 失败」之间没有任何信号时，已注入快照
@@ -386,8 +419,8 @@ def compile_context_snapshot(
         mem_index.retrieve(draft.context if isinstance(draft.context, dict) else None)
     )
 
-    # Agent messaging：用户的 directive 消息注入到 agent 上下文最前面——
-    # 这让用户可以在 agent 工作中途改变方向而不用终止重来。
+    # Agent messaging：directive 消息注入到 agent 上下文最前面——
+    # 这让用户/其他 agent 可以在工作中途改变方向而不用终止重来。
     from lhgp.persistence.messages import pending_directives
 
     # P0 verifier finding: without a per-contract cursor, every
@@ -396,7 +429,15 @@ def compile_context_snapshot(
     # Read the cursor and pass ``after_event_id`` so only NEW
     # directives since the last attempt land in this snapshot;
     # the cursor is bumped to the max consumed event_id below.
-    directive_cursor = _read_directive_cursor(conn, contract.contract_id)
+    #
+    # A2A scoping (2026-09-08, 3rd-round review): the cursor is
+    # read from a per-agent slot when ``to_agent`` is set, so a
+    # directive addressed to one agent is consumed once by *that*
+    # agent and never re-injected to any other agent working the
+    # same contract.  Broadcast directives (to_agent=None) still
+    # use the contract-level cursor so the legacy user → all-agents
+    # path keeps working.
+    directive_cursor = _read_directive_cursor(conn, contract.contract_id, to_agent=to_agent)
     # Default to the existing cursor when no directives are included;
     # the runner's post-spawn mark_directives_consumed call is a
     # no-op for new_id <= current (P1 review), so passing the
@@ -409,6 +450,7 @@ def compile_context_snapshot(
         conn,
         contract_id=contract.contract_id,
         after_event_id=directive_cursor,
+        to_agent=to_agent,
     )
     directives = raw_directives[:_MAX_DIRECTIVES_INJECTED]
     sections: list[str] = [
@@ -430,17 +472,30 @@ def compile_context_snapshot(
         )
         sections.insert(1, "")
     if directives:
-        sections += ["## ⚡ 用户指令（必须遵守）", ""]
+        # A2A scoping (3rd-round review): the header reflects the
+        # actual source — a directive from agent X addressed to this
+        # agent is rendered as such, not as a generic "user
+        # directive".  This preserves provenance for the model and
+        # matches the permission semantics in the message layer
+        # (to_agent is enforced at pending_directives time).
+        section_title = "## ⚡ 收到的指令（必须遵守）"
+        sections += [section_title, ""]
         for d in directives:
             text = str(d.get("text", ""))[:_DIRECTIVE_TEXT_CHARS]
-            sections.append(f"- **{text}**")
+            sender = str(d.get("from", "unknown"))
+            target = d.get("to_agent")
+            line = f"- **{text}**  —  from `{sender}`"
+            if target is not None:
+                line += f", to `{target}`"
+            sections.append(line)
         if len(raw_directives) > _MAX_DIRECTIVES_INJECTED:
             sections.append(
                 f"- … ({len(raw_directives) - _MAX_DIRECTIVES_INJECTED} more directives truncated)"
             )
         sections += [
             "",
-            "以上指令来自用户，优先级高于合同中的 soft_guidance。"
+            "以上指令的来源与权限语义按发送方区分（用户、其他 agent 等）；"
+            "优先级高于合同中的 soft_guidance。"
             "如果你无法遵守，在写回中说明原因。",
             "",
         ]

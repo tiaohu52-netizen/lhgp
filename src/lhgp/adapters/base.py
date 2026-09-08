@@ -28,6 +28,12 @@ class AttemptInput:
     context_snapshot_path: str | None = None
     task_prompt: str | None = None
     session_token: str | None = None
+    # A2A scoping: the registry executor_id of the agent that will
+    # receive the snapshot.  Used to filter directed directives (those
+    # with ``to_agent`` set) so a message addressed to B does not
+    # leak into A's snapshot.  Defaults to the attempt_id for
+    # backward compat with adapters that do not propagate it.
+    agent_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

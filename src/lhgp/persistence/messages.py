@@ -94,14 +94,35 @@ def pending_directives(
     *,
     contract_id: str,
     after_event_id: int = 0,
+    to_agent: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Get unread user directives for the working agent."""
-    return [
-        m
-        for m in get_messages(
-            conn, contract_id=contract_id, kind="directive", after_event_id=after_event_id
-        )
-    ]
+    """Get unread directives for the working agent.
+
+    Directives with ``to_agent`` set are A2A-targeted: only the
+    addressed agent (executor_id) sees them.  Directives with
+    ``to_agent=None`` are broadcast to every agent working the
+    contract.  Pass ``to_agent`` to receive only the subset the
+    caller should actually consume; pass None to receive the
+    broadcast slice only (the common case for a user → all-agents
+    blast).
+    """
+    out: list[dict[str, Any]] = []
+    for m in get_messages(
+        conn, contract_id=contract_id, kind="directive", after_event_id=after_event_id
+    ):
+        target = m.get("to_agent")
+        if target is None:
+            # Broadcast directive (the default): goes to every agent
+            # regardless of which one is asking.
+            out.append(m)
+            continue
+        # Targeted directive: only the named agent sees it.
+        # Callers that pass to_agent=None (e.g. CLI diagnostics) see
+        # every targeted directive as well, which is fine for an
+        # inspection path that doesn't drive a cursor.
+        if to_agent is None or to_agent == target:
+            out.append(m)
+    return out
 
 
 __all__ = ["VALID_KINDS", "get_messages", "pending_directives", "send_message"]
