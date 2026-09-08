@@ -137,7 +137,28 @@ def synthesize_stage_draft(
         "context": context,
     }
     prev_auto_approve = _resolve_previous_auto_approve(goal, stage, conn)
-    if prev_auto_approve is not None:
+    plan_raw = goal.get("plan") if isinstance(goal, dict) else None
+    goal_pre_authorized = plan_raw.get("pre_authorized") if isinstance(plan_raw, dict) else None
+    if isinstance(goal_pre_authorized, dict) and goal_pre_authorized.get("enabled"):
+        # The user has explicitly pre-authorised the whole Goal.
+        # Use that as the synthesised contract's auto_approve so
+        # the daemon's auto-approve check (which reads
+        # Goal.plan.pre_authorized, not the contract's
+        # auto_approve) can promote it DRAFTED → ACTIVE without
+        # the model needing to claim any action scope.
+        granted_actions = goal_pre_authorized.get("actions") or ()
+        if isinstance(granted_actions, (list, tuple)):
+            actions = tuple(str(a) for a in granted_actions if a)
+            if actions:
+                draft["auto_approve"] = AutoApprove(
+                    enabled=True,
+                    actions=actions,
+                    max_budget_increment=int(
+                        goal_pre_authorized.get("max_budget_increment", 0) or 0
+                    ),
+                    max_spec_changes=int(goal_pre_authorized.get("max_spec_changes", 0) or 0),
+                ).to_dict()
+    elif prev_auto_approve is not None:
         draft["auto_approve"] = AutoApprove().inherit_from(prev_auto_approve).to_dict()
     return draft
 

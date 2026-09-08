@@ -17,6 +17,10 @@ import sqlite3
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
+if TYPE_CHECKING:
+    from longtask.rpc.server import RequestEnvelope
+
+from lhgp.contracts.auto_approve import AutoApprove
 from lhgp.contracts.auto_approve import from_dict as auto_approve_from_dict
 from lhgp.contracts.budget import DEFAULT_VERIFICATION_RESERVED
 from longtask.acceptance.checks import parse_check
@@ -103,7 +107,10 @@ def require_principal(envelope: RequestEnvelope, params: dict[str, Any], *, acti
     return actor
 
 
-def parse_contract_draft(params: dict[str, Any]) -> ContractDraft:
+def parse_contract_draft(
+    params: dict[str, Any],
+    envelope: RequestEnvelope | None = None,
+) -> ContractDraft:
     """从请求入参解析并校验 ContractDraft（DESIGN §4、§11.6）。
 
     4th-round review (2026-09-08): ``contract/prepare`` builds the
@@ -171,7 +178,19 @@ def parse_contract_draft(params: dict[str, Any]) -> ContractDraft:
         authority = authority_from_dict(draft_data.get("authority"))
         attention = attention_from_dict(draft_data.get("attention"))
         continuity = continuity_from_dict(draft_data.get("continuity"))
-        auto_approve = auto_approve_from_dict(draft_data.get("auto_approve"))
+        # 5th-round follow-up: a model caller (client_id="mcp")
+        # cannot pre-authorize its own contract.  The trusted
+        # source is the bound Goal's ``plan.pre_authorized``
+        # (Principal-pinned at goal/update time); the model's
+        # per-contract claim is stripped at the boundary so a
+        # spoofed envelope cannot escalate the scope.
+        caller_client_id = (
+            str(getattr(envelope, "client_id", "") or "") if envelope is not None else ""
+        )
+        if caller_client_id == "mcp":
+            auto_approve = AutoApprove()
+        else:
+            auto_approve = auto_approve_from_dict(draft_data.get("auto_approve"))
     except (KeyError, TypeError, ValueError) as exc:
         raise RpcError(
             code=ErrorCode.VALIDATION_FAILED,

@@ -179,9 +179,11 @@ def tool_prepare_contract(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str
         "client_meta": args.get("client_meta", {}),
     }
     params: dict[str, Any] = {"draft": payload}
-    # contract_id 提到 envelope params（与 handle_contract_prepare 的入参对齐）
+    # contract_id / goal_id 提到 envelope params（与 handle_contract_prepare 的入参对齐）
     if args.get("contract_id"):
         params["contract_id"] = args["contract_id"]
+    if args.get("goal_id"):
+        params["goal_id"] = args["goal_id"]
     envelope = parse_envelope(
         {
             "method": Method.CONTRACT_PREPARE.value,
@@ -721,6 +723,28 @@ def tool_submit_plan(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any
     validation = plan.validate(view)
 
     conn = ctx["conn"]
+    # 5th-round follow-up: the per-contract ``auto_approve`` is
+    # the model's *claim*.  The trusted source is the bound
+    # Goal's ``plan.pre_authorized`` (user-pinned).  Augment
+    # the validation here so a plan whose steps are inside
+    # the user's pre-grant is auto-approved even when the
+    # contract's own auto_approve field is empty (which is
+    # the case for MCP-issued contracts after the parse-time
+    # strip).
+    from dataclasses import replace
+
+    from longtask.persistence.store import get_goal
+
+    if getattr(view, "goal_id", None) and validation.approved and validation.requires_signoff:
+        goal = get_goal(conn, view.goal_id)
+        if isinstance(goal, dict):
+            plan_obj = goal.get("plan")
+            if isinstance(plan_obj, dict):
+                pre_auth = plan_obj.get("pre_authorized")
+                if isinstance(pre_auth, dict) and pre_auth.get("enabled"):
+                    granted = {str(a) for a in (pre_auth.get("actions") or ()) if a}
+                    if granted and all(step.action in granted for step in steps):
+                        validation = replace(validation, requires_signoff=False)
     append_event(
         conn,
         contract_id=contract_id,

@@ -29,6 +29,7 @@ from longtask.persistence.store import (
     connect,
     ensure_schema,
     get_contract,
+    patch_goal,
     save_contract,
 )
 from longtask.rpc.handlers._common import parse_contract_draft
@@ -186,10 +187,49 @@ def test_synthesize_inherits_auto_approve_for_spec_only_stage(tmp_path: Path) ->
 
     # Persist and auto-approve; the spec-only draft's
     # ``workspace_root`` is empty, but the spec-only path is
-    # not blocked from auto-approve — the
-    # auto_approve_drafted_contract check is just on
-    # ``enabled``.
+    # not blocked from auto-approve.
+    #
+    # 5th-round follow-up: the auto-approve primitive's trusted
+    # source is the bound Goal's ``plan.pre_authorized`` (a
+    # user-pinned dict).  Without a Goal binding and a
+    # ``pre_authorized`` grant, the contract is NOT
+    # auto-approved even if the contract's own auto_approve
+    # field is True.  This is the model-self-authorize fix.
     new_cid = "lt-spec-inherit-2"
+    new_goal_id = "lt-spec-inherit-goal"
+    # Bootstrap the goal: ``save_contract`` with a new
+    # ``goal_id`` auto-creates the goal row (see
+    # ``save_contract`` ON CONFLICT) so ``patch_goal`` can
+    # then CAS-update its plan.
+    save_contract(
+        conn,
+        draft=ContractDraft(
+            title="goal bootstrap",
+            objective="x",
+            deadline_at=NOW + timedelta(hours=2),
+            hard_constraints={},
+            acceptance=Acceptance(standard="s", checks=("c1",)),
+            workload_initial_hours=1.0,
+            budget=Budget(5, 1, 1, 30, 1_048_576, 2),
+        ),
+        contract_id=f"{new_goal_id}-bootstrap",
+        now=NOW,
+        actor="user",
+        goal_id=new_goal_id,
+    )
+    patch_goal(
+        conn,
+        goal_id=new_goal_id,
+        now=NOW,
+        expected_revision=1,
+        actor="user",
+        plan={
+            "pre_authorized": {
+                "enabled": True,
+                "actions": ["read file", "write file", "run command"],
+            },
+        },
+    )
     save_contract(
         conn,
         draft=ContractDraft(
@@ -205,12 +245,16 @@ def test_synthesize_inherits_auto_approve_for_spec_only_stage(tmp_path: Path) ->
         contract_id=new_cid,
         now=NOW,
         actor="daemon",
+        goal_id=new_goal_id,
     )
     view = get_contract(conn, new_cid)
     assert view is not None
     assert view.state.value == "drafted"
     promoted = auto_approve_drafted_contract(conn, view, NOW)
-    assert promoted is True
+    assert promoted is True, (
+        "auto_approve must fire when the bound Goal's "
+        "plan.pre_authorized covers the contract's claimed actions"
+    )
     view = get_contract(conn, new_cid)
     assert view.state.value == "active"
     conn.close()

@@ -466,6 +466,20 @@ def auto_approve_drafted_contract(
 ) -> bool:
     """Promote a DRAFTED contract to ACTIVE when pre-authorised.
 
+    Trusted source is the **bound Goal's** ``plan.pre_authorized``
+    (a user-pinned dict set via ``goal/update`` — Principal-gated).
+    The contract's ``draft.auto_approve`` is the model's *claim*
+    (what scope the contract needs); the auto-approve only fires
+    when the Goal's user-pinned scope covers that claim.
+
+    A contract with no Goal binding, or a Goal without
+    ``pre_authorized``, can never be auto-approved — the model
+    cannot self-authorize by writing the per-contract field
+    alone.  This is the 5th-round follow-up to the
+    ``auto_approve`` self-sign fix: the per-contract field was
+    the trusted source, which let an MCP-issued contract
+    claim arbitrary pre-authorization.
+
     Lives in the persistence layer (not the daemon CLI) so the
     ``rpc → cli is forbidden`` arch rule holds.  Best-effort:
     returns False on RevisionConflictError / StoreError so a
@@ -473,7 +487,7 @@ def auto_approve_drafted_contract(
     """
     if contract.state != ContractState.DRAFTED:
         return False
-    if not contract.draft.auto_approve.enabled:
+    if not _goal_pre_authorizes_contract(conn, contract):
         return False
     try:
         # Revision CAS engaged (4th-round verifier 2 finding):
@@ -498,6 +512,49 @@ def auto_approve_drafted_contract(
         # whole tick.
         return False
     return True
+
+
+def _goal_pre_authorizes_contract(conn: sqlite3.Connection, contract: Any) -> bool:
+    """Return True iff the contract's bound Goal has a user-pinned
+    ``plan.pre_authorized`` that covers the contract's claimed scope.
+
+    A contract with no Goal binding, or a Goal without
+    ``pre_authorized``, returns False.  When the contract claims
+    actions not in the user-pinned scope, the answer is also False
+    so the model cannot escalate beyond the user's grant.
+    """
+    goal_id = getattr(contract, "goal_id", None)
+    if not goal_id:
+        return False
+    goal = get_goal(conn, goal_id)
+    if goal is None:
+        return False
+    plan = goal.get("plan")
+    if not isinstance(plan, dict):
+        return False
+    pre_authorized = plan.get("pre_authorized")
+    if not isinstance(pre_authorized, dict):
+        return False
+    if not bool(pre_authorized.get("enabled", False)):
+        return False
+    granted = pre_authorized.get("actions") or ()
+    if not isinstance(granted, (list, tuple)):
+        return False
+    granted_set = {str(a) for a in granted if a}
+    if not granted_set:
+        return False
+    claimed = getattr(contract.draft, "auto_approve", None)
+    if claimed is None or not getattr(claimed, "enabled", False):
+        # Contract doesn't claim pre-auth; honour the user's
+        # Goal-level grant as a generic "you said this goal is
+        # pre-authorised" sign-off.  Useful for the
+        # spec-only-stage flow where the synthesizer pre-fills
+        # ``auto_approve.enabled=False`` (it never claims any
+        # action scope) but the user has pre-authorised the
+        # whole stage at the Goal level.
+        return True
+    claimed_actions = {str(a) for a in claimed.actions if a}
+    return claimed_actions.issubset(granted_set)
 
 
 def list_drafted_contracts(conn: sqlite3.Connection) -> list[Any]:

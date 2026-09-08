@@ -74,7 +74,7 @@ def handle_contract_prepare(
 ) -> dict[str, Any]:
     """起草/创建合同（DESIGN §4、§5、§11.2、§11.6）。"""
     params = envelope.params
-    draft = parse_contract_draft(params)
+    draft = parse_contract_draft(params, envelope=envelope)
 
     contract_id = str(params.get("contract_id", "")).strip()
     if not contract_id:
@@ -87,6 +87,7 @@ def handle_contract_prepare(
         )
 
     actor = resolve_actor(envelope, params)
+    goal_id_param = str(params.get("goal_id") or "").strip() or None
     try:
         view = save_contract(
             conn,
@@ -95,6 +96,7 @@ def handle_contract_prepare(
             now=now,
             request_id=envelope.request_id,
             actor=actor,
+            goal_id=goal_id_param,
         )
     except StoreTamperedError as exc:
         raise RpcError(code=ErrorCode.STORE_TAMPERED, message=str(exc)) from exc

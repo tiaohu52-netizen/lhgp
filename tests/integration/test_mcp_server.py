@@ -145,7 +145,15 @@ def test_mcp_prepare_cannot_impersonate_user_client(tmp_path: Path) -> None:
 
 def test_mcp_submit_plan_approved_emits_audit_events(tmp_path: Path) -> None:
     """End-to-end: lhgp_submit_plan writes plan/submitted + plan/approved
-    when validation passes, and surfaces the verdict in the response."""
+    when validation passes, and surfaces the verdict in the response.
+
+    5th-round follow-up: MCP-issued contracts can no longer
+    self-authorize via the per-contract ``auto_approve`` field;
+    the trusted source is the bound Goal's
+    ``plan.pre_authorized`` (user-pinned at ``goal/update`` time).
+    This test sets that pre-authorization on the Goal so the
+    submit-plan path can still auto-approve the plan.
+    """
     from longtask.adapters.registry import ExecutorRegistry
     from longtask.mcp_server import tool_prepare_contract, tool_submit_plan
     from longtask.persistence.events import EventType
@@ -154,10 +162,42 @@ def test_mcp_submit_plan_approved_emits_audit_events(tmp_path: Path) -> None:
         connect,
         ensure_schema,
         get_events,
+        patch_goal,
     )
 
     conn = connect(StoreConfig(db_path=tmp_path / "state.db"))
     ensure_schema(conn)
+    goal_id = "lt-tpa-mcp-plan"
+    # Bootstrap the goal via save_contract (which auto-creates
+    # the goal row); patch_goal then CAS-updates the plan with
+    # the user-pinned pre_authorized scope.  Use a separate
+    # contract_id so the timestamp-generated id does not
+    # collide with the test contract below.
+    tool_prepare_contract(
+        {
+            "title": "goal bootstrap",
+            "objective": "x",
+            "deadline_at": (datetime.now(UTC) + timedelta(hours=2)).isoformat(),
+            "acceptance_standard": "x",
+            "acceptance_checks": ["x"],
+            "contract_id": f"{goal_id}-bootstrap",
+            "goal_id": goal_id,
+        },
+        {"conn": conn, "registry": ExecutorRegistry(), "root": tmp_path},
+    )
+    patch_goal(
+        conn,
+        goal_id=goal_id,
+        now=datetime.now(UTC),
+        expected_revision=1,
+        actor="user",
+        plan={
+            "pre_authorized": {
+                "enabled": True,
+                "actions": ["verify acceptance"],
+            },
+        },
+    )
     try:
         prepared = tool_prepare_contract(
             {
@@ -166,10 +206,8 @@ def test_mcp_submit_plan_approved_emits_audit_events(tmp_path: Path) -> None:
                 "deadline_at": (datetime.now(UTC) + timedelta(hours=2)).isoformat(),
                 "acceptance_standard": "plan approved",
                 "acceptance_checks": ["plan approved"],
-                "auto_approve": {
-                    "enabled": True,
-                    "actions": ["verify acceptance"],
-                },
+                "contract_id": "lt-tpa-mcp-plan-main",
+                "goal_id": goal_id,
             },
             {"conn": conn, "registry": ExecutorRegistry(), "root": tmp_path},
         )

@@ -286,8 +286,28 @@ def _insert_goal_with_3_stages(conn: sqlite3.Connection, workspace: Path) -> Non
     propagate ``workspace_root``).  Every stage declares
     ``auto_approve.enabled=True`` so the chain runs without
     a follow-up RPC.
+
+    5th-round follow-up: the trusted source of pre-authorization
+    is the Goal's ``plan.pre_authorized`` (user-pinned at
+    ``goal/update`` time).  Setting it here is the
+    user-side pre-authorisation that lets the auto-approve
+    primitive promote each stage's DRAFTED contract to
+    ACTIVE without a follow-up RPC.
     """
     plan = {
+        "pre_authorized": {
+            "enabled": True,
+            "actions": [
+                "read file",
+                "run command",
+                "ask user",
+                "verify acceptance",
+                "write file",
+                "search code",
+            ],
+            "max_budget_increment": 5,
+            "max_spec_changes": 5,
+        },
         "stages": [
             {
                 "id": "stage-1",
@@ -307,7 +327,7 @@ def _insert_goal_with_3_stages(conn: sqlite3.Connection, workspace: Path) -> Non
                 "spec": _stage_spec("stage-3", "final.md", "file-exists"),
                 "draft": _stage_draft("stage-3", "final.md", "file-exists", workspace),
             },
-        ]
+        ],
     }
     conn.execute(
         "INSERT INTO goals (goal_id, revision, title, objective, plan_json,"
