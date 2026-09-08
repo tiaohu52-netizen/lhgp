@@ -46,10 +46,8 @@ from longtask.persistence.store import (
     StoreError,
     _notification_available_at,
     append_event,
-    auto_approve_drafted_contract,
     get_contract,
     get_events,
-    get_goal,
     get_lease,
     list_contracts,
     update_contract_state,
@@ -1110,139 +1108,26 @@ def _synthesize_stage_draft(
     now: datetime,
     conn: sqlite3.Connection | None = None,
 ) -> dict[str, Any]:
-    """Build a contract draft from a stage's structured spec.
+    """Thin alias to :func:`synthesize_stage_draft`.
 
-    Carries every spec field the ``ContractDraft`` can hold
-    (title/objective/deadline/acceptance/budget) and forwards
-    the rest (scope, dependencies, artifacts) into ``context``.
-    When ``conn`` is given, the previous stage's ``auto_approve``
-    is propagated via :meth:`AutoApprove.inherit_from` so
-    pre-authorisation carries across stages.
+    The canonical implementation lives in
+    :mod:`longtask.persistence.stage_synth` so the contract
+    RPC handler can call it without violating the
+    ``rpc → cli is forbidden`` arch rule. Kept here as a
+    module-level name so tick.py's existing call sites stay
+    stable.
     """
-    raw_spec: dict[str, Any] = dict(stage["spec"]) if isinstance(stage.get("spec"), dict) else {}
-    # 4th-round review (2026-09-08): ``validate_stage_entry``
-    # treats ``stage.spec`` as a full StageSpec envelope
-    # (``goal``/``scope``/``acceptance``/etc.) and rejects a
-    # plain boolean body.  The previous synthesizer read it as
-    # the boolean body, so a user who passed the validator with
-    # a proper envelope saw the synthesizer build a draft from a
-    # malformed raw_spec, the next-stage contract never created.
-    # Align: read the envelope directly when the spec looks like
-    # an envelope (any of the structured keys is present); fall
-    # back to the legacy boolean-body shape for old plans.
-    envelope_keys: set[str] = {
-        "goal",
-        "scope",
-        "acceptance",
-        "dependencies",
-        "artifacts",
-        "time_budget",
-        "budget",
-        "permissions",
-    }
-    if envelope_keys.intersection(raw_spec.keys()):
-        spec_envelope: dict[str, Any] = dict(raw_spec)
-        if "goal" not in spec_envelope or not str(spec_envelope["goal"]).strip():
-            spec_envelope["goal"] = str(stage.get("title") or stage.get("id") or "stage")
-    else:
-        spec_envelope = {
-            "goal": str(stage.get("title") or stage.get("id") or "stage"),
-            "acceptance": raw_spec,
-        }
-        for opt_key in (
-            "scope",
-            "dependencies",
-            "artifacts",
-            "time_budget",
-            "budget",
-            "permissions",
-        ):
-            v = stage.get(opt_key)
-            if v is not None:
-                spec_envelope[opt_key] = v
-    from lhgp.goals.stage import StageSpec
+    from longtask.persistence.stage_synth import (
+        synthesize_stage_draft as _impl,
+    )
 
-    spec = StageSpec.from_dict(spec_envelope)
-    title = str(stage.get("title") or spec.goal or str(stage.get("id", "stage")))
-    objective = spec.goal or str(goal.get("objective") or title)
-    if spec.deadline_at:
-        deadline_iso = str(spec.deadline_at)
-    else:
-        deadline_iso = (now + timedelta(hours=24)).isoformat()
-    # Recursively walk the boolean spec (all/any + leaf criteria) so
-    # a plan author can mention any of the substantive machine
-    # criteria; the legacy "only ``all``" path left ``any`` branches
-    # as the placeholder.  The boolean body is the ``acceptance``
-    # field of the envelope (or the legacy raw_spec for old plans).
-    boolean_body: Any = spec_envelope.get("acceptance", raw_spec)
-    acceptance_checks: list[Any] = []
-    _collect_machine_checks(boolean_body, acceptance_checks)
-    if not acceptance_checks:
-        acceptance_checks = [
-            {
-                "kind": "artifact-present",
-                "target": f"stage:{stage.get('id', 'unknown')}",
-                "mandatory": True,
-            }
-        ]
-    context: dict[str, Any] = {
-        "stage_spec": boolean_body,
-        "stage_id": stage.get("id"),
-    }
-    if previous_evidence:
-        context["previous_evidence"] = previous_evidence
-    if spec.dependencies:
-        context["dependencies"] = list(spec.dependencies)
-    if spec.artifacts:
-        context["expected_artifacts"] = list(spec.artifacts)
-    if spec.modifiable_scope:
-        context["modifiable_scope"] = list(spec.modifiable_scope)
-    if spec.functional or spec.interfaces or spec.constraints or spec.out_of_scope:
-        # The 4-tuple is a free-form scoping paragraph; surface it
-        # under ``context.scope`` so the executor reads the user's
-        # stated boundaries without parsing the acceptance spec.
-        context["scope"] = {
-            "functional": list(spec.functional),
-            "interfaces": list(spec.interfaces),
-            "constraints": list(spec.constraints),
-            "out_of_scope": list(spec.out_of_scope),
-        }
-    hard_constraints: dict[str, Any] = {}
-    if spec.modifiable_scope:
-        hard_constraints["modifiable_scope"] = list(spec.modifiable_scope)
-    draft: dict[str, Any] = {
-        "title": title,
-        "objective": objective,
-        "deadline_at": deadline_iso,
-        "hard_constraints": hard_constraints,
-        "acceptance": {
-            "standard": objective,
-            "checks": acceptance_checks,
-            "verifier": "cross_check",
-            "spec": boolean_body,
-            "spec_hash": spec.spec_hash() or None,
-        },
-        "workload_estimate": {"initial_hours": 1.0},
-        "budget": {
-            "max_dispatches": max(1, spec.max_dispatches),
-            "max_escalations": 2,
-            "max_concurrent_attempts": max(1, spec.max_concurrent_attempts),
-            "max_attempt_minutes": max(1, spec.max_attempt_minutes),
-            "max_output_bytes": 1_048_576,
-        },
-        "context": context,
-    }
-    # Propagate the user's pre-authorised auto-approve scope from
-    # the previous stage's contract so the next-stage contract can
-    # be auto-approved (submit-and-leave).  Best-effort: if the
-    # previous stage has no bound contract, ``conn`` is None, or
-    # the contract is missing, no key is added and the synthesized
-    # draft falls back to the default (enabled=False) — which is
-    # the legacy behaviour and is safe.
-    prev_auto_approve = _resolve_previous_auto_approve(goal, stage, conn)
-    if prev_auto_approve is not None:
-        draft["auto_approve"] = AutoApprove().inherit_from(prev_auto_approve).to_dict()
-    return draft
+    return _impl(
+        goal,
+        stage,
+        previous_evidence=previous_evidence,
+        now=now,
+        conn=conn,
+    )
 
 
 def _resolve_previous_auto_approve(
@@ -1250,65 +1135,30 @@ def _resolve_previous_auto_approve(
     stage: dict[str, Any],
     conn: sqlite3.Connection | None,
 ) -> AutoApprove | None:
-    """Return the previous stage's contract ``auto_approve``,
-    or ``None`` for any silent-degrade case (no conn, no plan,
-    no prev stage, no contract_id, contract missing).
+    """Re-export the persistence implementation.
+
+    The canonical implementation lives in
+    :mod:`longtask.persistence.stage_synth` so the contract
+    RPC handler can call it without violating the
+    ``rpc → cli is forbidden`` arch rule. Kept here as a
+    module-level name so tick.py's existing call sites stay
+    stable.
     """
-    if conn is None:
-        return None
-    plan_raw = goal.get("plan")
-    if not isinstance(plan_raw, dict):
-        return None
-    stages_raw = plan_raw.get("stages")
-    if not isinstance(stages_raw, list):
-        return None
-    # Match by ``id`` rather than by ``list.index`` (which uses
-    # ``==`` on dicts and can hit a wrong-but-equal sibling if a
-    # plan is rebuilt through JSON round-trips).  Falls back to
-    # the first index with the same id.
-    target_id = stage.get("id") if isinstance(stage, dict) else None
-    if target_id is None:
-        return None
-    idx = next(
-        (i for i, s in enumerate(stages_raw) if isinstance(s, dict) and s.get("id") == target_id),
-        None,
+    from longtask.persistence.stage_synth import (
+        _resolve_previous_auto_approve as _impl,
     )
-    if idx is None or idx <= 0:
-        return None
-    prev = stages_raw[idx - 1]
-    if not isinstance(prev, dict):
-        return None
-    prev_cid = prev.get("contract_id")
-    if not prev_cid:
-        return None
-    prev_contract = get_contract(conn, str(prev_cid))
-    if prev_contract is None:
-        return None
-    return prev_contract.draft.auto_approve
+
+    return _impl(goal, stage, conn)
 
 
 def _collect_machine_checks(node: Any, out: list[dict[str, Any]]) -> None:
-    """Walk a boolean spec and append every leaf machine criterion.
+    """Re-export the persistence implementation.
 
-    Handles ``{"all": [...]}``, ``{"any": [...]}``, and bare
-    criterion dicts. Stops at non-machine leaves (user/agent judges)
-    since the plan gate only requires coverage of typed checks.
+    See ``_resolve_previous_auto_above`` for the rationale.
     """
-    if not isinstance(node, dict):
-        return
-    for comb in ("all", "any"):
-        children = node.get(comb)
-        if isinstance(children, list):
-            for child in children:
-                _collect_machine_checks(child, out)
-            return
-    judge = node.get("judge")
-    if judge != "machine":
-        return
-    kind = node.get("kind")
-    target = node.get("target")
-    if isinstance(kind, str) and kind.strip() and isinstance(target, str) and target.strip():
-        out.append({"kind": kind, "target": target, "mandatory": True})
+    from longtask.persistence.stage_synth import _collect_machine_checks as _impl
+
+    _impl(node, out)
 
 
 def _auto_create_next_stage_contract(
@@ -1318,93 +1168,21 @@ def _auto_create_next_stage_contract(
     now: datetime,
     previous_evidence: dict[str, Any] | None = None,
 ) -> None:
-    """If the goal has a next stage without a bound contract, create it.
+    """Thin alias to :func:`auto_create_next_stage_contract`.
 
-    Two paths to a draft:
-    1. ``stage.draft`` — model caller pre-supplied a draft. Used as-is.
-    2. ``stage.spec`` — structured stage spec. We synthesize a draft
-       from the spec (title, objective, deadline, acceptance,
-       budget). The previous stage's verifier evidence is included in
-       the new contract's ``context`` so the executor can reference
-       produced artifacts.
-
-    Failure is silent — the next ``goal_next`` call will surface
-    ``create_contract`` so the caller can re-attempt with full
-    authority.
+    The canonical implementation lives in
+    :mod:`longtask.rpc.handlers._lifecycle` so the contract
+    RPC handler (e.g. ``handle_contract_user_confirm``) can
+    call it after advancing the Goal without violating the
+    ``rpc → cli is forbidden`` arch rule.  ``root`` is kept
+    in the signature for compatibility with the daemon tick's
+    existing call sites; the implementation no longer needs it.
     """
-    goal = get_goal(conn, contract.goal_id)
-    if goal is None:
-        return
-    progress_raw = goal.get("progress")
-    progress: dict[str, Any] = progress_raw if isinstance(progress_raw, dict) else {}
-    next_stage_id = progress.get("current")
-    if not next_stage_id:
-        return
-    plan_raw = goal.get("plan")
-    plan: dict[str, Any] = plan_raw if isinstance(plan_raw, dict) else {}
-    stages_raw = plan.get("stages")
-    stages: list[Any] = stages_raw if isinstance(stages_raw, list) else []
-    next_stage = next(
-        (s for s in stages if isinstance(s, dict) and str(s.get("id", "")) == str(next_stage_id)),
-        None,
+    from longtask.rpc.handlers._lifecycle import (
+        auto_create_next_stage_contract as _impl,
     )
-    if next_stage is None:
-        return
-    if next_stage.get("contract_id"):
-        # Already bound by a previous run.
-        return
-    inline_draft = next_stage.get("draft")
-    if isinstance(inline_draft, dict):
-        draft = dict(inline_draft)
-        draft.setdefault("context", {})
-        if previous_evidence:
-            draft["context"]["previous_evidence"] = previous_evidence
-    elif isinstance(next_stage.get("spec"), dict):
-        draft = _synthesize_stage_draft(
-            goal,
-            next_stage,
-            previous_evidence=previous_evidence,
-            now=now,
-            conn=conn,
-        )
-    else:
-        return
-    import uuid
 
-    from longtask.rpc.handlers.goal import handle_goal_prepare
-    from longtask.rpc.methods import Method
-    from longtask.rpc.server import RequestEnvelope
-
-    new_cid = f"lt-{now.strftime('%Y%m%d')}-{next_stage_id}-{uuid.uuid4().hex[:6]}"
-    envelope = RequestEnvelope(
-        method=Method.GOAL_PREPARE,
-        request_id=f"req-auto-{next_stage_id}-{new_cid}",
-        client_id="daemon",
-        protocol_version=2,
-        params={
-            "contract_id": new_cid,
-            "goal_id": contract.goal_id,
-            "stage_id": str(next_stage_id),
-            "draft": draft,
-        },
-    )
-    try:
-        handle_goal_prepare(envelope, conn=conn, now=now)
-    except Exception:
-        return
-
-    # Submit-and-leave: if the new contract is pre-authorised, push it
-    # from DRAFTED to ACTIVE so the dispatcher can pick it up without
-    # a follow-up call. Best-effort: if the per-stage auto_approve has
-    # not yet been propagated (Worker C) the helper no-ops; if anything
-    # here raises, the per-tick scan (list_drafted_contracts) will
-    # retry on the next tick.
-    try:
-        new_contract = get_contract(conn, new_cid)
-        if new_contract is not None:
-            auto_approve_drafted_contract(conn, new_contract, now)
-    except Exception:
-        return
+    _impl(conn, contract, now, previous_evidence=previous_evidence)
 
 
 def _remaining_workload_hours(root: Path, contract: Any) -> float:

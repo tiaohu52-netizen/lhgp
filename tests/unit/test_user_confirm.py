@@ -271,6 +271,95 @@ def test_user_confirm_advances_goal_stage(tmp_path: Path) -> None:
     conn.close()
 
 
+def test_user_confirm_creates_next_stage_contract(tmp_path: Path) -> None:
+    """User-confirm must close the current contract AND create
+    the next-stage contract.  The 5th-round follow-up reviewer
+    observed that the verifier-driven path funnels through
+    ``_auto_create_next_stage_contract`` (in the daemon tick)
+    so a verifier-passed next-stage contract is created
+    automatically, but the user-confirm handler in the RPC
+    path only advanced the Goal — no next-stage contract was
+    created, and the dispatcher never picked it up.
+
+    This test pins the unified path: both verifier-passed
+    and user-confirmed close the contract, advance the Goal,
+    AND create the next-stage contract (DRAFTED state with
+    the new stage's contract_id).
+    """
+    from lhgp.goals.stage import StageSpec
+    from longtask.persistence.store import (
+        list_contracts,
+        patch_goal,
+    )
+
+    conn, cid, envelope = _seed_candidate_contract(tmp_path, client_id="cli")
+    goal_id = "lt-uc-1"  # the seeded contract's goal_id
+    s1_envelope = StageSpec(
+        goal="first goal",
+        acceptance={"all": [{"judge": "user", "question": "summary 满意吗？"}]},
+    ).to_dict()
+    s2_envelope = StageSpec(
+        goal="second goal",
+        acceptance={
+            "all": [
+                {
+                    "judge": "machine",
+                    "kind": "file-exists",
+                    "target": "next.md",
+                }
+            ]
+        },
+    ).to_dict()
+    patch_goal(
+        conn,
+        goal_id=goal_id,
+        now=NOW,
+        expected_revision=1,
+        actor="user",
+        plan={
+            "stages": [
+                {"id": "s1", "title": "first", "spec": s1_envelope, "contract_id": cid},
+                {"id": "s2", "title": "second", "spec": s2_envelope},
+            ]
+        },
+    )
+    # Pre-condition: only one contract in the DB (the seeded s1).
+    pre = [c for c in list_contracts(conn) if c.goal_id == goal_id]
+    assert len(pre) == 1
+    assert pre[0].contract_id == cid
+
+    # User-confirm — must close s1, advance Goal to s2, AND
+    # create the s2 contract in DRAFTED state.
+    tool_user_confirm_spec_verdict(
+        envelope.params,
+        ctx={"conn": conn, "now": NOW, "envelope": envelope},
+    )
+    post = [c for c in list_contracts(conn) if c.goal_id == goal_id]
+    assert len(post) == 2, (
+        f"user-confirm must create the next-stage contract; got {[c.contract_id for c in post]}"
+    )
+    s1 = next(c for c in post if c.contract_id == cid)
+    s2 = next(c for c in post if c.contract_id != cid)
+    assert s1.state == ContractState.COMPLETE
+    assert s1.acceptance_status == AcceptanceStatus.PASSED
+    assert s2.state == ContractState.DRAFTED, (
+        f"next-stage contract must start in DRAFTED for the dispatcher; got {s2.state!r}"
+    )
+    # s2 must carry the synthesized spec from the stage entry
+    # (not a hand-rolled fixture).
+    assert s2.draft.acceptance.spec is not None
+    assert s2.draft.acceptance.spec_hash is not None
+    # s2 must be bound to the goal's current stage.
+    from longtask.persistence.store import get_goal
+
+    goal = get_goal(conn, goal_id)
+    assert goal["progress"]["current"] == "s2"
+    plan = goal["plan"]
+    s2_stage = next(s for s in plan["stages"] if s["id"] == "s2")
+    assert s2_stage["contract_id"] == s2.contract_id
+    conn.close()
+
+
 def test_user_confirm_rejects_non_candidate(tmp_path: Path) -> None:
     """A user-confirm on a non-CANDIDATE contract is rejected
     with VALIDATION_FAILED — guards against accidentally

@@ -739,6 +739,7 @@ def handle_contract_user_confirm(
         advance_goal_after_verified_contract,
         transaction,
     )
+    from longtask.rpc.handlers._lifecycle import auto_create_next_stage_contract
 
     # Pre-transaction snapshot.  ``current.revision`` here is
     # the CAS baseline that ``update_contract_state`` will check
@@ -806,6 +807,16 @@ def handle_contract_user_confirm(
                 actor=principal_actor,
             )
             advance_goal_after_verified_contract(conn, updated, now)
+            # User-confirm closes the contract and advances the
+            # Goal; if the next stage has no bound contract, create
+            # it now so the dispatcher can pick it up on the next
+            # tick (mirrors the verifier-driven path in the daemon
+            # tick — both must funnel through this helper so
+            # user-confirm and verifier-passed produce the same
+            # next-stage contract).  Best-effort: any failure here
+            # is silent, ``goal/next`` will surface
+            # ``create_contract`` so the caller can re-attempt.
+            auto_create_next_stage_contract(conn, updated, now)
     except RevisionConflictError as exc:
         # The CAS rejected the state update.  The transaction
         # rolled back any events we appended; the contract view
