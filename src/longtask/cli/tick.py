@@ -1262,11 +1262,18 @@ def _resolve_previous_auto_approve(
     stages_raw = plan_raw.get("stages")
     if not isinstance(stages_raw, list):
         return None
-    try:
-        idx = stages_raw.index(stage)
-    except ValueError:
+    # Match by ``id`` rather than by ``list.index`` (which uses
+    # ``==`` on dicts and can hit a wrong-but-equal sibling if a
+    # plan is rebuilt through JSON round-trips).  Falls back to
+    # the first index with the same id.
+    target_id = stage.get("id") if isinstance(stage, dict) else None
+    if target_id is None:
         return None
-    if idx <= 0:
+    idx = next(
+        (i for i, s in enumerate(stages_raw) if isinstance(s, dict) and s.get("id") == target_id),
+        None,
+    )
+    if idx is None or idx <= 0:
         return None
     prev = stages_raw[idx - 1]
     if not isinstance(prev, dict):

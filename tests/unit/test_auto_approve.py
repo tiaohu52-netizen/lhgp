@@ -42,6 +42,8 @@ from longtask.rpc.handlers.contract import handle_contract_auto_approve
 
 NOW = datetime(2026, 9, 1, 12, 0, 0, tzinfo=UTC)
 
+pytestmark = pytest.mark.real_entry
+
 
 def _seed_drafted_contract(
     tmp_path: Path, *, auto_approve: AutoApprove

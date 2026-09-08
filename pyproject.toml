@@ -120,6 +120,7 @@ markers = [
     "unit: 纯逻辑单元测试（无 IO、无子进程、毫秒级）",
     "integration: 涉及 SQLite/文件系统/子进程的集成测试",
     "conformance: 协议一致性场景（拒接、fencing、崩溃恢复）",
+    "real_entry: 真实入口测试（真子进程 CLI / 真 JSON-RPC stdio / 真 RequestEnvelope+route）",
 ]
 
 # ── coverage（棘轮：fail_under 是地板，只许上调；见 CONTRIBUTING.md）──

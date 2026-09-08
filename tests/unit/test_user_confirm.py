@@ -41,6 +41,8 @@ from longtask.persistence.store import (
 
 NOW = datetime(2026, 9, 1, 12, 0, 0, tzinfo=UTC)
 
+pytestmark = pytest.mark.real_entry
+
 
 def _seed_candidate_contract(
     tmp_path: Path, *, client_id: str = "cli"
