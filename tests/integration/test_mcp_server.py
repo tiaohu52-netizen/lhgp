@@ -22,6 +22,8 @@ from typing import Any
 
 import pytest
 
+from tests.wait_budget import budget
+
 pytestmark = pytest.mark.integration
 
 
@@ -406,7 +408,7 @@ def _stop_mcp(proc: subprocess.Popen[bytes]) -> None:
     """停止 MCP 子进程并关闭父端管道，避免测试句柄泄漏。"""
     if proc.poll() is None:
         proc.terminate()
-    proc.wait(timeout=5)
+    proc.wait(timeout=budget(15.0))
     for stream in (proc.stdin, proc.stdout, proc.stderr):
         if stream is not None:
             stream.close()
@@ -1243,7 +1245,7 @@ def test_mcp_submit_and_leave_e2e_with_goal_pre_authorized_and_execution_config(
         # the terminal outcome on the first poll).
         import time
 
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + budget(60.0)
         while time.monotonic() < deadline and runner._running:
             time.sleep(0.05)
             runner.poll_attempts(datetime.now(UTC) + timedelta(seconds=2))

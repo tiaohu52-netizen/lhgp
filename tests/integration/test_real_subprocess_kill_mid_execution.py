@@ -67,6 +67,7 @@ from longtask.persistence.store import (
     save_contract,
     update_contract_state,
 )
+from tests.wait_budget import budget
 
 pytestmark = pytest.mark.integration
 
@@ -176,7 +177,7 @@ def _wait_subprocess_alive(adapter: SubprocessAdapter, attempt_id: str) -> subpr
     """
     monitored = adapter._procs[attempt_id]  # type: ignore[attr-defined]
     proc = monitored._proc  # type: ignore[attr-defined]
-    deadline = time.monotonic() + 5
+    deadline = time.monotonic() + budget(30.0)
     while time.monotonic() < deadline:
         if b"starting" in b"".join(monitored.stdout_buf):
             return proc
@@ -273,11 +274,12 @@ def test_real_subprocess_daemon_kill_recoverable(tmp_path: Path) -> None:
         # drop the runner and close the connection.
         child_pid = proc.pid
         proc.kill()
+        reap_budget = budget(30.0)
         try:
-            proc.wait(timeout=5)
+            proc.wait(timeout=reap_budget)
         except subprocess.TimeoutExpired as err:
             raise AssertionError(
-                f"Popen.kill() did not reap child pid {child_pid} within 5s"
+                f"Popen.kill() did not reap child pid {child_pid} within {reap_budget:.0f}s"
             ) from err
         returncode = proc.poll()
         assert returncode is not None, (

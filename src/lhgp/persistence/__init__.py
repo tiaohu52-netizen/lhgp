@@ -9,10 +9,13 @@ __all__ = [
     "EventInput",
     "EventType",
     "Notification",
+    "ResumeBrief",
+    "ResumeBriefError",
     "StoreConfig",
     "StoredEvent",
     "StoredLease",
     "WriteBackResult",
+    "build_resume_brief",
     "claim_notifications",
     "connect",
     "drain_notifications",
@@ -61,4 +64,8 @@ def __getattr__(name: str) -> object:
         from lhgp.persistence import store
 
         return getattr(store, name)
+    if name in {"ResumeBrief", "ResumeBriefError", "build_resume_brief"}:
+        from lhgp.persistence import resume
+
+        return getattr(resume, name)
     raise AttributeError(name)

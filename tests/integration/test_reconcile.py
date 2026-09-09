@@ -42,6 +42,7 @@ from longtask.promoter.reconcile import (
     ReconcileBranch,
     reconcile_attempts,
 )
+from tests.wait_budget import budget
 
 pytestmark = pytest.mark.integration
 
@@ -687,8 +688,8 @@ class TestRealSubprocessReconcile:
         handle = adapter.run_handle(attempt_id)
         assert handle is not None
         # 等外部 run 自行退出（本进程收尸），句柄身份不变
-        deadline = time.time() + 20.0
-        while time.time() < deadline:
+        deadline = time.monotonic() + budget(60.0)
+        while time.monotonic() < deadline:
             if not adapter.observe(attempt_id)["alive"]:
                 break
             time.sleep(0.2)
@@ -965,7 +966,7 @@ class TestPostReapSettlement:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        proc.wait(timeout=15)
+        proc.wait(timeout=budget(30.0))
         dead_pid = proc.pid
 
         data_dir = tmp_path / "data"

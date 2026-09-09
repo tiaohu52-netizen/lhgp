@@ -504,7 +504,7 @@ def auto_approve_drafted_contract(
     """
     if contract.state != ContractState.DRAFTED:
         return False
-    if not _goal_pre_authorizes_contract(conn, contract, plan_approved_override=True):
+    if not _goal_pre_authorizes_contract(conn, contract, now, plan_approved_override=True):
         return False
     try:
         # Revision CAS engaged (4th-round verifier 2 finding):
@@ -534,6 +534,7 @@ def auto_approve_drafted_contract(
 def _goal_pre_authorizes_contract(
     conn: sqlite3.Connection,
     contract: Any,
+    now: datetime,
     *,
     plan_approved_override: bool = False,
 ) -> bool:
@@ -613,7 +614,14 @@ def _goal_pre_authorizes_contract(
             is_wildcard
             or (
                 plan_approved_override
-                and _has_recent_plan_approval_for_goal(conn, contract.contract_id, granted_set)
+                and _has_recent_plan_approval_for_goal(
+                    conn,
+                    contract.contract_id,
+                    granted_set,
+                    now,
+                    goal_id=goal_id,
+                    current_pre_authorized=pre_authorized,
+                )
             )
         )
     claimed_actions = {str(a) for a in claimed.actions if a}
@@ -628,20 +636,107 @@ def _goal_pre_authorizes_contract(
 
 # Plan-approval lookback window for the
 # ``_goal_pre_authorizes_contract`` plan-approval override.
-# Mirrors the dispatcher's PLAN_GATE_LOOKBACK_SECONDS so a
-# plan approval and its follow-up auto-activate live in
-# the same window.  2 hours is generous enough that a
-# test suite or staging environment with a clock skew
-# between the seeded ``NOW`` and the real wall clock
-# still falls inside the window — a 30-minute window
-# trips the boundary in practice.
+#
+# Deliberately STRICTER than the dispatcher's
+# ``longtask.cli.dispatch.PLAN_GATE_LOOKBACK_SECONDS`` (24 h):
+# this window gates the irreversible DRAFTED -> ACTIVE
+# promotion, that one only keeps an already-approved contract
+# dispatchable.  An approval that has aged out of this window
+# can no longer auto-promote a contract; the user re-signs via
+# ``lhgp_plan_signoff`` (or approves the contract directly).
+# The two windows are therefore not interchangeable and are not
+# claimed to be: keep this value at or below the dispatch window
+# so an auto-activated contract is never refused dispatch for
+# being "too fresh".
+#
+# Both windows are measured against the **caller-supplied
+# clock** (the daemon tick's ``now``), never the process wall
+# clock: a seeded/replayed clock must produce the same verdict
+# as the live one, or the two gates cannot be tested together.
 PLAN_OVERRIDE_LOOKBACK_SECONDS = 7200
+
+
+def _grant_scope(pre_authorized: dict[str, Any]) -> tuple[set[str], bool]:
+    """Return ``(actions, wildcard)`` of a ``plan.pre_authorized`` grant.
+
+    ``actions`` is an unordered set as far as authorization is concerned, so
+    it is normalized to a ``set[str]``; reordering the stored list is not a
+    change of scope.  Malformed ``actions`` degrades to the empty set rather
+    than being trusted.
+    """
+    actions = pre_authorized.get("actions") or ()
+    if not isinstance(actions, (list, tuple)):
+        actions = ()
+    granted = {str(a) for a in actions if a}
+    return granted, bool(pre_authorized.get("wildcard", False))
+
+
+def _grant_still_covers(previous: dict[str, Any], current: dict[str, Any]) -> bool:
+    """True iff ``current`` grants at least everything ``previous`` did.
+
+    The approval certified that the plan's scope sat inside the grant that
+    was live *at approval time*.  Monotonicity is what decides whether that
+    certification survives a later grant edit:
+
+    - widening (adding actions, or turning a bounded grant into a
+      ``wildcard``) keeps every action the approval relied on covered, so
+      the approval stays valid;
+    - narrowing or swapping actions drops coverage, so the user must sign
+      off again;
+    - revoking a ``wildcard`` always drops coverage, because an approval
+      made under a wildcard has no enumerable action set to re-check.
+    """
+    previous_actions, previous_wildcard = _grant_scope(previous)
+    current_actions, current_wildcard = _grant_scope(current)
+    if previous_wildcard:
+        return current_wildcard
+    if current_wildcard:
+        return True
+    return previous_actions <= current_actions
+
+
+def _grant_as_of(
+    conn: sqlite3.Connection,
+    goal_id: str,
+    approval_created_at: str,
+) -> dict[str, Any] | None:
+    """The Goal's ``pre_authorized`` grant as of ``approval_created_at``.
+
+    Reconstructed from the audit trail: ``patch_goal`` appends a
+    ``GOAL_AMENDED`` event carrying the full post-patch plan, so the newest
+    amendment at or before the approval is exactly the grant the approval
+    was validated against.  ``None`` means "not reconstructable" (no
+    amendment yet, or a malformed payload) — callers treat that as unknown
+    rather than as a mismatch, so a Goal whose grant predates this helper
+    keeps behaving as it always did.
+    """
+    row = conn.execute(
+        "SELECT payload_json FROM events "
+        "WHERE goal_id = ? AND event_type = ? AND created_at <= ? "
+        "ORDER BY created_at DESC LIMIT 1",
+        (goal_id, EventType.GOAL_AMENDED.value, approval_created_at),
+    ).fetchone()
+    if row is None:
+        return None
+    try:
+        payload = json.loads(row[0] or "{}")
+    except (TypeError, ValueError):
+        return None
+    plan = payload.get("plan") if isinstance(payload, dict) else None
+    pre_authorized = plan.get("pre_authorized") if isinstance(plan, dict) else None
+    if not isinstance(pre_authorized, dict):
+        return None
+    return pre_authorized
 
 
 def _has_recent_plan_approval_for_goal(
     conn: sqlite3.Connection,
     contract_id: str,
     granted_set: set[str],
+    now: datetime,
+    *,
+    goal_id: str | None = None,
+    current_pre_authorized: dict[str, Any] | None = None,
 ) -> bool:
     """Return True iff ``contract_id`` has a recent ``PLAN_APPROVED``
     that is still binding to ``granted_set`` and has not been
@@ -657,9 +752,20 @@ def _has_recent_plan_approval_for_goal(
       and the prior approval must not be enough to push a
       DRAFTED contract through.  The submit-time subset
       check ran against the OLD grant, not the current one.
-      We now require ``granted_set`` to be non-empty (a
-      bounded grant is the only signal we trust to bypass
-      ``wildcard=True``).
+
+      Follow-up (2026-09-10): the remedy first shipped here —
+      requiring ``granted_set`` to be non-empty — only catches
+      a grant emptied to ``[]``.  A grant swapped to a
+      different non-empty scope (``["write file"]`` →
+      ``["read file"]``) sailed through it, so the invariant
+      the docstring promised was not the invariant enforced.
+      The real check is grant *drift*: when the caller supplies
+      ``goal_id`` / ``current_pre_authorized``, the grant as of
+      the approval is reconstructed from the ``GOAL_AMENDED``
+      trail and must still cover it (see
+      :func:`_grant_still_covers`).  Coverage rather than
+      equality, so widening the grant never invalidates an
+      approval that is still inside the new scope.
 
     - A subsequent ``PLAN_REJECTED`` inside the same window
       supersedes an older ``PLAN_APPROVED`` (the planner
@@ -672,26 +778,35 @@ def _has_recent_plan_approval_for_goal(
     want the contract to auto-activate under the new
     grant — the auto-activate helper will not back-door a
     narrower grant onto an old approval.
-    """
-    from datetime import datetime as _dt
 
+    Why this branch reads as newly load-bearing: while the
+    freshness cutoff below read the process wall clock, every
+    seeded-clock test saw a stale window and bailed out before
+    reaching these rules, so
+    ``test_narrowed_grant_blocks_auto_activate`` passed without
+    this code ever running.  Making the cutoff respect ``now``
+    is what exposed the gap.
+
+    ``now`` is the caller's clock (the daemon tick / RPC
+    timestamp) and is the only clock this helper reads: the
+    freshness bound is ``now - PLAN_OVERRIDE_LOOKBACK_SECONDS``
+    against the event's ``created_at``.  Reading the process
+    wall clock here would make the same event log answer
+    differently depending on when the code happens to run.
+    """
     if not granted_set:
         # A bounded pre_authorized grant must actually
         # declare actions; an empty grant is not a
         # meaningful auto-activate authority.
         return False
-    cutoff_iso = (_dt.now(UTC) - timedelta(seconds=PLAN_OVERRIDE_LOOKBACK_SECONDS)).isoformat()
-    approved_row = conn.execute(
-        "SELECT 1 FROM events WHERE contract_id = ? AND event_type = ? AND created_at >= ? LIMIT 1",
-        (contract_id, EventType.PLAN_APPROVED.value, cutoff_iso),
-    ).fetchone()
-    if approved_row is None:
-        return False
+    cutoff_iso = (now - timedelta(seconds=PLAN_OVERRIDE_LOOKBACK_SECONDS)).isoformat()
     # The most recent verdict in the lookback window
     # wins.  A later PLAN_REJECTED supersedes an older
-    # PLAN_APPROVED.
+    # PLAN_APPROVED.  This single query also proves an
+    # approval exists: if the newest verdict in the window
+    # is PLAN_APPROVED then an approved row is in it.
     latest_verdict = conn.execute(
-        "SELECT event_type FROM events "
+        "SELECT event_type, created_at FROM events "
         "WHERE contract_id = ? AND event_type IN (?, ?) "
         "AND created_at >= ? "
         "ORDER BY created_at DESC LIMIT 1",
@@ -704,7 +819,20 @@ def _has_recent_plan_approval_for_goal(
     ).fetchone()
     if latest_verdict is None:
         return False
-    return str(latest_verdict[0]) == EventType.PLAN_APPROVED.value
+    if str(latest_verdict[0]) != EventType.PLAN_APPROVED.value:
+        return False
+    if goal_id is not None and isinstance(current_pre_authorized, dict):
+        # The approval authorized the scope the grant had at
+        # the time it was written.  A grant edited afterwards
+        # must still cover that scope; otherwise the old
+        # approval is being reused as authority the user no
+        # longer granted.
+        grant_at_approval = _grant_as_of(conn, goal_id, str(latest_verdict[1]))
+        if grant_at_approval is not None and not _grant_still_covers(
+            grant_at_approval, current_pre_authorized
+        ):
+            return False
+    return True
 
 
 def list_drafted_contracts(conn: sqlite3.Connection) -> list[Any]:

@@ -19,6 +19,14 @@ The audit event's ``actor`` is now a parameter, not a hard-coded
 ``"user"`` string.  The MCP path passes its own actor
 (``"agent:mcp"``/``"agent:<id>"``); the CLI passes ``"user:cli"``;
 the Python API defaults to ``"user"`` for back-compat.
+
+Layer note: this module reads file projections, queries the
+``attempts`` table and appends an audit event, so it lives in
+``persistence`` — not in ``contracts``, which ARCHITECTURE.md defines
+as the zero-dependency data layer (no ``persistence``, no ``cli``).
+It was previously ``lhgp/contracts/resume.py``, which the architecture
+gate could not see because its rules only matched ``longtask.*``
+imports; fixing that rule is what surfaced this placement error.
 """
 
 from __future__ import annotations

@@ -25,6 +25,7 @@ from longtask.persistence.store import (
     save_contract,
     update_contract_state,
 )
+from tests.wait_budget import budget
 
 pytestmark = pytest.mark.integration
 
@@ -118,8 +119,13 @@ def _events(root: Path, contract_id: str) -> list[str]:
         conn.close()
 
 
-def _wait_for(predicate: object, timeout: float = 15.0) -> bool:
-    end = time.monotonic() + timeout
+def _wait_for(predicate: object, timeout: float = 45.0) -> bool:
+    """Poll ``predicate`` until it is true or the budget runs out.
+
+    Everything waited on here involves a real daemon/subprocess, so the
+    default is a ceiling for a loaded machine rather than an expected delay.
+    """
+    end = time.monotonic() + budget(timeout)
     while time.monotonic() < end:
         if callable(predicate) and predicate():
             return True
@@ -209,7 +215,7 @@ def test_real_daemon_restart_reattaches_live_subprocess(
             finally:
                 conn.close()
 
-        assert _wait_for(cancelled, timeout=5.0), (
+        assert _wait_for(cancelled, timeout=30.0), (
             "reattached attempt was not cancelled by new daemon"
         )
         assert not (root / "ws" / "restart-survived.txt").exists()

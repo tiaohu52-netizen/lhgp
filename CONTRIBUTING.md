@@ -77,6 +77,15 @@ uv run lhgp doctor
 3. **快路径不撒谎**：pre-commit 钩子只做增量快检，其通过不代表
    全量门通过；PR 以 `quality_gate.py` 全绿为准。
 
+铁律 2 说的「`quality/` 下的基线」当前是三个可机器校验的文件，各自的读取方
+也在那里：
+
+| 基线 | 谁读它 | 收紧方向 |
+|------|--------|----------|
+| `quality/claims.json` | `scripts/claims_check.py` | `pinned_sha` 必须从当前历史可达，重验后重锚 |
+| `quality/coverage-baseline.json` | `scripts/quality_gate.py` | `fail_under` 只许上调，且不得超过 `last_measured` |
+| `quality/real-entry-baseline.json` | `tests/conftest.py` | 未标记的真实入口测试数只许下调 |
+
 ## 审查修复强制纪律
 
 - 门红了先修根因，不许为消红而加豁免、注释规则、调阈值。

@@ -54,6 +54,38 @@ class TestPluginManifest:
         assert manifest["version"] == __version__
         assert manifest["protocol_version"] == "lhgp/v1alpha1"
 
+    def test_runtime_version_matches_the_packaged_version(self) -> None:
+        """Release metadata and the runtime self-report may not drift.
+
+        ``lhgp --version``, ``lhgp doctor`` and MCP ``implementation_version``
+        all report ``longtask.__version__``.  It was last bumped at a6 while
+        the package went on to ship a7-a10, so four releases were installed
+        with ``doctor`` still printing ``v0.1.0a6``.  ``PROTOCOL_VERSION``
+        is deliberately independent; the package version is not.
+        """
+        import tomllib
+
+        with (REPO_ROOT / "pyproject.toml").open("rb") as fh:
+            project = tomllib.load(fh)["project"]
+        assert project["name"] == "longtask-protocol"
+        assert project["version"] == __version__, (
+            f"pyproject.toml says {project['version']} but the runtime reports "
+            f"{__version__}; bump longtask.__version__ and the companion "
+            "skills/longtask-contract/MANIFEST.json together"
+        )
+
+        with (REPO_ROOT / "uv.lock").open("rb") as fh:
+            lock = tomllib.load(fh)
+        self_pins = [
+            pkg
+            for pkg in lock.get("package", [])
+            if isinstance(pkg, dict) and pkg.get("name") == "longtask-protocol"
+        ]
+        assert self_pins, "uv.lock does not carry the project package"
+        assert [pkg.get("version") for pkg in self_pins] == [__version__], (
+            "uv.lock is stale; re-run `uv lock` after bumping the version"
+        )
+
 
 class TestMcpConfig:
     def test_mcp_json_valid_with_lhgp_server(self) -> None:

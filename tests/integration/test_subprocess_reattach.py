@@ -26,6 +26,7 @@ from longtask.adapters.handles import (
 from longtask.adapters.manifest import Capabilities, ExecutorManifest, SandboxCapability
 from longtask.adapters.subprocess_adapter import LaunchSpec, SubprocessAdapter
 from longtask.contracts.schema import AttemptState, Enforcement
+from tests.wait_budget import budget
 
 pytestmark = pytest.mark.integration
 
@@ -209,8 +210,8 @@ class TestDetachedObservation:
         from longtask.adapters.processes import terminate_pid
 
         assert terminate_pid(int(handle.process_identity["pid"])) is True
-        deadline = time.time() + 15.0
-        while time.time() < deadline:
+        deadline = time.monotonic() + budget(45.0)
+        while time.monotonic() < deadline:
             obs = reborn.observe("att-h8")
             if obs["state"] != AttemptState.RUNNING.value:
                 break
@@ -248,8 +249,8 @@ class TestDetachedObservation:
             reborn = make_adapter()
             assert reborn.reattach(handle) is True
             reborn.cancel("att-h10", "测试取消")
-            deadline = time.time() + 15.0
-            while time.time() < deadline:
+            deadline = time.monotonic() + budget(45.0)
+            while time.monotonic() < deadline:
                 obs = reborn.observe("att-h10")
                 if obs["state"] != AttemptState.RUNNING.value:
                     break

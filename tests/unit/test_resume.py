@@ -20,9 +20,8 @@ from pathlib import Path
 
 import pytest
 
-from lhgp.contracts import ResumeBrief, build_resume_brief
-from lhgp.contracts.resume import ResumeBriefError
 from lhgp.persistence.events_query import get_events
+from lhgp.persistence.resume import ResumeBrief, ResumeBriefError, build_resume_brief
 from lhgp.persistence.schema import ensure_schema
 from lhgp.persistence.types import StoreConfig
 from longtask.persistence.store import connect

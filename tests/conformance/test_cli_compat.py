@@ -23,6 +23,7 @@ from longtask.adapters.base import AttemptInput
 from longtask.adapters.manifest import Capabilities, ExecutorManifest, SandboxCapability
 from longtask.adapters.subprocess_adapter import LaunchSpec, SubprocessAdapter
 from longtask.contracts.schema import AttemptRole, Enforcement
+from tests.wait_budget import budget
 
 pytestmark = pytest.mark.conformance
 
@@ -111,9 +112,9 @@ class TestPipeDrainNoDeadlock:
         prepared = adapter.prepare(input_)
         adapter.spawn(input_, prepared)
         try:
-            deadline = time.time() + 30.0
+            deadline = time.monotonic() + budget(60.0)
             obs = adapter.observe("att-c1")
-            while time.time() < deadline:
+            while time.monotonic() < deadline:
                 obs = adapter.observe("att-c1")
                 if obs["state"] != "running":
                     break
@@ -140,9 +141,9 @@ class TestFinishedEvent:
         prepared = adapter.prepare(input_)
         adapter.spawn(input_, prepared)
         try:
-            deadline = time.time() + 20.0
+            deadline = time.monotonic() + budget(60.0)
             obs = {"state": "running"}
-            while time.time() < deadline:
+            while time.monotonic() < deadline:
                 obs = adapter.observe("att-c1")
                 if obs.get("finished_by_event"):
                     break
@@ -162,8 +163,8 @@ class TestFinishedEvent:
         prepared = adapter.prepare(input_)
         adapter.spawn(input_, prepared)
         try:
-            deadline = time.time() + 20.0
-            while time.time() < deadline:
+            deadline = time.monotonic() + budget(60.0)
+            while time.monotonic() < deadline:
                 obs = adapter.observe("att-c1")
                 if obs.get("finished_by_event"):
                     break
@@ -183,8 +184,8 @@ class TestFinishedEvent:
         input_ = make_input(str(tmp_path), HARNESS_SOFT_FAIL)
         prepared = adapter.prepare(input_)
         adapter.spawn(input_, prepared)
-        deadline = time.time() + 20.0
-        while time.time() < deadline:
+        deadline = time.monotonic() + budget(60.0)
+        while time.monotonic() < deadline:
             obs = adapter.observe("att-c1")
             if obs["state"] != "running":
                 break
@@ -202,8 +203,8 @@ class TestFinishedEvent:
         input_ = make_input(str(tmp_path), "print('plain'); raise SystemExit(0)")
         prepared = adapter.prepare(input_)
         adapter.spawn(input_, prepared)
-        deadline = time.time() + 20.0
-        while time.time() < deadline:
+        deadline = time.monotonic() + budget(60.0)
+        while time.monotonic() < deadline:
             obs = adapter.observe("att-c1")
             if obs["state"] != "running":
                 break

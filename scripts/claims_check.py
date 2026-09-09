@@ -10,18 +10,65 @@
 5. deferred 只打印计数——欠着可见，但不阻断骨架期推进。
 6. design_claims 桶里 evidence.kind 只允许 source_static / manual_review（事实层声明）。
 7. implementation_claims 桶里要求根级 pinned_sha 不是 "unpinned"（事实必须锚定真实 commit）。
-fail-closed：jsonschema 未安装、文件缺失、解析失败 → 报错退出。
+8. pinned_sha 必须是**当前历史里可达**的提交：仓库做过一次脱敏历史重建
+   （reflog: "repair identifiers after history sanitization"）之后，所有旧
+   pinned_sha 都指向了被丢弃的对象，而门只在字面上判断“不是 unpinned”，
+   于是打印 OK 的同时锚链已断。现在悬空 / 不可达 / 不是提交 → 门红。
+fail-closed：jsonschema 未安装、文件缺失、解析失败、git 不可用 → 报错退出。
 """
 
 from __future__ import annotations
 
 import json
+import re
+import subprocess
 import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 REGISTRY = REPO_ROOT / "quality" / "claims.json"
 SCHEMA = REPO_ROOT / "quality" / "claim-schema.json"
+
+_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+
+
+def check_pinned_sha(root: Path, pinned: object) -> str | None:
+    """Return an error message when ``pinned`` is not an ancestor commit of
+    ``HEAD`` in ``root``; ``None`` means the anchor is sound.
+    """
+    if not isinstance(pinned, str) or not _SHA_RE.match(pinned):
+        return (
+            f"registry: pinned_sha must be a 40-hex commit SHA, got {pinned!r}; "
+            "re-anchor it to a commit that exists in the current history"
+        )
+    # --is-ancestor covers both cases we care about: the object is gone
+    # entirely (rewritten history / shallow clone) and the object exists
+    # but is unreachable from the checked-out branch (orphaned by a
+    # filter-branch / rebase). Neither can serve as release evidence.
+    probe = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", pinned, "HEAD"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+    )
+    if probe.returncode == 0:
+        return None
+    stderr = (probe.stderr or "").strip()
+    if "Not a valid commit name" in stderr or "unknown revision" in stderr:
+        return (
+            f"registry: pinned_sha {pinned} does not exist in this repository — the "
+            "anchor points at a dropped object (history rewrite?) or a commit that "
+            "was never fetched; re-anchor claims.json to a live commit"
+        )
+    if "shallow" in stderr or "not valid" in stderr:
+        return (
+            f"registry: cannot verify pinned_sha {pinned} against a shallow clone — "
+            "run the gate on a full checkout (actions/checkout: fetch-depth: 0)"
+        )
+    return (
+        f"registry: pinned_sha {pinned} is not reachable from HEAD "
+        f"(git merge-base exit {probe.returncode}): {stderr or 'no ancestor path'}"
+    )
 
 
 def is_repo_relative(path: str) -> bool:
@@ -76,6 +123,12 @@ def main() -> int:
                 "registry: implementation_claims present but pinned_sha is 'unpinned'; "
                 "implementation evidence must anchor to a real 40-char commit SHA"
             )
+        elif implementation_claims:
+            # Existence is not enough: the anchor has to resolve to a commit
+            # in the history we are actually shipping.
+            anchor_error = check_pinned_sha(REPO_ROOT, pinned_sha)
+            if anchor_error is not None:
+                errors.append(anchor_error)
 
     claims = design_claims + implementation_claims + legacy_claims
     seen_ids: set[str] = set()

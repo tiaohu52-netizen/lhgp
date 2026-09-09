@@ -392,7 +392,7 @@ def tool_resume_attempt(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, 
     helper used to default to.  Forensics distinguishes a real user
     keystroke from an agent-initiated resume.
     """
-    from lhgp.contracts import build_resume_brief
+    from lhgp.persistence.resume import build_resume_brief
 
     brief = build_resume_brief(
         ctx["root"],

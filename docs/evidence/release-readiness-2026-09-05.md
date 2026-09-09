@@ -229,3 +229,23 @@ dogfood v5 展示了一个三阶段目标完成，不等于三个独立真实目
   未经外部漏洞数据库审计（运行时依赖为 0、开发依赖全锁定白名单），
   此项按 R6 口径保留为后续工作。
 - 本地七道门：7/7（637 tests / 82.15% coverage）多次复验通过。
+
+## 追记：历史脱敏后，本记录内的提交号已失效（2026-09-10）
+
+本仓库在 2026-09-05 做过一次脱敏历史重建（reflog 见
+`chore: repair identifiers after history sanitization`）。重建只改写了提交对象，
+没有同步任何文档里的提交号，因此本记录与同目录下其它证据文件中出现的
+`b4b301d` / `bfa1408` / `872cb32` / `f2af524` / `c5d23fa` / `280d788` /
+`903988a` / `6606197` 等 SHA **在当前历史中已不存在**（`git cat-file -t` 报
+bad object）。它们是当时的真实观察结果，但不再可被后人 checkout 复核。
+
+处理方式：
+
+- 不再逐个改写历史证据中的 SHA——那等于篡改当次观察记录。
+- **机器可校验的锚点只有一个**：`quality/claims.json` 根级 `pinned_sha`。
+  自 2026-09-10 起，claims 门用 `git merge-base --is-ancestor <sha> HEAD`
+  校验它必须存在且从 HEAD 可达，回归见
+  `tests/unit/test_claims_anchor_check.py`；CI 的两个 workflow 相应改为
+  `fetch-depth: 0`，否则浅克隆会让诚实的锚点看起来是坏的。
+- 需要复核某次结论时，以当前 `pinned_sha` 指向的候选为准重跑命令，
+  不要试图 checkout 本记录里的旧 SHA。

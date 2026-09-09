@@ -22,6 +22,7 @@ that should invalidate the plan.
 
 from __future__ import annotations
 
+import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -837,4 +838,154 @@ def test_auto_activate_with_bounded_pre_authorized_and_plan_approval(tmp_path: P
     post = get_contract(conn, cid)
     assert post is not None
     assert post.state.value == "active"
+    conn.close()
+
+
+# An unambiguously stale-on-the-wall-clock seed.  Every event
+# below is written with this timestamp and every check passes
+# the same timestamp to ``auto_approve_drafted_contract``, so
+# the only clock that can matter is the supplied one.  An
+# implementation that reads ``datetime.now()`` inside the
+# freshness helper answers False here no matter when the suite
+# runs, which is the point.
+SEEDED = datetime(2020, 1, 1, 12, 0, 0, tzinfo=UTC)
+
+
+def _seed_bounded_goal_and_draft(
+    conn: sqlite3.Connection, *, goal_id: str, contract_id: str
+) -> None:
+    """Create a bounded (no wildcard) pre_authorized Goal plus an
+    MCP-style DRAFTED contract with no ``auto_approve`` claim.
+    """
+    from longtask.persistence.store import patch_goal, save_contract
+
+    save_contract(
+        conn,
+        ContractDraft(
+            title="t",
+            objective="o",
+            deadline_at=SEEDED + timedelta(hours=2),
+            hard_constraints={},
+            acceptance=Acceptance(standard="s", checks=("c1",)),
+            workload_initial_hours=1.0,
+            budget=Budget(5, 1, 1, 30, 1_048_576, 2),
+        ),
+        contract_id=f"{goal_id}-bootstrap",
+        now=SEEDED,
+        actor="user",
+        goal_id=goal_id,
+    )
+    patch_goal(
+        conn,
+        goal_id=goal_id,
+        now=SEEDED,
+        expected_revision=1,
+        actor="user",
+        plan={"pre_authorized": {"enabled": True, "actions": ["write file"]}},
+    )
+    save_contract(
+        conn,
+        ContractDraft(
+            title="real contract",
+            objective="write a file",
+            deadline_at=SEEDED + timedelta(hours=2),
+            hard_constraints={},
+            acceptance=Acceptance(standard="s", checks=("c1",)),
+            workload_initial_hours=1.0,
+            budget=Budget(5, 1, 1, 30, 1_048_576, 2),
+        ),
+        contract_id=contract_id,
+        now=SEEDED,
+        actor="model",
+        goal_id=goal_id,
+    )
+
+
+def _approve_plan_at(conn: sqlite3.Connection, contract_id: str, at: datetime) -> None:
+    from lhgp.persistence.store import append_event
+
+    append_event(
+        conn,
+        contract_id=contract_id,
+        event_type=EventType.PLAN_APPROVED,
+        payload={"contract_revision": 1, "auto_approved": True},
+        now=at,
+        actor="model",
+        contract_revision=1,
+    )
+
+
+def test_plan_override_freshness_uses_supplied_clock_not_wall_clock(
+    tmp_path: Path,
+) -> None:
+    """7th-round follow-up (P0): the plan-approval freshness bound
+    must be measured against the caller-supplied clock.
+
+    ``_has_recent_plan_approval_for_goal`` read
+    ``datetime.now(UTC)`` while every other decision in the
+    persistence layer is clock-injected, and its caller
+    ``auto_approve_drafted_contract`` already receives ``now``
+    and threw it away.  Consequences:
+
+    - Production: the DRAFTED→ACTIVE authority silently
+      disagreed with the dispatcher's 24 h plan gate, and the
+      verdict for one event log changed depending on when the
+      process happened to run.
+    - Tests: the suite seeds a fixed ``NOW``, so widening the
+      window (1800 → 7200 s) only postponed the failure.
+
+    Here the whole scenario lives in 2020; only an injected
+    clock can call the approval "recent".
+    """
+    from longtask.persistence.store import auto_approve_drafted_contract
+
+    conn = connect(StoreConfig(db_path=tmp_path / "state.db"))
+    ensure_schema(conn)
+    _seed_bounded_goal_and_draft(conn, goal_id="lt-clock-pin", contract_id="lt-clock-cid")
+    _approve_plan_at(conn, "lt-clock-cid", SEEDED + timedelta(seconds=1))
+
+    view = get_contract(conn, "lt-clock-cid")
+    assert view is not None
+    promoted = auto_approve_drafted_contract(conn, view, SEEDED + timedelta(seconds=2))
+    assert promoted is True, (
+        "a PLAN_APPROVED that is 1 s old relative to the supplied "
+        "clock must authorize auto-activation regardless of the "
+        "process wall clock"
+    )
+    conn.close()
+
+
+@pytest.mark.parametrize(
+    ("age_seconds", "expect_promoted"),
+    [
+        (7199, True),  # inside PLAN_OVERRIDE_LOOKBACK_SECONDS
+        (7201, False),  # outside it — approval has aged out
+    ],
+)
+def test_plan_override_boundary_is_window_before_supplied_clock(
+    tmp_path: Path, age_seconds: int, expect_promoted: bool
+) -> None:
+    """The boundary is exactly ``now - PLAN_OVERRIDE_LOOKBACK_SECONDS``,
+    not "however much wall clock has passed since the seed"."""
+    from longtask.persistence.store import (
+        PLAN_OVERRIDE_LOOKBACK_SECONDS,
+        auto_approve_drafted_contract,
+    )
+
+    assert PLAN_OVERRIDE_LOOKBACK_SECONDS == 7200
+    conn = connect(StoreConfig(db_path=tmp_path / "state.db"))
+    ensure_schema(conn)
+    goal_id = f"lt-bound-{age_seconds}"
+    cid = f"{goal_id}-cid"
+    _seed_bounded_goal_and_draft(conn, goal_id=goal_id, contract_id=cid)
+    tick = SEEDED + timedelta(seconds=2)
+    _approve_plan_at(conn, cid, tick - timedelta(seconds=age_seconds))
+
+    view = get_contract(conn, cid)
+    assert view is not None
+    promoted = auto_approve_drafted_contract(conn, view, tick)
+    assert promoted is expect_promoted, (
+        f"approval aged {age_seconds}s before the supplied clock: "
+        f"expected promoted={expect_promoted}, got {promoted}"
+    )
     conn.close()

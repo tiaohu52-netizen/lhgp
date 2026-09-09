@@ -20,55 +20,65 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SRC_ROOTS = (REPO_ROOT / "src" / "longtask", REPO_ROOT / "src" / "lhgp")
 
+# Both trees carry the same layer names, and the rule is about the
+# layer, not about which tree a file happens to live in: ``lhgp`` is
+# the canonical tree, so a rule written only for ``longtask.*``
+# imports would leave the whole ``lhgp`` tree unchecked (it did).
+# Every forbidden layer rule is therefore matched against *any*
+# package prefix, including a cross-tree hop; ``tests`` is listed so
+# the "no src layer may import test helpers" rule stays live.
+PACKAGE_PREFIXES = ("longtask", "lhgp", "tests")
+
 # 存量基线（棘轮）。骨架期从零起步：任何违规都是新增。
 BASELINE = 0
 
-# 每层的禁止 import 前缀。规则与 CONTRIBUTING「模块边界约束」一一对应；
+# 每层的禁止 import 目标（包前缀无关，见上）。
+# 规则内容与 CONTRIBUTING「模块边界约束」一一对应；
 # 改这里必须先改 CONTRIBUTING 与 DESIGN。
 FORBIDDEN: dict[str, tuple[str, ...]] = {
     "contracts": (
-        "longtask.persistence",
-        "longtask.scheduler",
-        "longtask.promoter",
-        "longtask.adapters",
-        "longtask.rpc",
-        "longtask.cli",
+        "persistence",
+        "scheduler",
+        "promoter",
+        "adapters",
+        "rpc",
+        "cli",
         "tests",
     ),
     "persistence": (
-        "longtask.scheduler",
-        "longtask.promoter",
-        "longtask.adapters",
-        "longtask.rpc",
-        "longtask.cli",
+        "scheduler",
+        "promoter",
+        "adapters",
+        "rpc",
+        "cli",
         "tests",
     ),
     "adapters": (
-        "longtask.promoter",
-        "longtask.scheduler",
-        "longtask.rpc",
-        "longtask.cli",
+        "promoter",
+        "scheduler",
+        "rpc",
+        "cli",
         # persistence 只允许包级公开接口；内部实现模块禁止
-        "longtask.persistence.store",
-        "longtask.persistence.projections",
+        "persistence.store",
+        "persistence.projections",
         "tests",
     ),
     "scheduler": (
-        "longtask.adapters",
-        "longtask.rpc",
-        "longtask.cli",
+        "adapters",
+        "rpc",
+        "cli",
         "tests",
     ),
     "promoter": (
         # 只经 adapters 公开接口（base/manifest），禁止具体实现
-        "longtask.adapters.subprocess_adapter",
-        "longtask.adapters.fake_executor",
-        "longtask.rpc",
-        "longtask.cli",
+        "adapters.subprocess_adapter",
+        "adapters.fake_executor",
+        "rpc",
+        "cli",
         "tests",
     ),
     "rpc": (
-        "longtask.cli",
+        "cli",
         "tests",
     ),
     "cli": ("tests",),
@@ -96,6 +106,18 @@ def imported_modules(tree: ast.AST) -> list[tuple[str, int]]:
     return found
 
 
+def strip_package_prefix(module: str) -> str | None:
+    """Return the module path inside its package, or None if the
+    import is not one of the checked packages.
+    """
+    for prefix in PACKAGE_PREFIXES:
+        if module == prefix:
+            return ""
+        if module.startswith(prefix + "."):
+            return module[len(prefix) + 1 :]
+    return None
+
+
 def check_file(path: Path) -> list[Violation]:
     relative = next(
         (path.relative_to(root) for root in SRC_ROOTS if path.is_relative_to(root)), None
@@ -107,15 +129,18 @@ def check_file(path: Path) -> list[Violation]:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     violations: list[Violation] = []
     for module, lineno in imported_modules(tree):
+        inner = strip_package_prefix(module) or module
         for rule in forbidden:
-            if module == rule or module.startswith(rule + "."):
+            # Layer rules are prefix-agnostic (matched on ``inner``);
+            # ``tests`` is a top-level package, matched on ``module``.
+            if inner == rule or inner.startswith(rule + ".") or module.startswith(rule + "."):
                 violations.append(
                     Violation(
                         file=path.relative_to(REPO_ROOT).as_posix(),
                         line=lineno,
                         layer=layer,
                         imported=module,
-                        rule=rule,
+                        rule=f"{layer} must not import {module}",
                     )
                 )
     return violations

@@ -48,7 +48,7 @@ A scheduling tick need not call a model, and a worker exiting with code 0 does n
 
 ## At a glance
 
-The resilient-execution layer (`src/longtask/persistence/context.py`, `src/longtask/rpc/dispatch.py`, `src/longtask/cli/dispatch.py`, `src/lhgp/contracts/resume.py`, `src/lhgp/contracts/plan.py`) keeps long-running contracts alive across model crashes, 502 errors, and context exhaustion. Four streams cooperate: plan gate enforces a structured plan before any executor is contacted; retry handles transient RPC failures; auto-handover watches `active.md` size and fires before the context window dies; resume reads `active.md` + `handover.md` to spin up a fresh attempt.
+The resilient-execution layer (`src/longtask/persistence/context.py`, `src/longtask/rpc/dispatch.py`, `src/longtask/cli/dispatch.py`, `src/lhgp/persistence/resume.py`, `src/lhgp/contracts/plan.py`) keeps long-running contracts alive across model crashes, 502 errors, and context exhaustion. Four streams cooperate: plan gate enforces a structured plan before any executor is contacted; retry handles transient RPC failures; auto-handover watches `active.md` size and fires before the context window dies; resume reads `active.md` + `handover.md` to spin up a fresh attempt.
 
 ![resilient-execution overview](docs/diagrams/01-resilient-execution.png)
 

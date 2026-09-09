@@ -72,6 +72,7 @@ from longtask.cli.dispatch import (
 from longtask.cli.runner import AttemptRunner
 from longtask.persistence.attempts import count_running_by_executor
 from longtask.persistence.types import StoreConfig
+from tests.wait_budget import budget
 
 pytestmark = pytest.mark.integration
 
@@ -234,12 +235,16 @@ def _save_active(
 
 
 def _wait_for_attempt_to_finish(
-    runner: AttemptRunner, workspace: Path, *, timeout: float = 8.0
+    runner: AttemptRunner, workspace: Path, *, timeout: float = 60.0
 ) -> None:
     """Drive the runner until the dispatched attempt reaches a terminal
     state. Polls the subprocess, asserts the executor wrote the
-    witness file, and confirms ``runner._running`` is empty."""
-    deadline = time.monotonic() + timeout
+    witness file, and confirms ``runner._running`` is empty.
+
+    ``timeout`` is a ceiling for a loaded machine (the executor is a real
+    ``python.exe`` child), not an expected duration.
+    """
+    deadline = time.monotonic() + budget(timeout)
     now = NOW + timedelta(seconds=2)
     while time.monotonic() < deadline:
         runner.poll_attempts(now)

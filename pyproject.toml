@@ -7,7 +7,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "longtask-protocol"
-version = "0.1.0a10"
+version = "0.1.0a11"
 description = "远期目标协议参考实现：跨会话、跨 Agent 的本地合同、调度与验收运行时"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -85,6 +85,12 @@ allowed-confusables = ["，", "（", "）", "：", "；", "？", "！", "、", "
 # 测试允许断言风格；门脚本允许 subprocess（它们就是干这个的）
 "tests/**" = ["S101"]
 "scripts/**" = ["S603", "S607"]
+# claims 锚点 / 仓库卫生 / 覆盖率棘轮三类回归测试必须真的调 git 才能独立验证
+# pinned_sha 可达性、索引状态与基线只升不降；
+# 调用的命令与参数全是测试内常量，无外部输入。
+"tests/unit/test_claims_anchor_check.py" = ["S603", "S607"]
+"tests/unit/test_repo_hygiene.py" = ["S603", "S607"]
+"tests/unit/test_coverage_ratchet.py" = ["S603", "S607"]
 # watch.py 的 `from datetime import UTC` 与 stdlib 别名分组冲突导致 I001
 # 假阳性——单规则豁免，不影响其他规则
 "src/longtask/cli/watch.py" = ["I001"]

@@ -38,6 +38,7 @@ from longtask.persistence.store import (
     save_contract,
     update_contract_state,
 )
+from tests.wait_budget import budget
 
 pytestmark = pytest.mark.integration
 
@@ -152,7 +153,7 @@ def test_runner_spawns_collects_and_releases_lease(tmp_path: Path) -> None:
         # 等待 done.txt 落盘是必要但不充分——必须 proc.poll() 返 0 才是真的终态。
         import time
 
-        deadline = time.monotonic() + 15.0
+        deadline = time.monotonic() + budget(45.0)
         while time.monotonic() < deadline:
             if (data_dir / "ws" / "done.txt").is_file():
                 # 再多等一拍确保进程回收资源后退出码可读

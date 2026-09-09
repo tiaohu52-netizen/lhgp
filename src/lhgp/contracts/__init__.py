@@ -25,7 +25,6 @@ from lhgp.contracts.contract_view import (
     to_state_dict,
 )
 from lhgp.contracts.plan import ALLOWED_ACTIONS, Plan, PlanStep, PlanValidation
-from lhgp.contracts.resume import ResumeBrief, build_resume_brief
 from lhgp.contracts.validation import validate_draft, validate_raw
 
 __all__ = [
@@ -55,8 +54,6 @@ __all__ = [
     "PlanStep",
     "PlanValidation",
     "QuietHours",
-    "ResumeBrief",
-    "build_resume_brief",
     "from_state_dict",
     "to_state_dict",
     "validate_draft",

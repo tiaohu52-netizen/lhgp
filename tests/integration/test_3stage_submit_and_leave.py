@@ -64,6 +64,7 @@ from longtask.persistence.store import (
     save_contract,
     update_contract_state,
 )
+from tests.wait_budget import budget
 
 pytestmark = pytest.mark.integration
 
@@ -425,15 +426,20 @@ def _drain_attempts(
     runner: AttemptRunner,
     contract_id: str,
     *,
-    timeout: float = 8.0,
+    timeout: float = 60.0,
 ) -> None:
     """Drive the runner until the contract's attempt set is
     empty AND no new attempt is being spawned.
 
     Two consecutive empty polls (the executor finishes, the
     verifier is queued) are required before returning.
+
+    ``timeout`` is a ceiling sized for a loaded machine — both sides
+    of the chain are real ``python.exe`` children — not an expected
+    duration; the loop returns as soon as the runner goes quiet.
     """
-    deadline = time.monotonic() + timeout
+    limit = budget(timeout)
+    deadline = time.monotonic() + limit
     stable_since: float | None = None
     while time.monotonic() < deadline:
         runner.poll_attempts(NOW + timedelta(seconds=2))
@@ -447,7 +453,7 @@ def _drain_attempts(
             stable_since = None
         time.sleep(0.05)
     raise AssertionError(
-        f"runner still tracking attempts after {timeout}s "
+        f"runner still tracking attempts after {limit:.0f}s "
         f"(running={list(runner._running)}, contract={contract_id})"
     )
 

@@ -8,13 +8,37 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+COVERAGE_BASELINE = REPO_ROOT / "quality" / "coverage-baseline.json"
+
+
+def coverage_fail_under() -> str | None:
+    """Return the coverage floor from :data:`COVERAGE_BASELINE`, or None.
+
+    The floor lives in the baseline file rather than in this script so the
+    ratchet is visible in `quality/` (CONTRIBUTING「棘轮」) and can only move
+    upward.  None means the baseline is missing/unparseable/out of range,
+    which the caller must treat as a gate failure rather than falling back
+    to a permissive default.
+    """
+    try:
+        raw: Any = json.loads(COVERAGE_BASELINE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    value = raw.get("fail_under") if isinstance(raw, dict) else None
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return None
+    if not 0 <= value <= 100:
+        return None
+    return f"{value:g}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,7 +47,7 @@ class Gate:
     argv: tuple[str, ...]
 
 
-def build_gates() -> list[Gate]:
+def build_gates(cov_fail_under: str) -> list[Gate]:
     py = sys.executable
     return [
         # 使用门禁自身的解释器加载 Ruff，避免 uv/venv 已安装但 PATH 未暴露
@@ -43,7 +67,7 @@ def build_gates() -> list[Gate]:
                 "--cov=src/longtask",
                 "--cov=src/lhgp",
                 "--cov-report=term-missing",
-                "--cov-fail-under=70",
+                f"--cov-fail-under={cov_fail_under}",
             ),
         ),
     ]
@@ -65,7 +89,15 @@ def run_gate(gate: Gate) -> int:
 
 
 def main() -> int:
-    gates = build_gates()
+    cov_fail_under = coverage_fail_under()
+    if cov_fail_under is None:
+        # fail-closed：基线读不出来就不跑测试门，绝不退回宽松默认值
+        print(
+            f"[gate] cannot read coverage floor from {COVERAGE_BASELINE}; refusing to pass.",
+            flush=True,
+        )
+        return 1
+    gates = build_gates(cov_fail_under)
     print(f"[gate] authoritative sequence ({len(gates)} gates), repo={REPO_ROOT}", flush=True)
     for gate in gates:
         status = run_gate(gate)

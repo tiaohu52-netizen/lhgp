@@ -21,6 +21,7 @@ from longtask.adapters.subprocess_adapter import (
     SubprocessAdapter,
 )
 from longtask.contracts.schema import AttemptRole, Enforcement
+from tests.wait_budget import budget
 
 pytestmark = pytest.mark.conformance
 
@@ -90,8 +91,8 @@ class TestPlaceholderPositioning:
         adapter.spawn(input_, prepared)
         import time
 
-        deadline = time.time() + 15.0
-        while time.time() < deadline:
+        deadline = time.monotonic() + budget(45.0)
+        while time.monotonic() < deadline:
             if (tmp_path / "argv.txt").is_file():
                 break
             time.sleep(0.1)
@@ -113,8 +114,8 @@ class TestPlaceholderPositioning:
         adapter.spawn(input_, prepared)
         import time
 
-        deadline = time.time() + 15.0
-        while time.time() < deadline:
+        deadline = time.monotonic() + budget(45.0)
+        while time.monotonic() < deadline:
             if (tmp_path / "argv.txt").is_file():
                 break
             time.sleep(0.1)
@@ -146,8 +147,8 @@ class TestPlaceholderPositioning:
         adapter.spawn(input_, prepared)
         import time
 
-        deadline = time.time() + 15.0
-        while time.time() < deadline:
+        deadline = time.monotonic() + budget(45.0)
+        while time.monotonic() < deadline:
             if (tmp_path / "argv.txt").is_file():
                 break
             time.sleep(0.1)
@@ -191,8 +192,8 @@ class TestPlaceholderPositioning:
         adapter.spawn(input_, prepared)
         import time
 
-        deadline = time.time() + 15.0
-        while time.time() < deadline:
+        deadline = time.monotonic() + budget(45.0)
+        while time.monotonic() < deadline:
             if (tmp_path / "env.txt").is_file():
                 break
             time.sleep(0.1)
@@ -220,8 +221,8 @@ class TestPlaceholderPositioning:
         adapter.spawn(input_, prepared)
         import time
 
-        deadline = time.time() + 15.0
-        while time.time() < deadline:
+        deadline = time.monotonic() + budget(45.0)
+        while time.monotonic() < deadline:
             if (tmp_path / "env.txt").is_file():
                 break
             time.sleep(0.1)

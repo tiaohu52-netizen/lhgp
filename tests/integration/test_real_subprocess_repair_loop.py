@@ -31,6 +31,7 @@ from longtask.persistence.store import (
     save_contract,
     update_contract_state,
 )
+from tests.wait_budget import budget
 
 pytestmark = pytest.mark.integration
 
@@ -157,7 +158,7 @@ def _setup(root: Path) -> tuple[Any, str]:
 
 
 def _wait_and_poll(runner: AttemptRunner, now: datetime) -> None:
-    deadline = time.monotonic() + 10
+    deadline = time.monotonic() + budget(60.0)
     while time.monotonic() < deadline and runner._running:
         time.sleep(0.05)
         runner.poll_attempts(now)

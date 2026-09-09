@@ -21,9 +21,15 @@ allowlist bypass.
 from __future__ import annotations
 
 import ast
+import json
 from pathlib import Path
 
 import pytest
+
+# Where the *count* of tolerated unmarked tests is recorded.  Like every other
+# number under ``quality/`` this is a ratchet: it may go down as files are
+# fixed and never quietly up.
+_REAL_ENTRY_BASELINE = Path(__file__).resolve().parents[1] / "quality" / "real-entry-baseline.json"
 
 # Imports that indicate "this test is exercising a real entry
 # point, not a hand-rolled wrapper".  A test that imports any
@@ -70,16 +76,45 @@ def _file_imports_real_entry(path: Path) -> list[str]:
     return hits
 
 
+def _real_entry_budget() -> int:
+    """Return the recorded real-entry debt ceiling.
+
+    Fail-closed on a missing or malformed baseline: a silent default of
+    ``0`` would fail every existing run, and a silent default of "no
+    limit" would make the whole exercise decorative.  Neither is
+    honest, so the session refuses to start.
+    """
+    try:
+        raw = json.loads(_REAL_ENTRY_BASELINE.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise pytest.UsageError(
+            f"cannot read the real_entry ratchet from {_REAL_ENTRY_BASELINE}: {exc}; "
+            "refusing to run the suite with the debt invisible"
+        ) from exc
+    budget = raw.get("max_unmarked_tests") if isinstance(raw, dict) else None
+    if not isinstance(budget, int) or isinstance(budget, bool) or budget < 0:
+        raise pytest.UsageError(
+            f"{_REAL_ENTRY_BASELINE.name} must carry an integer 'max_unmarked_tests', "
+            f"got {budget!r}"
+        )
+    return budget
+
+
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     """Walk every collected test; for ones under ``tests/unit/`` that
     pull in a real-entry import, emit a session-scoped warning
     unless the test is marked ``real_entry`` (or is in a
     directory that's explicitly OK to mock).
 
-    The warning is non-fatal: a hard fail would block existing
-    tests that the project has lived with, and the goal is to
-    make the distinction visible so a future PR can correct it.
+    The warning itself stays non-fatal — a hard fail per test would
+    block every run for pre-existing debt.  What *is* fatal is growth:
+    the offender count is compared against
+    ``quality/real-entry-baseline.json``, so the debt can shrink and
+    cannot widen without a deliberate edit to that file.  Without the
+    ratchet the warning was decorative: 139-odd identical lines in a CI
+    log nobody reads is the same as no signal at all.
     """
+    offenders: list[str] = []
     for item in items:
         path = Path(item.fspath)
         # Only inspect tests in tests/unit/.  tests/integration
@@ -93,6 +128,7 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
             continue
         if "real_entry" in item.keywords:
             continue
+        offenders.append(path.name)
         # Surface as a warning so it shows up in CI output.
         item.warn(
             pytest.PytestUnknownMarkWarning(
@@ -103,4 +139,17 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
                 f"exercises the real entry point) or move the test "
                 f"to tests/integration/."
             )
+        )
+
+    budget = _real_entry_budget()
+    if len(offenders) > budget:
+        files = sorted(set(offenders))
+        shown = ", ".join(files[:6]) + (" …" if len(files) > 6 else "")
+        raise pytest.UsageError(
+            f"[real_entry ratchet] {len(offenders)} collected tests across "
+            f"{len(files)} file(s) ({shown}) import a real entry point without "
+            f"@pytest.mark.real_entry; the recorded debt is {budget}.  Add the "
+            "marker, or move the file to tests/integration/.  Raising "
+            "quality/real-entry-baseline.json needs a reason in the PR — the "
+            "ratchet is tightening-only."
         )

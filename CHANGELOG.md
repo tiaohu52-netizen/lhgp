@@ -4,6 +4,75 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version numbers
 follow [SemVer](https://semver.org/spec/v2.0.0.html); dates in ISO 8601.
 
+## [0.1.0a11] - 2026-09-10
+
+门禁可信度：本轮不增加新能力，而是把四类「门绿着但并没有在看东西」的失效
+改成真信号。两项是 P0 语义缺陷，其余是可机器校验的棘轮与口径。
+
+### Fixed
+
+- **计划批准门读注入时钟**：`src/longtask/persistence/store.py::_has_recent_plan_approval_for_goal`
+  的新鲜度截止原先取 `_dt.now(UTC)` 墙钟，而非调用方传入的 `now`。seeded-clock
+  测试因此永远看到「窗口已过期」并在规则之前返回，包括
+  `test_narrowed_grant_blocks_auto_activate`——它一直是「代码没跑就通过」。
+  改为整条判定链走同一个 `now`，窗口语义与 `PLAN_OVERRIDE_LOOKBACK_SECONDS` 对齐。
+- **授权漂移现在真的作废旧批准**：修时钟后上条测试变红，暴露出文档承诺的
+  「收窄授权必须阻止自动激活」实际只实现了「granted_set 非空」。新增
+  `_grant_scope` / `_grant_still_covers` / `_grant_as_of`：从 `GOAL_AMENDED` 审计链
+  重建「批准当时的授权」（`patch_goal` 每条事件都带完整 post-patch plan），并比较
+  **覆盖**而非相等——加宽授权保留旧批准，换域/收窄/撤销 wildcard 必须重新
+  `lhgp_plan_signoff`。`tests/unit/test_trusted_pre_authorization.py` 新增 6 条参数化
+  drift 回归锁住边界。
+- **`lhgp memory expire` 报告的是 id 列表不是计数**：`src/lhgp/memory/cli.py` 直接
+  `print(f"expired {n} ...")` 而 `expire_due()` 返回 `list[int]`，输出
+  `expired [1] due memories`。改为 `len(...)`，与 `daemon_loop.py` 的 `dropped {n}` 口径一致。
+
+### Added
+
+- **三个 0% 新模块的 focused 测试**：`tests/unit/test_templates_validate.py`（五层
+  校验，98%）、`tests/unit/test_timeline_render.py`（自包含 HTML、转义与损坏 payload
+  降级，100%）、`tests/unit/test_memory_cli.py`（add/list/search/show/expire 的退出码
+  契约，100%）。全库覆盖率 77% → 79.1%。
+- **覆盖率地板基线化**：`quality/coverage-baseline.json` + `scripts/quality_gate.py::coverage_fail_under`，
+  脚本内不再有 `--cov-fail-under=<字面量>`；基线读不到则拒绝通过。`tests/unit/test_coverage_ratchet.py`
+  钉住地板来源，并相对 HEAD 校「只许上调」。
+- **`real_entry` 告警上棘轮**：`tests/conftest.py` 在收集阶段比对
+  `quality/real-entry-baseline.json`，欠款 114 条（7 个文件）固定为基线；新增一条未标记的
+  真实入口测试会让整个会话以 `UsageError` 退出。之前它是淹没在日志里的重复警告。
+- **claims 锚点可达性校验**：`scripts/claims_check.py::check_pinned_sha` 用
+  `git merge-base --is-ancestor` 确认 `pinned_sha` 从当前历史可达，错误消息区分
+  对象丢失 / 浅克隆 / 不可达三种情形；两个 CI workflow 改为 `fetch-depth: 0`。
+  历史脱敏后旧锚点 `29833dc…` 已失效，这正是该检查要拦的那类静默失效。
+- **子进程等待预算集中旋钮**：`tests/wait_budget.py` 把 13+ 处硬编码墙钟超时
+  （5/8/10/15/20s）改成 `budget(...)` 并将 `time.time()` 换为 `time.monotonic()`，
+  满载机器上由 `LHGP_TEST_WAIT_SCALE` 一个变量加额度，而不是改八个文件。
+- **仓库卫生回归**：`tests/unit/test_repo_hygiene.py` 断言 `git ls-files --ignored --cached
+  --exclude-standard` 为空——`.gitignore` 挡不住已跟踪文件，这个状态以前无人守。
+
+### Changed
+
+- **arch 门覆盖两棵命名空间树**：`scripts/arch_check.py` 此前只查 `src/longtask`，
+  `src/lhgp` 可以任意越层。接入后发现真违规：`src/lhgp/contracts/resume.py` 直连
+  SQLite，已归位到 `src/lhgp/persistence/resume.py`（`contracts` 层保持纯数据）。
+- **取消跟踪 67 个误提交文件**：`scratch-trash/` 54 个、`quality/` 下 9 份门运行日志
+  与 3 份 commit message 草稿、`_move_list.json`，均 `git rm --cached`（磁盘文件保留）。
+- **版本自述与发布元数据重新对齐**：`src/longtask/__init__.py::__version__` 与配套
+  `skills/longtask-contract/MANIFEST.json` 停在 `0.1.0a6`，而包已发到 `a10`——`lhgp --version`、
+  `lhgp doctor` 与 MCP `implementation_version` 四处都在报错版本号。两者一并升到
+  `0.1.0a11`，`tests/unit/test_p6_plugin_package.py` 新增三方对账（pyproject / 运行时常量 /
+  `uv.lock`）把这类漂移变成红门；`PROTOCOL_VERSION` 仍按 DESIGN §11 独立演进。
+- **文档口径与实现机器对账**：MCP 工具总数由 `tests/unit/test_mcp_tool_surface.py` 对照
+  文档 marker（51 = 34 `lhgp_*` + 17 `longtask_*`）；`ARCHITECTURE.md` 补齐工具表；
+  `docs/RELEASE-PLAN.md` 不再复述包版本、并标注旧基线提交号脱敏后不可达；
+  `docs/wiki/playbook/quality-gate.md` 与 `CONTRIBUTING.md` 改为指向基线文件。
+
+### Notes
+
+- 本轮改动全部仍属参考实现与门禁层，没有新增对外的协议能力；`docs/LHGP-SPEC.md`
+  的声明口径未变，`quality/claims.json` 只重锚 `pinned_sha` 与复验日期。
+- 未动账：`src/lhgp/wiki/__init__.py` 的浏览命令（10%）与 `src/lhgp/flow/cli.py`（24%）
+  仍欠 focused 测试；`real_entry` 基线的 114 条欠款待逐文件判定后下调。
+
 ## [0.1.0a10] - 2026-09-08
 
 Resilient contract execution:从「能跑」到「死了也能接着干」。

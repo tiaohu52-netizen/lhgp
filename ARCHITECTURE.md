@@ -27,6 +27,9 @@ SPEC §19.3 规定迁移顺序：**不得先做全仓机械 rename**。最终目
 | **acceptance/** | `lhgp/acceptance/` | `longtask/acceptance/` | 验收：typed check、evaluator、verdict |
 | **admission/** | `lhgp/admission/` | `longtask/admission/` | 准入：7 条件判定、offer、refuse |
 | **forecast/** | `lhgp/forecast/` | `longtask/forecast/` | Deadline 风险快照模型 |
+| **goals/** | `lhgp/goals/` | —（新模块无门面） | Goal 阶段与进度：`stage.py`（阶段结构）、`progress.py`（`advance_progress` 纯函数，串行接力推进） |
+| **scheduler/** | `lhgp/scheduler/` | `longtask/scheduler/` | 唤醒时点计算：`ticker.py`、`wakeup.py`（决策点 → 下次唤醒，不做派工） |
+| **templates/** | `lhgp/templates/` | —（新模块无门面） | 合同模板库（`code-change.json` / `research.json` / `release-check.json`）+ `validate.py` 模板校验入口 |
 | **feedback/** | `lhgp/feedback/` | `longtask/feedback.py` | 用户评价 + 验收态 diff（types/store/diff） |
 | **learning/** | `lhgp/learning/` | `longtask/learning.py` | 信号提取 + 自动模板演化（extractor/evolver） |
 | **portfolio/** | `lhgp/portfolio/` | `longtask/portfolio.py` | dashboard 聚合 + 单合同 trace（summary/tracking） |
@@ -38,6 +41,7 @@ SPEC §19.3 规定迁移顺序：**不得先做全仓机械 rename**。最终目
 | **adapters/base+handles+manifest** | `lhgp/adapters/` | `longtask/adapters/` | 执行器协议面 |
 | **promoter/escalation+fairness+proposals** | `lhgp/promoter/` | `longtask/promoter/` | 升级阶梯、公平性、提案校验（纯函数） |
 | **persistence/decisions+events+errors** | `lhgp/persistence/` | `longtask/persistence/` | 事件词汇、决策记账、错误类型 |
+| **persistence/resume** | `lhgp/persistence/resume.py` | —（无门面） | `build_resume_brief`：读 `active.md` + `handover.md` 拼成一份自包含 brief，并写 `attempt/resumed` 审计事件。它读写投影与事件，故属 persistence；曾放在 `lhgp/contracts/`，因 arch 门规则只匹配 `longtask.*` 而漏检，修门后才暴露 |
 | **persistence/insights+maintenance+timeline** | `lhgp/persistence/` | —（新模块无门面） | brief/board/stats、diff/prune、HTML 时间轴 |
 | **rpc/handlers/_common** | `lhgp/rpc/handlers/_common.py` | `longtask/…/_common.py` | actor 派生、Principal 门禁、contract_id 校验 |
 | **rpc/transport+server+errors+methods** | `lhgp/rpc/` | `longtask/rpc/` | JSON-RPC 传输与路由 |
@@ -46,7 +50,7 @@ SPEC §19.3 规定迁移顺序：**不得先做全仓机械 rename**。最终目
 | **persistence/projections+context+notifications** | `longtask/persistence/` | `lhgp/persistence/` | 文件投影、上下文编译、通知 outbox |
 | **promoter/reconcile+records** | `longtask/promoter/` | `lhgp/promoter/` | 重启恢复四分支 |
 | **adapters/subprocess+registry+factory** | `longtask/adapters/` | `lhgp/adapters/` | 子进程适配器、执行器注册表 |
-| **mcp_server** | `longtask/mcp_server.py` | `lhgp/mcp_server.py` | 47 个 MCP 工具（含 6 个 P6 评价/学习/portfolio/trace/deadline 工具） |
+| **mcp_server** | `longtask/mcp_server.py` | `lhgp/mcp_server.py` | MCP 工具注册表 `TOOLS`：<!-- mcp-tools: total=51 canonical=34 legacy=17 --> 51 个工具入口（34 个 `lhgp_*` 正名 + 17 个 `longtask_*` 兼容别名）。该数字由 `tests/unit/test_mcp_tool_surface.py` 与本行标记对账，改工具面必须同步改标记 |
 | **cli/daemon_proc+daemon_loop+tick+runner** | `longtask/cli/` | `lhgp/cli/` | daemon 生命周期与主循环（daemon_loop 内调用 `_enforce_deadlines`） |
 
 **简记**：协议概念（模型/验收/准入/预测/传输）在 `lhgp`；运行时机械
@@ -66,6 +70,9 @@ adapters/ ───────────────────────�
 ```
 
 - `contracts/` 是零依赖的纯数据层：不 import persistence、不 import cli；
+- 上述约束对 `longtask/` 与 `lhgp/` **两棵树同等生效**：层名相同，
+  `scripts/arch_check.py` 按层名匹配，不关心 import 写的是哪个包前缀
+  （旧规则只写 `longtask.*`，等于完全没查过 `lhgp/`）；
 - `persistence/` 只被上层 import，不反向依赖 `promoter/` 或 `adapters/`；
 - `adapters/` 可依赖 `persistence/types`，但 persistence 不 import adapters；
 - 门面文件（`longtask/lhgp` 互指）允许双向，但**只允许 re-export，不允许

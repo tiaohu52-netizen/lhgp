@@ -1,7 +1,7 @@
 {
   "registry_version": 2,
-  "pinned_sha": "29833dc6928398565642578be1a952a80c536651",
-  "last_revalidated": "2026-09-05",
+  "pinned_sha": "2f44bf0989376e0e9244479f85cf9cb162418b6e",
+  "last_revalidated": "2026-09-10",
   "design_claims": [
     {
       "id": "spec-is-authoritative-source",

@@ -25,7 +25,12 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
       - name: Checkout
+        # fetch-depth: 0 — the claims gate resolves quality/claims.json's
+        # pinned_sha against real history (git merge-base --is-ancestor).
+        # A shallow checkout would make an honest anchor look broken.
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5

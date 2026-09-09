@@ -1741,7 +1741,7 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     if args.command == "attempt" and args.attempt_cmd == "resume":
-        from lhgp.contracts import build_resume_brief
+        from lhgp.persistence.resume import build_resume_brief
 
         conn = connect(StoreConfig(db_path=root / "state.db"))
         try:

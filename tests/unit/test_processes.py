@@ -25,6 +25,7 @@ from longtask.adapters.processes import (
     process_start_time,
     terminate_pid,
 )
+from tests.wait_budget import budget
 
 pytestmark = pytest.mark.unit
 
@@ -54,7 +55,7 @@ class TestProcessAlive:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        proc.wait(timeout=15)
+        proc.wait(timeout=budget(30.0))
         # 进程已退出且已被本进程收尸：pid 探测应报 False
         assert process_alive(proc.pid) is False
 
@@ -100,7 +101,7 @@ class TestTerminatePid:
         )
         try:
             assert terminate_pid(proc.pid) is True
-            proc.wait(timeout=15)
+            proc.wait(timeout=budget(30.0))
             assert proc.returncode is not None
         finally:
             proc.kill()

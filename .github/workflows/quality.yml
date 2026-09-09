@@ -16,6 +16,9 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        # fetch-depth: 0 so the claims gate can resolve pinned_sha in history.
+        with:
+          fetch-depth: 0
 
       - name: Install uv
         uses: astral-sh/setup-uv@v6
@@ -33,6 +36,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        # fetch-depth: 0 so the claims gate can resolve pinned_sha in history.
+        with:
+          fetch-depth: 0
 
       - name: Install uv
         uses: astral-sh/setup-uv@v6

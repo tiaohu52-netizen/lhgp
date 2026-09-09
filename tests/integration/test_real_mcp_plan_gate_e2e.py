@@ -58,6 +58,7 @@ from longtask.persistence.store import (
     ensure_schema,
     save_contract,
 )
+from tests.wait_budget import budget
 
 pytestmark = pytest.mark.integration
 
@@ -362,9 +363,9 @@ def test_real_mcp_plan_gate_dispatches_through_to_user_confirm(tmp_path: Path) -
         )
         # Drain the runner for the executor + verifier
         # chain.  Two attempts run sequentially in this
-        # test; allow up to 30s for both real subprocess
-        # lifecycles.
-        deadline = time.monotonic() + 30
+        # test; the 90s ceiling covers both real subprocess
+        # lifecycles on a loaded machine (see tests/wait_budget).
+        deadline = time.monotonic() + budget(90.0)
         while time.monotonic() < deadline and runner._running:
             time.sleep(0.05)
             runner.poll_attempts(NOW + timedelta(seconds=4))

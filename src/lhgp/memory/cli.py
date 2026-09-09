@@ -144,7 +144,9 @@ def memory_command(conn: sqlite3.Connection, args: argparse.Namespace) -> int:
         return 0
 
     if args.memory_cmd == "expire":
-        n = expire_due(conn)
+        # ``expire_due`` returns the deleted ids, not a count — the report the
+        # user asked for is how many rows went away.
+        n = len(expire_due(conn))
         print(f"expired {n} due memories")
         return 0
 

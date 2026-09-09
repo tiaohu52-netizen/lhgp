@@ -32,6 +32,7 @@ from longtask.persistence.store import (
     save_contract,
     update_contract_state,
 )
+from tests.wait_budget import budget
 
 pytestmark = pytest.mark.integration
 
@@ -188,8 +189,10 @@ class TestExecutorPromptContractVisibility:
         try:
             import time
 
-            deadline = time.time() + 15.0
-            while time.time() < deadline:
+            # monotonic, not wall clock: a clock adjustment must not
+            # truncate the wait for a real child process.
+            deadline = time.monotonic() + budget(45.0)
+            while time.monotonic() < deadline:
                 if (ws / "received.txt").is_file():
                     break
                 time.sleep(0.1)

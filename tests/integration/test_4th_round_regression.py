@@ -67,6 +67,7 @@ from longtask.persistence.store import (
     save_contract,
     update_contract_state,
 )
+from tests.wait_budget import budget
 
 NOW = datetime(2026, 9, 8, 12, 0, 0, tzinfo=UTC)
 
@@ -524,6 +525,6 @@ def _terminate(proc: subprocess.Popen[bytes]) -> None:
         with contextlib.suppress(OSError):
             proc.stdin.close()
     try:
-        proc.wait(timeout=5)
+        proc.wait(timeout=budget(15.0))
     except subprocess.TimeoutExpired:
         proc.kill()

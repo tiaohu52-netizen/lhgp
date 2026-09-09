@@ -501,3 +501,153 @@ def test_narrowed_grant_blocks_auto_activate(tmp_path: Path) -> None:
         f"contract must remain DRAFTED after grant narrowing; got state={post.state.value!r}"
     )
     conn.close()
+
+
+def _seed_plan_approved_under_grant(
+    conn: sqlite3.Connection,
+    *,
+    goal_id: str,
+    contract_id: str,
+    grant: dict[str, object],
+) -> None:
+    """Create the Goal with ``grant`` pinned and a PLAN_APPROVED on a
+    no-claim (MCP-shaped) contract bound to it.
+
+    Mirrors :func:`test_narrowed_grant_blocks_auto_activate` step 1 so the
+    drift cases below differ from it only in what the grant becomes later.
+    """
+    from lhgp.persistence.events import EventType
+    from lhgp.persistence.store import append_event
+
+    save_contract(
+        conn,
+        ContractDraft(
+            title="goal bootstrap",
+            objective="x",
+            deadline_at=NOW + timedelta(hours=2),
+            hard_constraints={},
+            acceptance=Acceptance(standard="s", checks=("c1",)),
+            workload_initial_hours=1.0,
+            budget=Budget(5, 1, 1, 30, 1_048_576, 2),
+        ),
+        contract_id=f"{goal_id}-bootstrap",
+        now=NOW,
+        actor="user",
+        goal_id=goal_id,
+    )
+    patch_goal(
+        conn,
+        goal_id=goal_id,
+        now=NOW,
+        expected_revision=1,
+        actor="user",
+        plan={"pre_authorized": grant},
+    )
+    save_contract(
+        conn,
+        ContractDraft(
+            title="real contract",
+            objective="do the thing",
+            deadline_at=NOW + timedelta(hours=2),
+            hard_constraints={},
+            acceptance=Acceptance(standard="s", checks=("c1",)),
+            workload_initial_hours=1.0,
+            budget=Budget(5, 1, 1, 30, 1_048_576, 2),
+        ),
+        contract_id=contract_id,
+        now=NOW,
+        actor="model",
+        goal_id=goal_id,
+    )
+    append_event(
+        conn,
+        contract_id=contract_id,
+        event_type=EventType.PLAN_APPROVED,
+        payload={"contract_revision": 1, "auto_approved": True},
+        now=NOW + timedelta(seconds=1),
+        actor="model",
+        contract_revision=1,
+    )
+
+
+@pytest.mark.parametrize(
+    ("grant_at_approval", "grant_now", "expect_promoted"),
+    [
+        pytest.param(
+            {"enabled": True, "actions": ["write file"]},
+            {"enabled": True, "actions": ["read file"]},
+            False,
+            id="scope-swapped",
+        ),
+        pytest.param(
+            {"enabled": True, "actions": ["write file", "read file"]},
+            {"enabled": True, "actions": ["write file"]},
+            False,
+            id="scope-narrowed",
+        ),
+        pytest.param(
+            {"enabled": True, "wildcard": True},
+            {"enabled": True, "actions": ["read file"]},
+            False,
+            id="wildcard-revoked",
+        ),
+        pytest.param(
+            {"enabled": True, "actions": ["read file"]},
+            {"enabled": True, "actions": ["read file", "write file"]},
+            True,
+            id="scope-widened",
+        ),
+        pytest.param(
+            {"enabled": True, "actions": ["read file", "write file"]},
+            {"enabled": True, "actions": ["write file", "read file"]},
+            True,
+            id="order-only-change",
+        ),
+        pytest.param(
+            {"enabled": True, "actions": ["write file"]},
+            {"enabled": True, "actions": ["write file"]},
+            True,
+            id="grant-unchanged",
+        ),
+    ],
+)
+def test_grant_drift_after_plan_approval_gates_auto_activate(
+    tmp_path: Path,
+    grant_at_approval: dict[str, object],
+    grant_now: dict[str, object],
+    expect_promoted: bool,
+) -> None:
+    """The approval is authority only for the grant it was validated against.
+
+    A grant edit after the approval must invalidate it when the scope
+    actually shrank (including a revoked ``wildcard``) and must not
+    invalidate it when the user merely widened the grant or reordered the
+    same actions — otherwise the gate becomes an unconditional refusal and
+    the bounded-grant flow stops working at all.
+    """
+    goal_id = "lt-drift-goal"
+    contract_id = "lt-drift-cid"
+    conn = connect(StoreConfig(db_path=tmp_path / "state.db"))
+    ensure_schema(conn)
+    _seed_plan_approved_under_grant(
+        conn, goal_id=goal_id, contract_id=contract_id, grant=grant_at_approval
+    )
+    patch_goal(
+        conn,
+        goal_id=goal_id,
+        now=NOW + timedelta(seconds=2),
+        expected_revision=2,
+        actor="user",
+        plan={"pre_authorized": grant_now},
+    )
+    view = get_contract(conn, contract_id)
+    assert view is not None
+    promoted = auto_approve_drafted_contract(conn, view, NOW + timedelta(seconds=3))
+    assert promoted is expect_promoted, (
+        f"grant {grant_at_approval} -> {grant_now}: expected promoted={expect_promoted}"
+    )
+    post = get_contract(conn, contract_id)
+    assert post is not None
+    expected_state = "active" if expect_promoted else "drafted"
+    assert post.state.value == expected_state
+    conn.close()
