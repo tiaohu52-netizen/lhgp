@@ -322,7 +322,7 @@ def _has_recent_plan_approval(
     """
     cutoff_iso = (now - timedelta(seconds=PLAN_GATE_LOOKBACK_SECONDS)).isoformat()
     row = conn.execute(
-        "SELECT event_type, payload_json FROM events "
+        "SELECT event_type, contract_revision, payload_json FROM events "
         "WHERE contract_id = ? "
         "AND event_type IN (?, ?) "
         "AND created_at >= ? "
@@ -336,12 +336,28 @@ def _has_recent_plan_approval(
     ).fetchone()
     if row is None:
         return False
-    event_type, payload_json = row
+    event_type, event_contract_revision, payload_json = row
     if str(event_type) != EventType.PLAN_APPROVED:
         return False
     payload = _parse_plan_payload(payload_json)
-    if payload.get("contract_revision") != contract_revision:
-        return False
+    # 6th-round P1 fix (2026-09-09): the lifecycle
+    # binding reads from the events.contract_revision
+    # COLUMN when present.  ``update_contract_state``
+    # and ``patch_contract`` re-stamp any prior
+    # PLAN_APPROVED to the new revision on lifecycle-only
+    # bumps, so the column is the single source of truth
+    # for "is this approval still binding to the current
+    # contract revision?".  Legacy events written before
+    # the migration was added carry NULL on the column
+    # and a snapshot contract_revision in the payload —
+    # fall back to the payload so pre-fix events still
+    # gate correctly.
+    if event_contract_revision is not None:
+        if event_contract_revision != contract_revision:
+            return False
+    else:
+        if payload.get("contract_revision") != contract_revision:
+            return False
     stored_checks = payload.get("accepted_check_ids")
     if not isinstance(stored_checks, list):
         return False

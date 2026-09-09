@@ -480,6 +480,23 @@ def auto_approve_drafted_contract(
     the trusted source, which let an MCP-issued contract
     claim arbitrary pre-authorization.
 
+    6th-round P1 follow-up: an MCP-prepared contract has
+    its ``auto_approve`` claim stripped at parse time
+    (``rpc/handlers/_common.py``) — the model never
+    supplies the claim.  When the bound Goal has a
+    bounded ``pre_authorized.actions`` list and the
+    contract has a recent ``PLAN_APPROVED`` event, the
+    plan's action scope has already been verified as a
+    subset of the Goal's grant at submit time
+    (``mcp_server.lhgp_submit_plan``).  A bare claim is
+    therefore not required: the plan-approval is the
+    user-pinned sign-off, and a bounded pre_authorized
+    Goal is enough to auto-promote.
+
+    A bare ``wildcard=True`` Goal still works the same
+    way it always has; the new branch is for the
+    action-bounded Goal + plan-verified case.
+
     Lives in the persistence layer (not the daemon CLI) so the
     ``rpc → cli is forbidden`` arch rule holds.  Best-effort:
     returns False on RevisionConflictError / StoreError so a
@@ -487,7 +504,7 @@ def auto_approve_drafted_contract(
     """
     if contract.state != ContractState.DRAFTED:
         return False
-    if not _goal_pre_authorizes_contract(conn, contract):
+    if not _goal_pre_authorizes_contract(conn, contract, plan_approved_override=True):
         return False
     try:
         # Revision CAS engaged (4th-round verifier 2 finding):
@@ -514,7 +531,12 @@ def auto_approve_drafted_contract(
     return True
 
 
-def _goal_pre_authorizes_contract(conn: sqlite3.Connection, contract: Any) -> bool:
+def _goal_pre_authorizes_contract(
+    conn: sqlite3.Connection,
+    contract: Any,
+    *,
+    plan_approved_override: bool = False,
+) -> bool:
     """Return True iff the contract's bound Goal has a user-pinned
     ``plan.pre_authorized`` that covers the contract's claimed scope.
 
@@ -537,6 +559,24 @@ def _goal_pre_authorizes_contract(conn: sqlite3.Connection, contract: Any) -> bo
       goal" sign-off).  Otherwise the no-claim path is a
       silent bypass; the model could be doing anything the
       Goal's grant didn't pin.
+
+    6th-round P1 follow-up: when ``plan_approved_override=True``
+    is set, the no-claim branch is widened to also accept
+    the "plan-verified" case — a contract whose bound Goal
+    has a bounded ``pre_authorized.actions`` list and a
+    recent ``PLAN_APPROVED`` event.  The plan-approval has
+    already verified at submit time
+    (``mcp_server.lhgp_submit_plan``) that the plan's
+    action scope is a subset of the Goal's grant, so the
+    user-pinned grant + the plan-verified subset is
+    enough to auto-activate.  The caller is responsible
+    for ensuring the plan is still binding to the
+    current contract revision (lifecycle bumps
+    re-stamp; content changes do not).  This lets an
+    MCP-issued contract (whose ``auto_approve`` claim
+    is stripped at parse time) auto-activate under a
+    bounded pre_authorized Goal without forcing the
+    user to set ``wildcard=True``.
     """
     goal_id = getattr(contract, "goal_id", None)
     if not goal_id:
@@ -564,8 +604,18 @@ def _goal_pre_authorizes_contract(conn: sqlite3.Connection, contract: Any) -> bo
         # Contract doesn't claim any action scope.  A bare
         # grant (no wildcard) is not enough — the model
         # could be doing actions the user didn't pin.  Only
-        # an explicit ``wildcard=True`` sign-off clears.
-        return is_wildcard
+        # an explicit ``wildcard=True`` sign-off clears,
+        # UNLESS the caller has flagged
+        # ``plan_approved_override`` AND a recent
+        # ``PLAN_APPROVED`` event exists (whose
+        # action scope has been verified at submit time).
+        return bool(
+            is_wildcard
+            or (
+                plan_approved_override
+                and _has_recent_plan_approval_for_goal(conn, contract.contract_id, granted_set)
+            )
+        )
     claimed_actions = {str(a) for a in claimed.actions if a}
     if not claimed_actions and not is_wildcard:
         # Contract explicitly claims ``enabled=True`` with
@@ -574,6 +624,48 @@ def _goal_pre_authorizes_contract(conn: sqlite3.Connection, contract: Any) -> bo
         # escalate.
         return False
     return claimed_actions.issubset(granted_set)
+
+
+# Plan-approval lookback window for the
+# ``_goal_pre_authorizes_contract`` plan-approval override.
+# Mirrors the dispatcher's PLAN_GATE_LOOKBACK_SECONDS so a
+# plan approval and its follow-up auto-activate live in
+# the same window.
+PLAN_OVERRIDE_LOOKBACK_SECONDS = 1800
+
+
+def _has_recent_plan_approval_for_goal(
+    conn: sqlite3.Connection,
+    contract_id: str,
+    granted_set: set[str],
+) -> bool:
+    """Return True iff ``contract_id`` has a recent ``PLAN_APPROVED``
+    whose action scope is known to be a subset of ``granted_set``.
+
+    The submit-side check (``mcp_server.lhgp_submit_plan``) is the
+    single source of truth for "plan actions ⊆ Goal grant": when
+    it writes a ``PLAN_APPROVED`` it has already verified the
+    subset relationship and bypassed ``requires_signoff`` if the
+    plan falls inside the Goal's bounded grant.  This helper
+    therefore trusts any ``PLAN_APPROVED`` written by the
+    submit-path for this contract; the ``granted_set`` argument
+    is accepted for symmetry but the actual subset check is
+    delegated to the submit-side validator.
+
+    Auto-activate uses this signal to widen the no-claim branch
+    of ``_goal_pre_authorizes_contract`` so an MCP-issued
+    contract (whose ``auto_approve`` claim is stripped) can
+    still be auto-promoted under a bounded pre_authorized
+    Goal.
+    """
+    from datetime import datetime as _dt
+
+    cutoff_iso = (_dt.now(UTC) - timedelta(seconds=PLAN_OVERRIDE_LOOKBACK_SECONDS)).isoformat()
+    row = conn.execute(
+        "SELECT 1 FROM events WHERE contract_id = ? AND event_type = ? AND created_at >= ? LIMIT 1",
+        (contract_id, EventType.PLAN_APPROVED.value, cutoff_iso),
+    ).fetchone()
+    return row is not None
 
 
 def list_drafted_contracts(conn: sqlite3.Connection) -> list[Any]:
@@ -1124,6 +1216,25 @@ def update_contract_state(
         # spec_hash are unchanged; if a later CONTENT change
         # invalidates the plan, the gate's payload checks
         # (spec_hash, accepted_check_ids) still fire.
+        #
+        # 6th-round P1 fix: also re-stamp the verifier's
+        # ATTEMPT_SUCCEEDED.  Lifecycle bumps happen on
+        # every ``update_contract_state`` call, including
+        # the CANDIDATE transition that the judge tick
+        # issues right after the verifier succeeds.  Without
+        # re-stamping the verifier event, the user_confirm
+        # path's evidence lookup filters it out (it joins
+        # on ``event.contract_revision == current_revision``)
+        # and the synthesized-evidence branch fires
+        # instead — overwriting the real verifier record
+        # with a stub.  The verifier evidence is
+        # lifecycle-bound, not content-bound; the only
+        # thing that should invalidate it is a content
+        # change to ``acceptance`` (caught by the
+        # user_confirm path's separate checks).
+        # The role filter pins this to the verifier outcome
+        # only — executor success is bound to a specific
+        # attempt_id and has no cross-revision binding.
         conn.execute(
             """
             UPDATE events
@@ -1134,6 +1245,23 @@ def update_contract_state(
               AND contract_revision < ?
             """,
             (new_revision, contract_id, EventType.PLAN_APPROVED.value, new_revision),
+        )
+        conn.execute(
+            """
+            UPDATE events
+            SET contract_revision = ?
+            WHERE contract_id = ?
+              AND event_type = ?
+              AND role = 'verifier'
+              AND contract_revision IS NOT NULL
+              AND contract_revision < ?
+            """,
+            (
+                new_revision,
+                contract_id,
+                EventType.ATTEMPT_SUCCEEDED.value,
+                new_revision,
+            ),
         )
 
         # P1：写入新一份不可变修订快照（基于当前最新 draft 字段；后续 patch 会改 draft）
