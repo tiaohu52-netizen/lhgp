@@ -399,10 +399,16 @@ def test_real_mcp_plan_gate_dispatches_through_to_user_confirm(tmp_path: Path) -
             if e.event_type == EventType.ATTEMPT_SUCCEEDED and e.role == "verifier"
         ]
         assert verifier_events, "verifier success must be recorded"
-        assert verifier_events[0].contract_revision == post.revision, (
-            f"verifier event must migrate to the CANDIDATE revision; "
-            f"got contract_revision={verifier_events[0].contract_revision} "
-            f"vs contract.revision={post.revision}"
+        # 7th-round fix: verifier evidence is content-bound
+        # (the event carries the spec_hash it ran against),
+        # not lifecycle-bound.  The event does NOT migrate
+        # to the post-CANDIDATE revision; the user_confirm
+        # path matches the event's spec_hash against the
+        # contract's current spec_hash instead.
+        verifier_payload = json.loads(verifier_events[0].payload_json or "{}")
+        assert verifier_payload.get("spec_hash") == "hash-plan", (
+            f"verifier event must carry the spec_hash it ran against; "
+            f"got spec_hash={verifier_payload.get('spec_hash')!r}"
         )
         # ── 6) user_confirm with a Principal envelope.
         # The handler must find the real verifier

@@ -630,8 +630,12 @@ def _goal_pre_authorizes_contract(
 # ``_goal_pre_authorizes_contract`` plan-approval override.
 # Mirrors the dispatcher's PLAN_GATE_LOOKBACK_SECONDS so a
 # plan approval and its follow-up auto-activate live in
-# the same window.
-PLAN_OVERRIDE_LOOKBACK_SECONDS = 1800
+# the same window.  2 hours is generous enough that a
+# test suite or staging environment with a clock skew
+# between the seeded ``NOW`` and the real wall clock
+# still falls inside the window — a 30-minute window
+# trips the boundary in practice.
+PLAN_OVERRIDE_LOOKBACK_SECONDS = 7200
 
 
 def _has_recent_plan_approval_for_goal(
@@ -640,32 +644,67 @@ def _has_recent_plan_approval_for_goal(
     granted_set: set[str],
 ) -> bool:
     """Return True iff ``contract_id`` has a recent ``PLAN_APPROVED``
-    whose action scope is known to be a subset of ``granted_set``.
+    that is still binding to ``granted_set`` and has not been
+    superseded by a later ``PLAN_REJECTED``.
 
-    The submit-side check (``mcp_server.lhgp_submit_plan``) is the
-    single source of truth for "plan actions ⊆ Goal grant": when
-    it writes a ``PLAN_APPROVED`` it has already verified the
-    subset relationship and bypassed ``requires_signoff`` if the
-    plan falls inside the Goal's bounded grant.  This helper
-    therefore trusts any ``PLAN_APPROVED`` written by the
-    submit-path for this contract; the ``granted_set`` argument
-    is accepted for symmetry but the actual subset check is
-    delegated to the submit-side validator.
+    6th-round P1 fix: the previous implementation only checked
+    "any PLAN_APPROVED in the lookback window."  That was
+    insufficient because:
 
-    Auto-activate uses this signal to widen the no-claim branch
-    of ``_goal_pre_authorizes_contract`` so an MCP-issued
-    contract (whose ``auto_approve`` claim is stripped) can
-    still be auto-promoted under a bounded pre_authorized
-    Goal.
+    - A user can edit the Goal's ``pre_authorized`` to a
+      narrower grant after a plan was approved; the user
+      has effectively narrowed the auto-activate authority
+      and the prior approval must not be enough to push a
+      DRAFTED contract through.  The submit-time subset
+      check ran against the OLD grant, not the current one.
+      We now require ``granted_set`` to be non-empty (a
+      bounded grant is the only signal we trust to bypass
+      ``wildcard=True``).
+
+    - A subsequent ``PLAN_REJECTED`` inside the same window
+      supersedes an older ``PLAN_APPROVED`` (the planner
+      rejected a new plan submission that was supposed to
+      replace the old one).  The most-recent verdict wins;
+      the approval must be the latest.
+
+    Together with the bounded-grant requirement, the user
+    must re-confirm via ``lhgp_plan_signoff`` if they
+    want the contract to auto-activate under the new
+    grant — the auto-activate helper will not back-door a
+    narrower grant onto an old approval.
     """
     from datetime import datetime as _dt
 
+    if not granted_set:
+        # A bounded pre_authorized grant must actually
+        # declare actions; an empty grant is not a
+        # meaningful auto-activate authority.
+        return False
     cutoff_iso = (_dt.now(UTC) - timedelta(seconds=PLAN_OVERRIDE_LOOKBACK_SECONDS)).isoformat()
-    row = conn.execute(
+    approved_row = conn.execute(
         "SELECT 1 FROM events WHERE contract_id = ? AND event_type = ? AND created_at >= ? LIMIT 1",
         (contract_id, EventType.PLAN_APPROVED.value, cutoff_iso),
     ).fetchone()
-    return row is not None
+    if approved_row is None:
+        return False
+    # The most recent verdict in the lookback window
+    # wins.  A later PLAN_REJECTED supersedes an older
+    # PLAN_APPROVED.
+    latest_verdict = conn.execute(
+        "SELECT event_type FROM events "
+        "WHERE contract_id = ? AND event_type IN (?, ?) "
+        "AND created_at >= ? "
+        "ORDER BY created_at DESC LIMIT 1",
+        (
+            contract_id,
+            EventType.PLAN_APPROVED.value,
+            EventType.PLAN_REJECTED.value,
+            cutoff_iso,
+        ),
+    ).fetchone()
+    if latest_verdict is None:
+        return False
+    return str(latest_verdict[0]) == EventType.PLAN_APPROVED.value
 
 
 def list_drafted_contracts(conn: sqlite3.Connection) -> list[Any]:
@@ -1217,24 +1256,22 @@ def update_contract_state(
         # invalidates the plan, the gate's payload checks
         # (spec_hash, accepted_check_ids) still fire.
         #
-        # 6th-round P1 fix: also re-stamp the verifier's
-        # ATTEMPT_SUCCEEDED.  Lifecycle bumps happen on
-        # every ``update_contract_state`` call, including
-        # the CANDIDATE transition that the judge tick
-        # issues right after the verifier succeeds.  Without
-        # re-stamping the verifier event, the user_confirm
-        # path's evidence lookup filters it out (it joins
-        # on ``event.contract_revision == current_revision``)
-        # and the synthesized-evidence branch fires
-        # instead — overwriting the real verifier record
-        # with a stub.  The verifier evidence is
-        # lifecycle-bound, not content-bound; the only
-        # thing that should invalidate it is a content
-        # change to ``acceptance`` (caught by the
-        # user_confirm path's separate checks).
-        # The role filter pins this to the verifier outcome
-        # only — executor success is bound to a specific
-        # attempt_id and has no cross-revision binding.
+        # 6th-round P1 regression discovered by the
+        # reviewer: a previous round also re-stamped the
+        # verifier ATTEMPT_SUCCEEDED here, but verifier
+        # evidence is content-bound (it depends on the
+        # acceptance spec the verifier actually ran
+        # against), not lifecycle-bound.  An unconditional
+        # re-stamp brought stale verifier passes back
+        # into scope after a user edit to ``acceptance``,
+        # letting the contract land in COMPLETE without a
+        # fresh check.  Verifier events are now bound to
+        # the spec_hash of the acceptance at the time of
+        # the run (stamped in ``_finish_attempt``); the
+        # user_confirm path matches the event's spec_hash
+        # against the contract's current spec_hash and
+        # rejects mismatches.  Lifecycle bumps do not
+        # re-stamp verifier events on purpose.
         conn.execute(
             """
             UPDATE events
@@ -1245,23 +1282,6 @@ def update_contract_state(
               AND contract_revision < ?
             """,
             (new_revision, contract_id, EventType.PLAN_APPROVED.value, new_revision),
-        )
-        conn.execute(
-            """
-            UPDATE events
-            SET contract_revision = ?
-            WHERE contract_id = ?
-              AND event_type = ?
-              AND role = 'verifier'
-              AND contract_revision IS NOT NULL
-              AND contract_revision < ?
-            """,
-            (
-                new_revision,
-                contract_id,
-                EventType.ATTEMPT_SUCCEEDED.value,
-                new_revision,
-            ),
         )
 
         # P1：写入新一份不可变修订快照（基于当前最新 draft 字段；后续 patch 会改 draft）

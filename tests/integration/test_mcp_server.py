@@ -1285,3 +1285,34 @@ def test_mcp_submit_and_leave_e2e_with_goal_pre_authorized_and_execution_config(
             assert required in event_types, f"audit chain missing {required!r}; got {event_types}"
     finally:
         conn.close()
+
+
+def test_lhgp_prepare_contract_schema_declares_spec_and_spec_hash() -> None:
+    """7th-round P2: ``longtask_prepare_contract`` (and its
+    ``lhgp_prepare_contract`` alias) must declare
+    ``spec`` and ``spec_hash`` in their JSON Schema.  The
+    reviewer's real-MCP request returned
+    ``invalid arguments: unknown parameter: spec`` because
+    the function accepted the args but the schema
+    validator (the same code path the stdio transport
+    uses) rejected them.  Without a schema declaration
+    the plan-gate + CANDIDATE path is unreachable via
+    the public tool surface.
+    """
+    from longtask.mcp_server import TOOLS
+
+    for tool_name in ("longtask_prepare_contract", "lhgp_prepare_contract"):
+        if tool_name not in TOOLS:
+            continue
+        _, metadata = TOOLS[tool_name]
+        properties = metadata["inputSchema"]["properties"]
+        assert "spec" in properties, (
+            f"{tool_name} inputSchema must declare 'spec' (7th-round P2 fix); "
+            f"got properties={sorted(properties)}"
+        )
+        assert "spec_hash" in properties, (
+            f"{tool_name} inputSchema must declare 'spec_hash' (7th-round P2 fix); "
+            f"got properties={sorted(properties)}"
+        )
+        assert properties["spec"]["type"] == "object"
+        assert properties["spec_hash"]["type"] == "string"

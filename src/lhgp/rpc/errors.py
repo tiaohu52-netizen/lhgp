@@ -54,14 +54,25 @@ RETRYABLE: dict[ErrorCode, bool] = {
 }
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class RpcError(Exception):
     code: ErrorCode
     message: str
     details: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        Exception.__init__(self, self.message)
+        # ``Exception.__init__`` writes ``self.args = (message,)``,
+        # which fails on a ``slots=True`` dataclass (no
+        # ``__dict__`` for the args attribute).  Setting
+        # ``args`` through ``object.__setattr__`` keeps the
+        # rest of the field layout intact while still giving
+        # the exception a usable ``.args`` for traceback
+        # assembly.  Without this, raising an RpcError
+        # through a ``with`` block on Python 3.13 triggers
+        # an extra ``super(Exception, self).__init__()`` chain
+        # in traceback assembly that fails with
+        # ``obj is not an instance or subtype of type``.
+        object.__setattr__(self, "args", (self.message,))
 
     @property
     def retryable(self) -> bool:

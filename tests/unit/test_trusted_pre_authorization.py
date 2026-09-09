@@ -384,3 +384,120 @@ def test_no_claim_without_wildcard_blocks_auto_approve(tmp_path: Path) -> None:
     )
     assert get_contract(conn, "lt-tpa-1").state == ContractState.DRAFTED
     conn.close()
+
+
+def test_narrowed_grant_blocks_auto_activate(tmp_path: Path) -> None:
+    """7th-round P1 fix: a user who narrows the Goal's
+    ``pre_authorized`` after a plan was approved must
+    not have the old approval auto-activate a
+    DRAFTED contract that is now out of scope.  The
+    helper now requires the CURRENT bounded grant to
+    be non-empty AND the most-recent plan verdict in
+    the lookback window to be ``PLAN_APPROVED`` (a
+    later ``PLAN_REJECTED`` supersedes the approval).
+    """
+    from lhgp.contracts.acceptance import Acceptance
+    from lhgp.contracts.budget import Budget
+    from lhgp.contracts.contract_draft import ContractDraft
+    from lhgp.persistence.events import EventType
+    from lhgp.persistence.store import (
+        StoreConfig,
+        append_event,
+        connect,
+        ensure_schema,
+        patch_goal,
+        save_contract,
+    )
+    from longtask.persistence.store import (
+        auto_approve_drafted_contract,
+        get_contract,
+    )
+
+    conn = connect(StoreConfig(db_path=tmp_path / "state.db"))
+    ensure_schema(conn)
+    goal_id = "lt-narrow-grant"
+    save_contract(
+        conn,
+        ContractDraft(
+            title="goal bootstrap",
+            objective="x",
+            deadline_at=NOW + timedelta(hours=2),
+            hard_constraints={},
+            acceptance=Acceptance(standard="s", checks=("c1",)),
+            workload_initial_hours=1.0,
+            budget=Budget(5, 1, 1, 30, 1_048_576, 2),
+        ),
+        contract_id=f"{goal_id}-bootstrap",
+        now=NOW,
+        actor="user",
+        goal_id=goal_id,
+    )
+    # Step 1: bounded grant to ``write file`` + a
+    # PLAN_APPROVED for an MCP-issued (no-claim) contract.
+    patch_goal(
+        conn,
+        goal_id=goal_id,
+        now=NOW,
+        expected_revision=1,
+        actor="user",
+        plan={
+            "pre_authorized": {
+                "enabled": True,
+                "actions": ["write file"],
+            }
+        },
+    )
+    save_contract(
+        conn,
+        ContractDraft(
+            title="real contract",
+            objective="write a file",
+            deadline_at=NOW + timedelta(hours=2),
+            hard_constraints={},
+            acceptance=Acceptance(standard="s", checks=("c1",)),
+            workload_initial_hours=1.0,
+            budget=Budget(5, 1, 1, 30, 1_048_576, 2),
+        ),
+        contract_id="lt-narrow-cid",
+        now=NOW,
+        actor="model",
+        goal_id=goal_id,
+    )
+    append_event(
+        conn,
+        contract_id="lt-narrow-cid",
+        event_type=EventType.PLAN_APPROVED,
+        payload={"contract_revision": 1, "auto_approved": True},
+        now=NOW + timedelta(seconds=1),
+        actor="model",
+        contract_revision=1,
+    )
+    # Step 2: user narrows the Goal grant to ``read
+    # file`` only.  The old approval no longer covers
+    # the contract — auto-activate must refuse.
+    patch_goal(
+        conn,
+        goal_id=goal_id,
+        now=NOW + timedelta(seconds=2),
+        expected_revision=2,
+        actor="user",
+        plan={
+            "pre_authorized": {
+                "enabled": True,
+                "actions": ["read file"],
+            }
+        },
+    )
+    view = get_contract(conn, "lt-narrow-cid")
+    assert view is not None
+    promoted = auto_approve_drafted_contract(conn, view, NOW + timedelta(seconds=3))
+    assert promoted is False, (
+        "narrowed grant must NOT auto-activate a contract whose "
+        "prior plan approval no longer fits the current scope"
+    )
+    post = get_contract(conn, "lt-narrow-cid")
+    assert post is not None
+    assert post.state.value == "drafted", (
+        f"contract must remain DRAFTED after grant narrowing; got state={post.state.value!r}"
+    )
+    conn.close()

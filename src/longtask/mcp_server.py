@@ -1425,6 +1425,21 @@ TOOLS: dict[
                             "Goal 层 plan.execution_config 的工作区/执行器授权）。"
                         ),
                     },
+                    "spec": {
+                        "type": "object",
+                        "description": (
+                            "6th-round P2: 可选结构化 acceptance spec。形如 "
+                            "{all: [{judge: machine, kind: file-exists, target: ...}, "
+                            "{judge: user}]}.  缺省视为无 spec（verifier 成功即 PASSED）。"
+                        ),
+                    },
+                    "spec_hash": {
+                        "type": "string",
+                        "description": (
+                            "6th-round P2: spec 的内容哈希，用于 plan gate "
+                            "和 verifier 证据的内容绑定。"
+                        ),
+                    },
                 },
             },
         },

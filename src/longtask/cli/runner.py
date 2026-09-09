@@ -659,6 +659,20 @@ class AttemptRunner:
                 payload["reason"] = "verifier exited without structured acceptance evidence"
             if role == AttemptRole.VERIFIER.value:
                 contract = get_contract(self._conn, contract_id)
+                # 6th-round P1 fix: stamp the acceptance
+                # spec_hash into the verifier event payload
+                # so the user_confirm path can reject
+                # evidence from a prior acceptance version
+                # (a content change invalidates the prior
+                # verifier pass — the lifecycle-only
+                # revision bump alone does not).  Without
+                # this, the unconditional verifier event
+                # migration in update_contract_state lets
+                # a stale verifier pass re-fire on the
+                # current revision and the contract can
+                # land in COMPLETE without a fresh check.
+                if contract is not None:
+                    payload["spec_hash"] = contract.draft.acceptance.spec_hash
                 typed_checks = (
                     [
                         check

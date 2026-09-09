@@ -476,20 +476,22 @@ def test_gate_reads_revision_from_events_column_not_payload_json(tmp_path: Path)
     conn.close()
 
 
-def test_verifier_event_also_migrates_on_lifecycle_bump(tmp_path: Path) -> None:
-    """6th-round P1 fix: the lifecycle migration must
-    extend to the verifier ``ATTEMPT_SUCCEEDED`` event.
-    Without this, the CANDIDATE transition
-    (verifier success → user-criterion-pending) bumps the
-    contract revision but leaves the verifier event at
-    the old revision; the user_confirm path's
-    ``_latest_verifier_evidence`` then filters it out
-    and synthesizes a stub.  The real evidence is
-    lifecycle-bound, not content-bound; the only
-    thing that should invalidate it is a content change
-    to ``acceptance``, which the user_confirm path
-    checks separately.
+def test_verifier_event_does_not_migrate_but_binds_via_spec_hash(tmp_path: Path) -> None:
+    """7th-round fix (replaces 6th-round
+    ``test_verifier_event_also_migrates_on_lifecycle_bump``):
+    verifier evidence is content-bound, not lifecycle-bound.
+    The lifecycle bump that the CANDIDATE transition issues
+    must NOT re-stamp the verifier event — doing so would
+    bring stale evidence back into scope after a user edit
+    to ``acceptance`` (the reviewer's P1 regression: a
+    contract can land in COMPLETE without a fresh check
+    when the verifier event is migrated to the post-edit
+    revision).  The user_confirm path now matches the
+    event's ``spec_hash`` against the contract's current
+    ``acceptance.spec_hash`` and rejects mismatches.
     """
+    import json as _json
+
     from lhgp.contracts.contract_view import AcceptanceStatus
     from lhgp.persistence.events_query import get_events
     from longtask.contracts.schema import ContractState
@@ -501,7 +503,7 @@ def test_verifier_event_also_migrates_on_lifecycle_bump(tmp_path: Path) -> None:
 
     conn = connect(StoreConfig(db_path=tmp_path / "state.db"))
     ensure_schema(conn)
-    cid = "lt-verifier-migrate"
+    cid = "lt-verifier-content-bound"
     save_contract(
         conn,
         ContractDraft(
@@ -521,12 +523,17 @@ def test_verifier_event_also_migrates_on_lifecycle_bump(tmp_path: Path) -> None:
         now=NOW,
         actor="user",
     )
-    # Verifier success at revision 1.
+    # Verifier success at revision 1, carrying the
+    # spec_hash it ran against (the content binding).
     append_event(
         conn,
         contract_id=cid,
         event_type=EventType.ATTEMPT_SUCCEEDED,
-        payload={"verdict": "succeeded", "checks": [{"check_id": "c1", "outcome": "pass"}]},
+        payload={
+            "verdict": "succeeded",
+            "spec_hash": "hash-1",
+            "checks": [{"check_id": "c1", "outcome": "pass"}],
+        },
         now=NOW + timedelta(seconds=1),
         actor="verifier",
         role="verifier",
@@ -550,11 +557,184 @@ def test_verifier_event_also_migrates_on_lifecycle_bump(tmp_path: Path) -> None:
         if e.event_type == EventType.ATTEMPT_SUCCEEDED and e.role == "verifier"
     ]
     assert verifier_events, "verifier success must persist"
-    assert verifier_events[0].contract_revision == 2, (
-        f"verifier event must migrate to the new revision on the CANDIDATE "
-        f"lifecycle bump; got contract_revision={verifier_events[0].contract_revision} "
-        f"vs contract.revision={post.revision}"
+    # Lifecycle bump must NOT migrate the verifier
+    # event — its contract_revision stays at 1.
+    assert verifier_events[0].contract_revision == 1, (
+        "verifier event must NOT migrate on lifecycle bump; "
+        "it is content-bound (spec_hash), not lifecycle-bound"
     )
+    # The spec_hash in the payload is the binding the
+    # user_confirm path matches against.
+    payload = _json.loads(verifier_events[0].payload_json or "{}")
+    assert payload.get("spec_hash") == "hash-1"
+    conn.close()
+
+
+def test_acceptance_change_invalidates_stale_verifier_evidence(tmp_path: Path) -> None:
+    """7th-round P1: a user edit to ``acceptance``
+    (different spec_hash) must invalidate the prior
+    verifier evidence.  ``_latest_verifier_evidence``
+    must return an empty dict in that case so the
+    user_confirm path falls into the synthesised branch
+    instead of re-firing the stale verifier pass — the
+    reviewer's real-world repro that produced
+    COMPLETE-without-a-fresh-check.
+    """
+    import json as _json
+
+    from lhgp.contracts.contract_view import AcceptanceStatus
+    from lhgp.persistence.events_query import get_events
+    from lhgp.rpc.server import PROTOCOL_VERSION, parse_envelope
+    from longtask.contracts.schema import ContractState
+    from longtask.persistence.store import (
+        append_event,
+        patch_contract,
+        save_contract,
+        update_contract_state,
+    )
+    from longtask.rpc.handlers.contract import handle_contract_user_confirm
+
+    conn = connect(StoreConfig(db_path=tmp_path / "state.db"))
+    ensure_schema(conn)
+    cid = "lt-stale-verifier"
+    initial_acceptance = Acceptance(
+        standard="done.txt says good",
+        checks=("c1",),
+        spec_hash="hash-done",
+    )
+    save_contract(
+        conn,
+        ContractDraft(
+            title="t",
+            objective="o",
+            deadline_at=NOW + timedelta(hours=2),
+            hard_constraints={},
+            acceptance=initial_acceptance,
+            workload_initial_hours=1.0,
+            budget=Budget(5, 1, 1, 30, 1_048_576, 2),
+        ),
+        contract_id=cid,
+        now=NOW,
+        actor="user",
+    )
+    pre = get_contract(conn, cid)
+    assert pre is not None
+    # The contract must be in CANDIDATE for user_confirm
+    # to consider it at all (this is the gate the
+    # handler enforces before evidence lookup).  The
+    # reviewer's repro: user pauses, edits acceptance,
+    # resumes — the CANDIDATE state was set BEFORE the
+    # edit, so the state is still CANDIDATE.  The
+    # evidence-lookup guard is what must now catch
+    # the stale evidence.
+    update_contract_state(
+        conn,
+        contract_id=cid,
+        new_state=ContractState.ACTIVE,
+        now=NOW + timedelta(seconds=1),
+        acceptance_status=AcceptanceStatus.CANDIDATE,
+    )
+    # Verifier success at revision 2 against the OLD
+    # spec_hash ("hash-done").
+    append_event(
+        conn,
+        contract_id=cid,
+        event_type=EventType.ATTEMPT_SUCCEEDED,
+        payload={
+            "verdict": "succeeded",
+            "spec_hash": "hash-done",
+            "checks": [{"check_id": "c1", "outcome": "pass"}],
+        },
+        now=NOW + timedelta(seconds=2),
+        actor="verifier",
+        role="verifier",
+        contract_revision=2,
+    )
+    pre_patch = get_contract(conn, cid)
+    assert pre_patch is not None
+    # User edits acceptance to require a different
+    # artifact (new spec_hash) — this is the reviewer's
+    # repro step.
+    new_acceptance = Acceptance(
+        standard="new.txt must exist",
+        checks=("c1",),
+        spec_hash="hash-new",
+    )
+    patch_contract(
+        conn,
+        contract_id=cid,
+        expected_revision=pre_patch.revision,
+        now=NOW + timedelta(seconds=3),
+        acceptance=new_acceptance,
+        actor="user",
+    )
+    post_patch = get_contract(conn, cid)
+    assert post_patch is not None
+    assert post_patch.draft.acceptance.spec_hash == "hash-new"
+    # patch_contract bumped the revision; the
+    # acceptance_status is still CANDIDATE (patch
+    # does not touch the status).  user_confirm's
+    # pre-check (acceptance_status == CANDIDATE) will
+    # pass; the evidence-lookup guard is the second
+    # belt that must now catch the stale evidence via
+    # spec_hash mismatch.
+    # Now run user_confirm with a Principal envelope.
+    # The handler must REFUSE — the verifier evidence is
+    # stale (spec_hash mismatch) and synthesising a
+    # stub would let a contract land in COMPLETE
+    # without a fresh check (the reviewer's P1 repro).
+    from lhgp.rpc.errors import RpcError as _RpcError
+
+    envelope = parse_envelope(
+        {
+            "method": "contract/user-confirm",
+            "request_id": "e2e-stale-verifier-1",
+            "client_id": "cli",
+            "protocol_version": PROTOCOL_VERSION,
+            "params": {
+                "contract_id": cid,
+                "note": "user_confirm after acceptance edit",
+            },
+        }
+    )
+    with pytest.raises(_RpcError) as exc_info:
+        handle_contract_user_confirm(
+            envelope,
+            conn=conn,
+            now=NOW + timedelta(seconds=5),
+        )
+    assert "no valid verifier evidence" in str(exc_info.value)
+    completed = [
+        e for e in get_events(conn, contract_id=cid) if str(e.event_type) == "contract/completed"
+    ]
+    # user_confirm must NOT have driven the contract
+    # to COMPLETE on the stale verifier evidence.
+    assert not completed, (
+        f"user_confirm must NOT write CONTRACT_COMPLETED on stale verifier "
+        f"evidence; got events={[str(e.event_type) for e in get_events(conn, contract_id=cid)]}"
+    )
+    post = get_contract(conn, cid)
+    assert post is not None
+    assert post.state == ContractState.ACTIVE, (
+        f"contract must remain ACTIVE; user_confirm with stale evidence "
+        f"and no CANDIDATE pre-state must NOT silently complete it.  "
+        f"got state={post.state!r}"
+    )
+    # The verifier event still exists with its
+    # original contract_revision (no migration).
+    verifier_events = [
+        e
+        for e in get_events(conn, contract_id=cid)
+        if e.event_type == EventType.ATTEMPT_SUCCEEDED and e.role == "verifier"
+    ]
+    assert verifier_events
+    assert verifier_events[0].contract_revision == 2
+    # spec_hash on the event is the OLD one (the
+    # verifier ran against the old acceptance).  The
+    # user_confirm path matches-and-skipped it; the
+    # refusal is what blocked the call here.
+    payload = _json.loads(verifier_events[0].payload_json or "{}")
+    assert payload.get("spec_hash") == "hash-done"
     conn.close()
 
 

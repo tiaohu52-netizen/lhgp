@@ -767,6 +767,90 @@ def handle_contract_user_confirm(
     expected_revision = int(pre_current.revision)
     pre_acceptance = pre_current.acceptance_status
 
+    # Evidence lookup + refusal check runs OUTSIDE the
+    # try/transaction so the raise itself is not entangled
+    # with the transaction context manager's ``__exit__``
+    # attribute setting on a slots/frozen RpcError.
+    # Python 3.13 + slots + frozen dataclass + Exception
+    # base class has a known quirk where raising
+    # RpcError through a ``with`` block triggers an
+    # extra super() chain in traceback assembly that
+    # fails with "obj is not an instance or subtype of
+    # type".  Keeping the raise outside the try block
+    # sidesteps the issue.
+    verifier_evidence = _latest_verifier_evidence(conn, contract_id, expected_revision)
+    verifier_evidence = _latest_verifier_evidence(conn, contract_id, expected_revision)
+    # 5th-round P1 regression fix: when the user_confirm
+    # path closes the contract, the
+    # CONTRACT_COMPLETED event must carry meaningful
+    # evidence.  The previous implementation passed
+    # ``evidence={}`` whenever no verifier attempt had
+    # recorded ATTEMPT_SUCCEEDED (the common case for
+    # hand-rolled fixtures, and any flow that bypasses
+    # the verifier on the way to CANDIDATE).
+    #
+    # 7th-round P1 refinement: distinguish "no event at
+    # all" from "event exists but content is stale"
+    # (the reviewer's P1 repro: user edits
+    # ``acceptance`` after a verifier pass — the
+    # CANDIDATE state is preserved but the verifier
+    # evidence is invalidated by the spec_hash
+    # mismatch).  Synthesising a stub for the stale
+    # case is unsafe: it lets a contract land in
+    # COMPLETE without a fresh check.  The
+    # ``stale`` flag carries that distinction; when
+    # the call is at the CANDIDATE pre-state (the
+    # only user_confirm entry), a stale result is a
+    # hard fail — the user must rerun verification
+    # instead of confirming a stale pass.
+    verifier_matched = bool(verifier_evidence.get("matched"))
+    verifier_stale = bool(verifier_evidence.get("stale"))
+    verifier_no_event = bool(verifier_evidence.get("no_event"))
+    verifier_attempt_id = verifier_evidence.get("attempt_id")
+    verifier_payload = verifier_evidence.get("payload") or {}
+    if not verifier_matched and verifier_stale and pre_acceptance == AcceptanceStatus.CANDIDATE:
+        # CANDIDATE + stale evidence = the reviewer's
+        # P1 repro: a verifier pass put the contract
+        # in CANDIDATE, the user then edited
+        # ``acceptance``, the CANDIDATE state
+        # survived the edit but the verifier
+        # evidence no longer matches the new spec.
+        # Refuse to confirm on stale evidence — the
+        # user must re-run verification.
+        # Build the RpcError outside the helper so
+        # ``super(Exception, instance)`` chain is not
+        # exercised inside a context manager (Python
+        # 3.13 + slots + frozen dataclass + Exception
+        # base class has a known quirk where raising
+        # RpcError through a ``with`` block triggers
+        # an extra super() chain in traceback assembly
+        # that fails with "obj is not an instance or
+        # subtype of type").
+        refusal = RpcError(
+            code=ErrorCode.STATE_FORBIDDEN,
+            message=(
+                f"contract {contract_id} has no valid verifier "
+                "evidence (acceptance was edited after the last "
+                "verifier pass); re-run verification before "
+                "user_confirm"
+            ),
+        )
+        raise refusal
+    if not verifier_matched and verifier_no_event:
+        # Hand-rolled fixture / pre-CANDIDATE path:
+        # synthesise a stub so the audit log and
+        # the next-stage ``previous_evidence`` still
+        # have something concrete to point at.
+        verifier_attempt_id = f"user-confirm:{principal_actor}"
+        verifier_payload = {
+            "source": "user-confirm",
+            "resolved_principal": principal_actor,
+            "from_status": pre_acceptance.value,
+            "to_status": AcceptanceStatus.PASSED.value,
+            "note": note,
+            "confirmed_at": now.isoformat(),
+        }
+
     try:
         with transaction(conn):
             append_event(
@@ -782,43 +866,6 @@ def handle_contract_user_confirm(
                 now=now,
                 actor=principal_actor,
             )
-            verifier_evidence = _latest_verifier_evidence(conn, contract_id, expected_revision)
-            # 5th-round P1 regression fix: when the user_confirm
-            # path closes the contract, the
-            # CONTRACT_COMPLETED event must carry meaningful
-            # evidence.  The previous implementation passed
-            # ``evidence={}`` whenever no verifier attempt had
-            # recorded ATTEMPT_SUCCEEDED (the common case for
-            # hand-rolled fixtures, and any flow that bypasses
-            # the verifier on the way to CANDIDATE).  The
-            # reviewer reproduced the empty-evidence case.
-            # The fix: synthesize a user-confirm evidence
-            # record from the principal actor + the user's
-            # note + the CANDIDATE→PASSED transition so the
-            # audit log and the next-stage ``previous_evidence``
-            # always have something concrete to point at.
-            verifier_attempt_id = verifier_evidence.get("attempt_id")
-            verifier_payload = verifier_evidence.get("payload") or {}
-            if verifier_attempt_id is None:
-                # No verifier success event was recorded for
-                # this revision.  CANDIDATE is reachable only
-                # via the verifier-success path (state_machine:
-                # CANDIDATE → PASSED is the only user_confirm
-                # entry), so in practice this fires only for
-                # hand-rolled fixtures / tests where the
-                # contract was staged directly into CANDIDATE.
-                # Synthesize one from the user-confirm itself
-                # so the CONTRACT_COMPLETED payload is never
-                # empty.
-                verifier_attempt_id = f"user-confirm:{principal_actor}"
-                verifier_payload = {
-                    "source": "user-confirm",
-                    "resolved_principal": principal_actor,
-                    "from_status": pre_acceptance.value,
-                    "to_status": AcceptanceStatus.PASSED.value,
-                    "note": note,
-                    "confirmed_at": now.isoformat(),
-                }
             # CONTRACT_COMPLETED is written by ``update_contract_state``
             # (COMPLETE → CONTRACT_COMPLETED via ``_STATE_TO_EVENT``);
             # we merge the verifier evidence into its ``event_payload``
@@ -901,16 +948,43 @@ def handle_contract_user_confirm(
 def _latest_verifier_evidence(
     conn: sqlite3.Connection, contract_id: str, revision: int
 ) -> dict[str, Any]:
-    """Return the most recent verifier success evidence for a contract.
+    """Return the most recent matching verifier success evidence.
 
-    Used by :func:`handle_contract_user_confirm` so the synthesized
-    ``CONTRACT_COMPLETED`` payload carries the same evidence shape
-    the daemon would have written had the verifier itself driven
-    the transition.  Returns an empty dict if no verifier event
-    exists (e.g. tests with hand-rolled fixtures).
+    Used by :func:`handle_contract_user_confirm`.  Returns a
+    dict with four keys:
+
+    - ``attempt_id`` / ``payload``: the verifier event that
+      ran against the contract's current ``acceptance.spec_hash``
+    - ``matched`` (bool): True when a content-bound match
+      was found.
+    - ``stale`` (bool): True when at least one verifier
+      event exists but its ``spec_hash`` differs from the
+      current ``acceptance.spec_hash`` — the evidence is
+      from a prior acceptance version.  ``stale`` lets
+      the caller refuse the confirm on the audit-trail
+      grounds that the verifier ran against a different
+      spec; without this signal the synthesised-evidence
+      branch would happily complete the contract.
+    - ``no_event`` (bool): True when no verifier event
+      exists at all (hand-rolled fixtures that stage
+      the contract directly into CANDIDATE without a
+      verifier run).  Caller is free to synthesise a
+      stub in this case — the audit log is the only
+      signal, the verifier did not actually run, and the
+      test author owns the consequences.
+
+    7th-round P1 fix: returning just the event is no
+    longer enough — the caller must distinguish "no
+    event at all" from "event exists but content is
+    stale", because the appropriate next step differs.
     """
     from longtask.persistence.events_query import get_events
+    from longtask.persistence.store import get_contract
 
+    contract = get_contract(conn, contract_id)
+    current_spec_hash = contract.draft.acceptance.spec_hash if contract is not None else None
+
+    no_event = True
     for event in get_events(conn, contract_id=contract_id):
         is_verifier = event.role == "verifier" or (
             event.role is None
@@ -918,16 +992,38 @@ def _latest_verifier_evidence(
         )
         if not is_verifier:
             continue
-        if event.contract_revision is not None and event.contract_revision != revision:
-            continue
         if str(event.event_type) != EventType.ATTEMPT_SUCCEEDED.value:
             continue
+        no_event = False
         try:
             payload = json.loads(event.payload_json or "{}")
         except (TypeError, ValueError):
             payload = {}
-        return {"attempt_id": event.attempt_id, "payload": payload}
-    return {}
+        # Content binding: a verifier event whose spec_hash
+        # differs from the contract's current spec_hash is
+        # from a prior acceptance version — flag it stale
+        # and skip.
+        event_spec_hash = payload.get("spec_hash")
+        if (
+            current_spec_hash is not None
+            and event_spec_hash is not None
+            and event_spec_hash != current_spec_hash
+        ):
+            continue
+        return {
+            "attempt_id": event.attempt_id,
+            "payload": payload,
+            "matched": True,
+            "stale": False,
+            "no_event": False,
+        }
+    return {
+        "attempt_id": None,
+        "payload": {},
+        "matched": False,
+        "stale": not no_event,
+        "no_event": no_event,
+    }
 
 
 def handle_contract_pause(
