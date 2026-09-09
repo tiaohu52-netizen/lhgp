@@ -800,10 +800,16 @@ def handle_contract_user_confirm(
             verifier_attempt_id = verifier_evidence.get("attempt_id")
             verifier_payload = verifier_evidence.get("payload") or {}
             if verifier_attempt_id is None:
-                # No verifier evidence was recorded for the
-                # pre-CANDIDATE accept path.  Synthesize one
-                # from the user-confirm itself so the
-                # CONTRACT_COMPLETED payload is never empty.
+                # No verifier success event was recorded for
+                # this revision.  CANDIDATE is reachable only
+                # via the verifier-success path (state_machine:
+                # CANDIDATE → PASSED is the only user_confirm
+                # entry), so in practice this fires only for
+                # hand-rolled fixtures / tests where the
+                # contract was staged directly into CANDIDATE.
+                # Synthesize one from the user-confirm itself
+                # so the CONTRACT_COMPLETED payload is never
+                # empty.
                 verifier_attempt_id = f"user-confirm:{principal_actor}"
                 verifier_payload = {
                     "source": "user-confirm",

@@ -253,4 +253,88 @@ def test_no_plan_approval_no_spurious_migration(tmp_path: Path) -> None:
         e for e in get_events(conn, contract_id=cid) if e.event_type == EventType.PLAN_APPROVED
     ]
     assert plan_events == []
+
+
+def test_patch_contract_also_migrates_plan_approval(tmp_path: Path) -> None:
+    """``patch_contract`` bumps the revision the same way
+    ``update_contract_state`` does, so the plan-approval
+    migration must mirror the lifecycle-bump migration.  A
+    soft_guidance-only patch (no content change) should
+    keep the user's prior plan sign-off binding, otherwise
+    the gate's revision check would false-negative and
+    refuse to dispatch.
+    """
+    from lhgp.persistence.events_query import get_events
+    from longtask.persistence.store import patch_contract, save_contract
+
+    conn = connect(StoreConfig(db_path=tmp_path / "state.db"))
+    ensure_schema(conn)
+    cid = "lt-patch-migrate"
+    save_contract(
+        conn,
+        ContractDraft(
+            title="t",
+            objective="o",
+            deadline_at=NOW + timedelta(hours=2),
+            hard_constraints={},
+            acceptance=Acceptance(
+                standard="s",
+                checks=("c1",),
+                spec_hash="hash-original",
+            ),
+            workload_initial_hours=1.0,
+            budget=Budget(5, 1, 1, 30, 1_048_576, 2),
+        ),
+        contract_id=cid,
+        now=NOW,
+        actor="user",
+    )
+    pre = get_contract(conn, cid)
+    assert pre is not None
+    pre_revision = pre.revision
+    # Manually drop a PLAN_APPROVED at the seed revision.
+    from lhgp.persistence.store import append_event
+
+    append_event(
+        conn,
+        contract_id=cid,
+        event_type=EventType.PLAN_APPROVED,
+        payload={
+            "accepted_check_ids": ("c1",),
+            "spec_hash": "hash-original",
+            "submitted_by": "user",
+        },
+        now=NOW + timedelta(seconds=1),
+        actor="user",
+        contract_revision=pre_revision,
+    )
+    # Soft_guidance-only patch — no content change.
+    patch_contract(
+        conn,
+        contract_id=cid,
+        expected_revision=pre_revision,
+        now=NOW + timedelta(seconds=2),
+        soft_guidance={"new": "guidance"},
+        actor="user",
+    )
+    post = get_contract(conn, cid)
+    assert post is not None
+    assert post.revision == pre_revision + 1
+    plan_events = [
+        e for e in get_events(conn, contract_id=cid) if e.event_type == EventType.PLAN_APPROVED
+    ]
+    assert plan_events, "PLAN_APPROVED must persist across patch_contract"
+    assert plan_events[0].contract_revision == post.revision, (
+        f"patch_contract must re-stamp PLAN_APPROVED to the new revision; "
+        f"got contract_revision={plan_events[0].contract_revision} "
+        f"vs contract.revision={post.revision}"
+    )
+    # accepted_check_ids / spec_hash are unchanged so the
+    # gate's payload check would still pass.
+    import json
+
+    payload = json.loads(plan_events[0].payload_json or "{}")
+    assert payload.get("spec_hash") == "hash-original"
+    assert payload.get("accepted_check_ids") == ["c1"]
+    conn.close()
     conn.close()

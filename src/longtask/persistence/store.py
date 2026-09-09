@@ -1384,6 +1384,31 @@ def patch_contract(
             payload_schema_version=schema_version,
         )
 
+        # Mirror the lifecycle-bump migration that
+        # ``update_contract_state`` runs (see e8ce9fd):
+        # re-stamp any prior PLAN_APPROVED with the new
+        # revision so a soft_guidance-only patch does not
+        # invalidate the user's prior plan sign-off.  The
+        # gate's payload checks (spec_hash,
+        # accepted_check_ids) still catch a content change
+        # to ``acceptance``.
+        conn.execute(
+            """
+            UPDATE events
+            SET contract_revision = ?
+            WHERE contract_id = ?
+              AND event_type = ?
+              AND contract_revision IS NOT NULL
+              AND contract_revision < ?
+            """,
+            (
+                new_revision,
+                contract_id,
+                EventType.PLAN_APPROVED.value,
+                new_revision,
+            ),
+        )
+
     updated = get_contract(conn, contract_id)
     if updated is None:
         raise StoreError(f"contract {contract_id} disappeared after patch")
