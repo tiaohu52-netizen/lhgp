@@ -1175,6 +1175,7 @@ def main(argv: list[str] | None = None) -> int:
                             },
                             now=now,
                             actor="daemon",
+                            contract_revision=view.revision,
                         )
                         # Same P1 review fix as tool_submit_plan: re-activate
                         # contracts that were BLOCKED(NO_EXECUTOR) waiting
@@ -1292,6 +1293,7 @@ def main(argv: list[str] | None = None) -> int:
                     },
                     now=now,
                     actor=args.signoff_by,
+                    contract_revision=view.revision,
                 )
                 from longtask.cli.dispatch import wake_blocked_after_plan_approval
 

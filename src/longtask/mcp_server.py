@@ -147,15 +147,27 @@ def _validate_checks_argument(checks: Any) -> Any:
 
 def tool_prepare_contract(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
     """立远期合同。详见 skills/longtask-contract/SKILL.md §4。"""
+    acceptance_payload: dict[str, Any] = {
+        "standard": args["acceptance_standard"],
+        "checks": _validate_checks_argument(args["acceptance_checks"]),
+    }
+    # Spec / spec_hash: optional structured acceptance
+    # criteria (user-judged, agent-judged, machine-judged).
+    # 6th-round follow-up: the plan-gate + CANDIDATE
+    # path only fires when the spec has a non-empty
+    # user criterion; without a way to declare it via
+    # the MCP tool the gate path is unreachable.
+    if "spec" in args and isinstance(args["spec"], dict):
+        acceptance_payload["spec"] = args["spec"]
+    spec_hash_arg = args.get("spec_hash")
+    if isinstance(spec_hash_arg, str) and spec_hash_arg:
+        acceptance_payload["spec_hash"] = spec_hash_arg
     payload: dict[str, Any] = {
         "title": args["title"],
         "objective": args["objective"],
         "deadline_at": args["deadline_at"],
         "hard_constraints": args.get("hard_constraints", {}),
-        "acceptance": {
-            "standard": args["acceptance_standard"],
-            "checks": _validate_checks_argument(args["acceptance_checks"]),
-        },
+        "acceptance": acceptance_payload,
         # Preserve the model value for the single runtime validator; coercing
         # here would turn true/false into 1.0/0.0 and bypass fail-closed input
         # checks.
@@ -776,6 +788,7 @@ def tool_submit_plan(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any
             },
             now=now,
             actor="daemon",
+            contract_revision=view.revision,
         )
         # P1 review fix: a contract that was BLOCKED(NO_EXECUTOR) because
         # the gate refused the previous dispatch must be re-activated so
@@ -963,6 +976,7 @@ def tool_plan_signoff(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, An
         },
         now=now,
         actor=signoff_by,
+        contract_revision=view.revision,
     )
     from longtask.cli.dispatch import wake_blocked_after_plan_approval
 
