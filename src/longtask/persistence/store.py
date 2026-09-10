@@ -26,6 +26,7 @@ from lhgp.contracts.auto_approve import AutoApprove
 from lhgp.contracts.auto_approve import from_dict as auto_approve_from_dict
 from lhgp.contracts.budget import DEFAULT_VERIFICATION_RESERVED
 from longtask.acceptance.checks import parse_check
+from longtask.contracts.acceptance import evidence_binding
 from longtask.contracts.attention import from_dict as attention_from_dict
 from longtask.contracts.attention import to_dict as attention_to_dict
 from longtask.contracts.authority import from_dict as authority_from_dict
@@ -98,9 +99,11 @@ __all__ = [
     "StoredLease",
     "WriteBackResult",
     # functions（按字母序，函数体下方定义）
+    "acceptance_at_revision",
     "acquire_lease",
     "advance_goal",
     "append_event",
+    "attempt_evidence_binding",
     "connect",
     "ensure_schema",
     "get_contract",
@@ -141,6 +144,59 @@ def _parse_acceptance_checks(values: Sequence[Any]) -> tuple[Any, ...]:
     ``CheckSpec`` rather than raw mappings, so every caller sees one shape.
     """
     return tuple(parse_check(item) if isinstance(item, dict) else item for item in values)
+
+
+def acceptance_at_revision(
+    conn: sqlite3.Connection, contract_id: str, revision: int
+) -> Acceptance | None:
+    """The acceptance as it stood at an immutable revision snapshot (§13.3).
+
+    This answers a different question from ``get_contract(...).draft.acceptance``:
+    not "what does the contract require now" but "what was the agent that
+    started at this revision asked to do".  ``contract_revisions`` rows are
+    write-once and are never pruned, so the answer stays available for the life
+    of the database.
+    """
+    row = conn.execute(
+        "SELECT acceptance_json FROM contract_revisions WHERE contract_id = ? AND revision = ?",
+        (contract_id, revision),
+    ).fetchone()
+    if row is None:
+        return None
+    try:
+        data = json.loads(row[0])
+        return Acceptance(
+            standard=data["standard"],
+            checks=_parse_acceptance_checks(data["checks"]),
+            verifier=data.get("verifier", "cross_check"),
+            spec=data.get("spec"),
+            spec_hash=data.get("spec_hash"),
+        )
+    except (AttributeError, KeyError, TypeError, ValueError):  # pragma: no cover - corrupt row
+        return None
+
+
+def attempt_evidence_binding(
+    conn: sqlite3.Connection, contract_id: str | None, contract_revision: int | None
+) -> dict[str, Any]:
+    """Binding payload for evidence produced by an attempt.
+
+    9th-round P1: the fingerprint used to be read from the *live* contract row
+    when the attempt was collected.  Patching the acceptance while a verifier
+    was running therefore stamped fresh evidence with the *new* requirement's
+    identity -- so ``user_confirm`` matched it, and the contract completed on a
+    check that had never seen the edited criterion.  Binding to the revision the
+    attempt was admitted at describes what the verifier actually received.
+
+    Returns ``{}`` when the snapshot cannot be resolved.  That is deliberately
+    not "fall back to the current acceptance": an event with no identity is
+    refused downstream and costs a re-verification, which is the honest result
+    when the truth is unknown.
+    """
+    if contract_id is None or contract_revision is None:
+        return {}
+    acceptance = acceptance_at_revision(conn, contract_id, contract_revision)
+    return evidence_binding(acceptance) if acceptance is not None else {}
 
 
 def _row_to_contract_view(row: sqlite3.Row | tuple[Any, ...]) -> ContractView:

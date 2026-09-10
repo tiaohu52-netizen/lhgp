@@ -17,6 +17,7 @@ from longtask import PROTOCOL_VERSION
 from longtask.rpc.client import call_unix_socket
 from longtask.rpc.errors import ErrorCode
 from longtask.rpc.transport import process_lines, serve_unix_socket
+from tests.wait_budget import budget
 
 
 def request() -> str:
@@ -88,12 +89,27 @@ def test_unix_socket_round_trip(tmp_path) -> None:
         daemon=True,
     )
     thread.start()
-    for _ in range(30):
-        if endpoint.exists():
-            break
-        time.sleep(0.01)
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-        client.connect(str(endpoint))
+    # Wait until the server is actually connectable.  ``endpoint.exists()`` is
+    # not that condition: bind() creates the socket node and listen() follows
+    # it, so polling the file and then connecting raced that gap -- macOS
+    # raised ConnectionRefusedError there while Linux quietly queued the
+    # connection.  The predicate is now the thing we depend on.
+    deadline = time.monotonic() + budget(10.0)
+    client: socket.socket | None = None
+    last_error: OSError | None = None
+    while time.monotonic() < deadline:
+        probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            probe.connect(str(endpoint))
+        except OSError as exc:
+            last_error = exc
+            probe.close()
+            time.sleep(0.02)
+            continue
+        client = probe
+        break
+    assert client is not None, f"server never became connectable: {last_error}"
+    with client:
         client.sendall((json.dumps({"token": "secret"}) + "\n").encode())
         client.sendall((request() + "\n").encode())
         client.shutdown(socket.SHUT_WR)

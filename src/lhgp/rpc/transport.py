@@ -98,10 +98,15 @@ def serve_unix_socket(
         endpoint.unlink()
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
+        # listen() goes first after bind(): ``bind`` is what creates the
+        # filesystem node, so from that instant a client can see the endpoint
+        # and get ECONNREFUSED if nothing is listening yet.  Reordering shrinks
+        # the gap to one syscall; it cannot close it, so connecting clients must
+        # retry rather than treat "the file exists" as "the RPC is up".
         server.bind(str(endpoint))
+        server.listen(8)
         with suppress(OSError):
             endpoint.chmod(0o600)
-        server.listen(8)
         server.settimeout(0.5)
         while stop_event is None or not stop_event.is_set():
             try:

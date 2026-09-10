@@ -4,6 +4,49 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version numbers
 follow [SemVer](https://semver.org/spec/v2.0.0.html); dates in ISO 8601.
 
+## [0.1.0a13] - 2026-09-10
+
+绑定时机：第 9 轮外部审查指出，上一轮（a12）引入的内容指纹绑错了时间点——
+收尾代码读的是**收尾时**的最新验收，而核验器实际收到的要求是在**启动时**定的。
+结论成立，这是一条能走完的误完成路径；同时处理 macOS CI 的一项启动时序竞争。
+
+### Fixed
+
+- **指纹改按 attempt 准入修订计算**：`cli/runner.py::_finish_attempt` 原先在回收时读
+  `get_contract(...).draft.acceptance` 并盖章，因此「核验进行中修订验收」会把**新**要求的
+  身份刷到为**旧**要求跑出的证据上，`user_confirm` 随后匹配通过——new.txt 从未存在而合同
+  已 COMPLETE/passed。现在经 `persistence/store.py::acceptance_at_revision` 从
+  `contract_revisions` 的不可变修订快照取身份（`attempt_evidence_binding`），三个生产端
+  （runner 回收、reconcile 崩溃恢复、write-back RPC）均改用它。快照写一次且不参与清理，
+  所以「当时被要求做什么」在数据库生命周期内都可回答。
+- **快照解析不到时不降级**：`attempt_evidence_binding` 返回 `{}`而不是回退到当前验收——
+  无身份事件在下游被拒，代价是重新核验。回退到「当前」正是这个洞的成因。
+- **`test_unix_socket_round_trip` 与 `bind()`/`listen()` 竞争**：测试轮询
+  `endpoint.exists()` 后直接 `connect()`，但创建 socket 节点的是 `bind()`，`listen()` 在其后——
+  macOS 在这个窗口里抛 `ConnectionRefusedError`，而 Linux 会把连接排入 backlog 而暂时抢赢。
+  改为等到「真的能连上」（复用 `tests/wait_budget.py`）；同时把产品侧 `listen()` 提到
+  `chmod` 之前，窗口从三条语句缩到一条——排序消不掉竞争（节点由 `bind` 创建），
+  因此客户端必须重试而不能把「文件存在」当作「服务就绪」。
+
+### Added
+
+- **`tests/integration/test_verifier_evidence_timing.py`**：驱动真实回收路径
+  （`AttemptRunner._finish_attempt` + stub adapter）与真实修订链，3 条：事件必须带
+  准入修订的指纹、运行中修订必须使人工确认被拒、无修订时仍应能完成。
+  **已做反向验证**：把绑定点改回读当前行后前两条变红（其中一条 `DID NOT RAISE`），
+  确认测试能抓住这个 bug而不是跟着实现自圆其说。
+- **`tests/unit/test_acceptance_content_binding.py` 新增 4 条**：修订解析与未知名修订、
+  write-back 生产端的时序、运行中修订的消费端拒绝，并把生产端扫描从「有
+  `evidence_binding`」升级为「有 `attempt_evidence_binding`」——只盖章仍不够，必须从
+  attempt 的修订拿章。
+
+### Notes
+
+- 审查者的建议里只提了「把指纹在启动时固定」，没提扫描断言需跟着升级；只改绑定点
+  而不改扫描，下一次生产者退回读当前行仍会放行。
+- macOS 那条修复在本地**无法执行验证**：本机 Python 3.13.13 无 `AF_UNIX`，该测试在
+  Windows 上本来就 skip。已通过的是语法/类型/收集，真凭据靠 macOS CI 跑。
+
 ## [0.1.0a12] - 2026-09-10
 
 验收内容绑定：第 8 轮外部审查用一个真实 MCP 会话复现出「改完验收条件后，

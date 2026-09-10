@@ -1,6 +1,6 @@
 {
   "name": "longtask-contract",
-  "version": "0.1.0a12",
+  "version": "0.1.0a13",
   "description": "远期任务协议（DESIGN §17 配套 skill）——教模型怎么用 longtask CLI / RPC 立合同、谈判验收、写交接文件、跟协议协作",
   "protocol_version": "lhgp/v1alpha1",
   "author": "longtask-protocol",

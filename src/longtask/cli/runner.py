@@ -30,7 +30,6 @@ from longtask.adapters.base import (
 )
 from longtask.adapters.factory import build_adapter
 from longtask.adapters.registry import ExecutorRegistry, RegistryEntry
-from longtask.contracts.acceptance import evidence_binding
 from longtask.contracts.schema import (
     AttemptRole,
     AttemptState,
@@ -60,8 +59,10 @@ from longtask.persistence.projections import (
 from longtask.persistence.schema import transaction
 from longtask.persistence.store import (
     LeaseFencedError,
+    acceptance_at_revision,
     acquire_lease,
     append_event,
+    attempt_evidence_binding,
     get_contract,
     get_events,
     get_lease,
@@ -672,22 +673,31 @@ class AttemptRunner:
                 # a stale verifier pass re-fire on the
                 # current revision and the contract can
                 # land in COMPLETE without a fresh check.
-                if contract is not None:
-                    # 8th-round P1 fix: the caller-supplied ``spec_hash`` is
-                    # optional, and the old binding treated "both sides
-                    # missing" as a match -- so an edited acceptance could
-                    # complete on evidence gathered against the previous
-                    # requirement.  Stamp the runtime-computed content
-                    # fingerprint alongside it; ``user_confirm`` requires the
-                    # fingerprint to agree.
-                    payload.update(evidence_binding(contract.draft.acceptance))
+                #
+                # 9th-round P1 fix: that stamp read the *live* contract row at
+                # collect time, so patching the acceptance while this verifier
+                # was running retroactively labelled old evidence with the new
+                # requirement's fingerprint -- and user_confirm then matched it.
+                # The identity now comes from the revision this attempt was
+                # admitted at, which is what the verifier was actually given.
+                attempt_revision = info.get("contract_revision")
+                checked = (
+                    acceptance_at_revision(self._conn, contract_id, attempt_revision)
+                    if attempt_revision is not None
+                    else None
+                )
+                payload.update(attempt_evidence_binding(self._conn, contract_id, attempt_revision))
+                # Evidence must describe the acceptance the attempt ran under.
+                # Fall back to the live row only when no snapshot resolves --
+                # the binding stays empty in that case, so the event is refused
+                # downstream rather than trusted with an identity it cannot
+                # prove.
+                binding_source = checked or (
+                    contract.draft.acceptance if contract is not None else None
+                )
                 typed_checks = (
-                    [
-                        check
-                        for check in contract.draft.acceptance.checks
-                        if isinstance(check, CheckSpec)
-                    ]
-                    if contract is not None
+                    [check for check in binding_source.checks if isinstance(check, CheckSpec)]
+                    if binding_source is not None
                     else []
                 )
                 if typed_checks and contract is not None:

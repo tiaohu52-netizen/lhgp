@@ -166,15 +166,17 @@
   "implementation_claims": [
     {
       "id": "verifier-evidence-bound-to-acceptance-content",
-      "statement": "完成结论与验收内容绑定：user_confirm 只采信带当前 Acceptance.content_fingerprint 的 verifier 证据；指纹缺失、不一致或调用方改动 spec_hash 标记者一律 STATE_FORBIDDEN 并要求重新核验",
+      "statement": "完成结论与验收内容绑定且绑定时机正确：指纹由 runtime 按 attempt 准入时的不可变修订快照计算；user_confirm 只采信与当前验收一致的指纹，指纹缺失、不一致或调用方改动 spec_hash 标记者一律 STATE_FORBIDDEN 并要求重新核验",
       "lifecycle": "verified",
       "scope_paths": [
         "src/lhgp/contracts/acceptance.py",
+        "src/longtask/persistence/store.py",
         "src/longtask/rpc/handlers/contract.py",
         "src/longtask/cli/runner.py",
         "src/longtask/promoter/reconcile.py",
         "src/longtask/rpc/executor_api.py",
-        "tests/unit/test_acceptance_content_binding.py"
+        "tests/unit/test_acceptance_content_binding.py",
+        "tests/integration/test_verifier_evidence_timing.py"
       ],
       "evidence": [
         {
@@ -188,6 +190,12 @@
           "path": "tests/unit/test_plan_approval_migration.py",
           "recorded_at": "2026-09-10",
           "summary": "第 7 轮的两侧不同哈希拒绝路径仍绿，证明本次收紧未放宽任何已有判定。"
+        },
+        {
+          "kind": "integration_real_store",
+          "path": "tests/integration/test_verifier_evidence_timing.py",
+          "recorded_at": "2026-09-10",
+          "summary": "第 9 轮审查复现的「核验运行中修订验收」：驱动真实回收路径（AttemptRunner._finish_attempt）与真实修订链，断言事件携带的是准入修订的指纹而非当前行；同文件包含无修订时应能完成的阳性对照。已做反向验证：把绑定改回读当前行后该组测试变红（其中一条 DID NOT RAISE）。"
         }
       ]
     },

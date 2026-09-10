@@ -50,6 +50,7 @@ from lhgp.contracts.contract_view import AcceptanceStatus
 from lhgp.persistence.events import EventType
 from lhgp.persistence.store import (
     StoreConfig,
+    attempt_evidence_binding,
     connect,
     ensure_schema,
     get_contract,
@@ -396,12 +397,194 @@ def test_matcher_reports_the_reason_the_caller_needs(
 # ── producers cannot drift away from the consumer ────────────────────
 
 
-def test_every_verifier_success_producer_stamps_the_binding() -> None:
+# ── producers cannot drift away from the consumer ────────────────────
+
+
+def test_binding_follows_the_attempt_revision_not_the_live_row(
+    conn: sqlite3.Connection,
+) -> None:
+    """9th-round: "what did the verifier get?" is answered by the snapshot.
+
+    Reading the contract row at collection time answers a different question --
+    "what does the contract want now?" -- and once the user has patched the
+    acceptance mid-flight, the two differ.  Stamping the second onto evidence
+    gathered for the first blesses an edit nobody verified.
+    """
+    before = _acceptance()
+    cid = _stage_contract(conn, before)
+    admitted = get_contract(conn, cid)
+    assert admitted is not None
+    patch_contract(
+        conn,
+        contract_id=cid,
+        expected_revision=admitted.revision,
+        now=NOW + timedelta(seconds=3),
+        acceptance=_acceptance(standard=EDITED),
+        actor="user",
+    )
+    current = get_contract(conn, cid)
+    assert current is not None and current.revision > admitted.revision
+
+    stamped = attempt_evidence_binding(conn, cid, admitted.revision)
+    assert stamped[EVIDENCE_FINGERPRINT_KEY] == before.content_fingerprint
+    assert stamped[EVIDENCE_FINGERPRINT_KEY] != current.draft.acceptance.content_fingerprint
+    # The current revision resolves to the current content, so an honest run
+    # that saw no edit still matches.
+    assert (
+        attempt_evidence_binding(conn, cid, current.revision)[EVIDENCE_FINGERPRINT_KEY]
+        == current.draft.acceptance.content_fingerprint
+    )
+
+
+def test_unresolvable_revision_yields_no_binding_rather_than_the_current_one(
+    conn: sqlite3.Connection,
+) -> None:
+    """Falling back to "current" is what created the hole; ``{}`` is the answer."""
+    cid = _stage_contract(conn, _acceptance())
+    assert attempt_evidence_binding(conn, cid, 9999) == {}
+    assert attempt_evidence_binding(conn, cid, None) == {}
+    assert attempt_evidence_binding(conn, None, 1) == {}
+
+
+def test_write_back_stamps_the_revision_the_attempt_was_admitted_at(
+    conn: sqlite3.Connection,
+) -> None:
+    """The RPC producer must bind to the attempt, not to the live contract."""
+    from lhgp.persistence.schema import ensure_schema as _ensure
+    from lhgp.rpc.executor_api import handle_attempt_write_back
+    from lhgp.rpc.methods import Method
+    from lhgp.rpc.server import RequestEnvelope
+    from longtask.persistence.store import acquire_lease
+
+    _ensure(conn)
+    import hashlib
+
+    token = "verifier-session-token-for-timing-probe"  # noqa: S105 - test fixture
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    original = _acceptance()
+    cid = _stage_contract(conn, original, cid="lt-wb-timing")
+    admitted = get_contract(conn, cid)
+    assert admitted is not None
+    attempt_id = "att-verifier-midflight"
+    conn.execute(
+        "INSERT INTO attempts (attempt_id, contract_id, goal_id, role, state,"
+        " admitted_at, contract_revision, updated_at, session_token_hash)"
+        " VALUES (?, ?, ?, 'verifier', 'running', ?, ?, ?, ?)",
+        (
+            attempt_id,
+            cid,
+            cid,
+            NOW.isoformat(),
+            admitted.revision,
+            NOW.isoformat(),
+            token_hash,
+        ),
+    )
+    lease = acquire_lease(
+        conn,
+        contract_id=cid,
+        holder_attempt_id=attempt_id,
+        heartbeat_at=NOW,
+        timeout=timedelta(minutes=30),
+        actor="daemon",
+        payload={},
+        role="verifier",
+        contract_revision=admitted.revision,
+        expected_generation=0,
+    )
+    # The user edits the requirement while this verifier is in flight.
+    patch_contract(
+        conn,
+        contract_id=cid,
+        expected_revision=admitted.revision,
+        now=NOW + timedelta(seconds=3),
+        acceptance=_acceptance(standard=EDITED),
+        actor="user",
+    )
+    handle_attempt_write_back(
+        RequestEnvelope(
+            method=Method.ATTEMPT_WRITE_BACK,
+            request_id="wb-midflight",
+            client_id="executor",
+            protocol_version=PROTOCOL_VERSION,
+            params={
+                "contract_id": cid,
+                "attempt_id": attempt_id,
+                "write_generation": lease.generation,
+                "session_token": token,
+                "attempt_state": "succeeded",
+                "evidence": [{"check_id": "m1", "outcome": "pass", "source": "verifier-run"}],
+            },
+        ),
+        conn=conn,
+        now=NOW + timedelta(seconds=4),
+    )
+    events = [
+        e
+        for e in get_events(conn, contract_id=cid)
+        if str(e.event_type) == EventType.ATTEMPT_SUCCEEDED.value
+    ]
+    assert events, "write-back must record the verifier success"
+    payload = json.loads(events[-1].payload_json or "{}")
+    current = get_contract(conn, cid)
+    assert current is not None
+    assert payload[EVIDENCE_FINGERPRINT_KEY] == original.content_fingerprint, (
+        "evidence produced by an attempt admitted at revision"
+        f" {admitted.revision} must carry that revision's acceptance identity"
+    )
+    assert payload[EVIDENCE_FINGERPRINT_KEY] != current.draft.acceptance.content_fingerprint
+
+
+def test_confirm_refuses_evidence_blessed_by_a_midflight_edit(
+    conn: sqlite3.Connection,
+) -> None:
+    """End to end on the consumer side: an honest stamp taken at admission
+    time no longer matches the patched acceptance, so it must cost a re-run."""
+    original = _acceptance()
+    cid = _stage_contract(conn, original)
+    admitted = get_contract(conn, cid)
+    assert admitted is not None
+    append_event(
+        conn,
+        contract_id=cid,
+        event_type=EventType.ATTEMPT_SUCCEEDED,
+        payload={
+            "verdict": "succeeded",
+            **attempt_evidence_binding(conn, cid, admitted.revision),
+        },
+        now=NOW + timedelta(seconds=2),
+        actor="verifier",
+        role="verifier",
+        contract_revision=admitted.revision,
+    )
+    patch_contract(
+        conn,
+        contract_id=cid,
+        expected_revision=admitted.revision,
+        now=NOW + timedelta(seconds=3),
+        acceptance=_acceptance(standard=EDITED),
+        actor="user",
+    )
+
+    with pytest.raises(RpcError) as exc_info:
+        _confirm(conn, cid, "confirm-midflight")
+    assert "acceptance was edited after the last verifier pass" in str(exc_info.value)
+    assert not _completed_events(conn, cid)
+
+
+def test_every_verifier_success_producer_binds_to_the_attempt_revision() -> None:
     """Each site that writes a verifier ``ATTEMPT_SUCCEEDED`` must stamp it.
 
     The matcher is only as good as the last producer that remembered to
     write the identity; this scan is what keeps a fourth producer from being
     added with the same hole.
+
+    It checks for ``attempt_evidence_binding`` specifically: the plain
+    ``evidence_binding`` helper is correct only when handed the acceptance the
+    attempt ran under, and a producer reading the live contract row is the
+    9th-round defect.  Whether the *timing* is right is not provable by a scan
+    -- that is what the tests above and
+    ``tests/integration/test_verifier_evidence_timing.py`` pin.
     """
     src = Path(__file__).resolve().parents[2] / "src"
     # ``event_type=EventType.ATTEMPT_SUCCEEDED`` is how a producer writes the
@@ -421,9 +604,11 @@ def test_every_verifier_success_producer_stamps_the_binding() -> None:
     unbound = [
         path.relative_to(src.parent).as_posix()
         for path in producers
-        if "evidence_binding" not in path.read_text(encoding="utf-8", errors="replace")
+        if "attempt_evidence_binding" not in path.read_text(encoding="utf-8", errors="replace")
     ]
-    assert not unbound, f"these write verifier evidence with no content binding: {unbound}"
+    assert not unbound, (
+        f"these write verifier evidence without binding it to the attempt's revision: {unbound}"
+    )
 
 
 def test_binding_keys_are_shared_not_duplicated() -> None:

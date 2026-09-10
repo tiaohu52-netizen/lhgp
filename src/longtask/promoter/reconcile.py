@@ -36,7 +36,6 @@ from longtask.adapters.handles import (
     parse_legacy_session_ref,
 )
 from longtask.adapters.processes import process_alive
-from longtask.contracts.acceptance import evidence_binding
 from longtask.contracts.schema import AttemptState
 from longtask.persistence.attempts import (
     StoredAttempt,
@@ -48,7 +47,7 @@ from longtask.persistence.events import EventType
 from longtask.persistence.events_query import append_event
 from longtask.persistence.leases import get_lease, release_lease, renew_lease
 from longtask.persistence.projections import rebuild_projection
-from longtask.persistence.store import LeaseFencedError, get_contract
+from longtask.persistence.store import LeaseFencedError, attempt_evidence_binding, get_contract
 
 # recovery grace 兜底：合同未声明 continuity.recovery_grace_minutes 时用
 DEFAULT_RECOVERY_GRACE = timedelta(minutes=5)
@@ -424,14 +423,16 @@ def _collect(
     succeeded = state == AttemptState.SUCCEEDED.value
     if succeeded and attempt.role == "verifier":
         # 8th-round P1 fix: this is the crash-recovery twin of the runner's
-        # stamping.  A verifier attempt settled here carries no content
+        # stamping.  A verifier attempt settled here carried no content
         # identity at all, and the old "both hashes missing means match"
         # rule made it unconditional pass-through evidence -- so a contract
         # whose verifier was recovered after a daemon restart could be
         # confirmed against an acceptance that had been edited since.
-        contract = get_contract(conn, cid)
-        if contract is not None:
-            payload.update(evidence_binding(contract.draft.acceptance))
+        #
+        # 9th-round P1: the identity is taken from the revision stored on the
+        # attempt row -- the acceptance this verifier was dispatched under --
+        # not from whatever the contract says now.
+        payload.update(attempt_evidence_binding(conn, cid, attempt.contract_revision))
     append_event(
         conn,
         contract_id=cid,
