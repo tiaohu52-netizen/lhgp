@@ -153,3 +153,36 @@ class TestMergeEvidence:
         assert v is not None
         merged = merge_evidence(protocol, v)
         assert merged["outcome"] == "undetermined"
+
+
+class TestVerdictFromOutput:
+    """带截断事实的判定块解析（SPEC §12.4：截断丢失 ≠ verifier 没写）。"""
+
+    def test_untruncated_absent_block_returns_none(self) -> None:
+        from lhgp.acceptance.verdict import verdict_from_output
+
+        assert verdict_from_output("no block here", output_truncated=False) is None
+
+    def test_truncated_absent_block_raises_source_loss(self) -> None:
+        """块在末尾、预算保头部：截断后解析不到 = 块被截掉，不是没写。"""
+        import pytest
+
+        from lhgp.acceptance.verdict import VerdictSourceLossError, verdict_from_output
+
+        with pytest.raises(VerdictSourceLossError, match="truncated by budget"):
+            verdict_from_output("noise without any block", output_truncated=True)
+
+    def test_truncated_but_block_present_returns_verdict(self) -> None:
+        """围栏在截断点之前：判定块自足，截断不影响它。"""
+        from lhgp.acceptance.verdict import verdict_from_output
+
+        parsed = verdict_from_output(GOOD_BLOCK + "tail lost...", output_truncated=True)
+        assert parsed is not None
+        assert parsed.verdict == "succeeded"
+
+    def test_same_behavior_as_parse_verdict_block_when_not_truncated(self) -> None:
+        from lhgp.acceptance.verdict import parse_verdict_block, verdict_from_output
+
+        assert verdict_from_output(GOOD_BLOCK, output_truncated=False) == parse_verdict_block(
+            GOOD_BLOCK
+        )

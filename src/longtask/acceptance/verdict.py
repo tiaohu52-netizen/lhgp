@@ -3,8 +3,17 @@
 from lhgp.acceptance.verdict import (
     VERDICT_MARKER,
     ModelVerdict,
+    VerdictSourceLossError,
     merge_evidence,
     parse_verdict_block,
+    verdict_from_output,
 )
 
-__all__ = ["VERDICT_MARKER", "ModelVerdict", "merge_evidence", "parse_verdict_block"]
+__all__ = [
+    "VERDICT_MARKER",
+    "ModelVerdict",
+    "VerdictSourceLossError",
+    "merge_evidence",
+    "parse_verdict_block",
+    "verdict_from_output",
+]

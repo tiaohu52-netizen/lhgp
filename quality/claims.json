@@ -1204,6 +1204,37 @@
           "summary": "反向验证四项变异全部命中预期测试名：摘掉越界拒调→test_call_outside_profile_is_refused 红；executor 塞入 approve→test_executor_cannot_see_principal_gates 红；operator 丢签字门→test_operator_can_reach_the_signature_gate 红；未知 profile 静默回落→test_unknown_profile_is_rejected_not_silently_defaulted 红。另做过真子进程端到端：executor profile 下 initialize 应答 profile=executor、tools/list 恰 11 个、硬调 lhgp_approve_goal 返回 -32602 outside profile、界内 lhgp_health 正常。"
         }
       ]
+    },
+    {
+      "id": "verdict-source-loss-distinguishable-from-absent",
+      "statement": "SPEC §12.4 通道 2 的截断语义：lhgp-verdict 判定块约定在 stdout 末尾，budget.max_output_bytes 保留头部，因此输出截断发生时判定块必然丢失。此时运行时必须把「判定块随预算截断丢失」记为独立事实（事件 payload 的 verdict_source_loss 字段），不得静默按「verifier 没写」处理——两者下游同为 undetermined/人工仲裁，但责任方与修法不同（部署侧调大预算重跑 vs verifier 未按约定输出）。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/lhgp/acceptance/verdict.py",
+        "src/longtask/cli/runner.py",
+        "tests/unit/test_verdict.py",
+        "tests/conformance/test_adapter_scenarios.py"
+      ],
+      "evidence": [
+        {
+          "kind": "integration_real_store",
+          "path": "tests/conformance/test_adapter_scenarios.py",
+          "recorded_at": "2026-09-10",
+          "summary": "真子进程 3 条：1000 行噪声 + 末尾判定块、预算 4KB → output_truncated=True 且 verdict_from_output 抛 VerdictSourceLossError；无预算 → 正常解析 succeeded；无块无截断 → None 保留原语义。载荷用临时脚本文件构造（-c 多层转义会把字符串字面量撕开，本测试因此踩过坑，改为文件传递）。"
+        },
+        {
+          "kind": "focused_test",
+          "path": "tests/unit/test_verdict.py",
+          "recorded_at": "2026-09-10",
+          "summary": "4 条纯函数面：未截断无块 → None；截断无块 → 抛错；截断但块在截断点前 → 正常返回（块自足）；未截断时与 parse_verdict_block 行为一致。"
+        },
+        {
+          "kind": "manual_review",
+          "path": "src/longtask/cli/runner.py",
+          "recorded_at": "2026-09-10",
+          "summary": "反向验证：把守护条件改为 if False（退回静默 None）后 test_truncated_absent_block_raises_source_loss 变红。修复前先实证了 bug：同一 verifier 脚本无预算时 verdict=True、预算 4KB 时 verdict=False 且 output_truncated=True 无任何下游消费——verifier 跑成功、证据写了、却按协议退化为人工仲裁，用户白等一轮。"
+        }
+      ]
     }
   ]
 }

@@ -37,6 +37,38 @@ class ModelVerdict:
         return outcome if outcome in _VALID_OUTCOMES else None
 
 
+class VerdictSourceLossError(Exception):
+    """verifier 判定块随输出预算截断丢失——与「verifier 没写」可区分（SPEC §12.4）。
+
+    两者下游同为 undetermined / 人工仲裁，但审计含义不同：截断丢失是**部署
+    侧可修的**（调大 budget.max_output_bytes 重跑即可拿回证据），「没写」是
+    verifier 侧的问题。混在一起会让「明明跑成功了却总进人工仲裁」无从排查。
+    """
+
+
+def verdict_from_output(stdout: str, *, output_truncated: bool) -> ModelVerdict | None:
+    """带截断事实的判定块解析（SPEC §12.4 通道 2 的完整语义）。
+
+    判定块约定在 stdout **末尾**，而输出预算保留的是**头部**：截断一旦发生，
+    判定块即使写了也必然丢失。此时：
+
+    - 输出被截断**且**没有解析出判定块 → 抛 :class:`VerdictSourceLossError`——
+      不能静默返回 None。返回 None 的语义是「verifier 没写判定块」，而这里
+      的真实情况是「写了但被我们自己的预算截掉了」，责任方不同、修法不同。
+    - 输出被截断但判定块仍解析出来了（围栏在截断点之前）→ 正常返回；
+      判定块不依赖被截掉的部分。
+    - 未截断 → 与 :func:`parse_verdict_block` 完全一致。
+    """
+    parsed = parse_verdict_block(stdout)
+    if parsed is None and output_truncated:
+        raise VerdictSourceLossError(
+            "verifier output was truncated by budget.max_output_bytes before the "
+            "lhgp-verdict block could be captured; the verdict cannot be trusted "
+            "as absent — raise the budget and re-run this verification"
+        )
+    return parsed
+
+
 def parse_verdict_block(stdout: str) -> ModelVerdict | None:
     """Extract the last valid ``lhgp-verdict`` block from verifier stdout.
 
@@ -107,4 +139,11 @@ def merge_evidence(
     return merged
 
 
-__all__ = ["VERDICT_MARKER", "ModelVerdict", "merge_evidence", "parse_verdict_block"]
+__all__ = [
+    "VERDICT_MARKER",
+    "ModelVerdict",
+    "VerdictSourceLossError",
+    "merge_evidence",
+    "parse_verdict_block",
+    "verdict_from_output",
+]

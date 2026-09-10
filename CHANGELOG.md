@@ -122,6 +122,53 @@ follow [SemVer](https://semver.org/spec/v2.0.0.html); dates in ISO 8601.
 可重建，不可超前」），`_atomic_write` 已给出单文件原子性。缺的是「重建」这一动作的
 触发，不是「回执」。不属于本轮范围，记在此处备查而非静默略过。
 
+## [Unreleased·三] 判定块截断丢失可区分（openpi 第三轮吸收：assertWatchableOutput 原则）
+
+openpi 的 `assertWatchableOutput` 原则：**派生观察依赖的缓冲被预算驱逐后，
+观察必须显式失效，不能静默降级成"没找到"**。这条原则在 lhgp 有一个已实证的
+缺口，本轮修复。
+
+### 实证（修复前）
+
+真子进程复现：同一个 verifier 脚本（1000 行噪声 + 末尾判定块）——
+无预算时 `parse_verdict_block` 正常解析（verdict=True）；预算 4KB 时
+verdict **静默变 False**，`output_truncated=True` 但**没有任何下游消费这个
+旗子**。verifier 跑成功了、证据也写了，却按协议退化为"无证据 → 人工仲裁"，
+用户白等一轮，且审计里看不出原因。
+
+### Fixed
+
+- **`verdict_from_output(stdout, *, output_truncated)`**（`lhgp/acceptance/verdict.py`）：
+  输出被截断**且**未解析出判定块 → 抛 `VerdictSourceLossError`；截断但块在
+  截断点之前 → 正常返回（块自足）；未截断 → 与 `parse_verdict_block` 一致。
+- **`runner._finish_attempt` 消费截断事实**：捕获该异常并写入事件 payload 的
+  `verdict_source_loss` 字段——下游同为 undetermined/人工仲裁，但「部署侧
+  预算问题（调大重跑即恢复）」与「verifier 未按约定输出」责任方不同，
+  必须可审计地分开。
+- SPEC §12.4 补截断语义条款（MUST 可区分）。
+
+### Added
+
+- conformance 3 条（真子进程：截断抛错 / 无预算正常 / 无块无截断仍 None），
+  载荷用临时脚本文件构造——`-c` 的多层转义会把字符串字面量撕开，本轮
+  复现脚本三次踩坑后改用文件传递，教训写进了测试 docstring。
+- unit 4 条（`verdict_from_output` 纯函数面），反向验证：守护条件改 `if False`
+  后 `test_truncated_absent_block_raises_source_loss` 变红。
+
+### 甄别后判定不吸收（openpi 同源机制已有 lhgp 结构等价物）
+
+- **Goal blockedAudit（连续 3 turn 才算真 blocked）**：lhgp 的 tick 主循环对
+  BLOCKED 合同直接 `continue`、`decide()` 只对 ACTIVE 合同运行，结构性避免了
+  "同一阻塞每轮重复升级"；风险通知有 revision 级幂等键
+  （`{cid}:risk-red:revision-{rev}`）。无缺口。
+- **Context Pivot（30K token 门槛的定向压缩）**：lhgp 的 auto-handover
+  （`check_handover_due` 60%/90% 双水位 + 60s 去抖 + HANDOVER_DUE 事件）已
+  覆盖同一问题面，且走的是"换下一个 attempt"而不是"压缩当前会话"——
+  与跨会话架构更一致。无缺口。
+- **result-budget（父上下文 headroom 按比例分配子结果预算）**：lhgp 的
+  `max_output_bytes` 是合同冻结区硬预算，语义不同（成本上限而非上下文
+  分配）。若未来做"多 attempt 结果聚合进单一提示词"再回来抄这个。
+
 ## [Unreleased·二] 工具面 profile（基线 6e5f2f8 之后，分支 feature/tool-surface-profiles）
 
 依用户裁决实施：「相对严厉的改动」——51 个工具全量挂进宿主已影响正常使用。

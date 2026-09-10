@@ -474,3 +474,86 @@ class TestSubprocessSpawnLifecycle:
         adapter = SubprocessAdapter(make_manifest(), launch=LaunchSpec(argv=(sys.executable,)))
         with pytest.raises(KeyError):
             adapter.observe("never-spawned")
+
+
+class TestVerifierVerdictUnderBudget:
+    """预算截断 vs 末尾判定块（SPEC §12.4 通道 2 的完整语义）。
+
+    判定块约定在 stdout 末尾，输出预算保留头部：截断发生时块必丢失。
+    这个事实必须**可区分地**暴露，不能退化成「verifier 没写」——
+    载荷用临时脚本文件构造，避免 -c 的多层转义（本测试就是那样踩过坑的）。
+    """
+
+    def _write_script(self, workspace: Path, *, noise_lines: int) -> Path:
+        script = workspace / "verifier.py"
+        script.write_text(
+            chr(10).join(
+                [
+                    "import sys",
+                    *[f"sys.stdout.write('noise line {i}' + chr(10))" for i in range(noise_lines)],
+                    "sys.stdout.write('```' + 'lhgp-verdict' + chr(10))",
+                    'sys.stdout.write(\'{"verdict": "succeeded", "checks": '
+                    '[{"check_id": "c1", "outcome": "pass"}]}\' + chr(10))',
+                    "sys.stdout.write('```' + chr(10))",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        return script
+
+    def test_budget_truncation_raises_verdict_source_loss(self, tmp_path: Path) -> None:
+        """截断丢块 → VerdictSourceLossError，绝不静默当「没写」。"""
+        from lhgp.acceptance.verdict import VerdictSourceLossError, verdict_from_output
+
+        script = self._write_script(tmp_path, noise_lines=1000)
+        adapter = SubprocessAdapter(
+            make_manifest(),
+            launch=LaunchSpec(
+                argv=(sys.executable, str(script)), env_allowlist=_child_env_allowlist()
+            ),
+        )
+        attempt_input = make_input(str(tmp_path), max_output_bytes=4096)
+        launch = adapter.prepare(attempt_input)
+        adapter.spawn(attempt_input, launch)
+        result = adapter.collect("att-1")
+        assert result["output_truncated"] is True
+        with pytest.raises(VerdictSourceLossError, match="truncated by budget"):
+            verdict_from_output(str(result["stdout"]), output_truncated=True)
+
+    def test_untruncated_verdict_still_parses(self, tmp_path: Path) -> None:
+        """无预算（或块在截断点前）→ 正常解析，通道 2 不因守护而失效。"""
+        from lhgp.acceptance.verdict import verdict_from_output
+
+        script = self._write_script(tmp_path, noise_lines=10)
+        adapter = SubprocessAdapter(
+            make_manifest(),
+            launch=LaunchSpec(
+                argv=(sys.executable, str(script)), env_allowlist=_child_env_allowlist()
+            ),
+        )
+        attempt_input = make_input(str(tmp_path))
+        launch = adapter.prepare(attempt_input)
+        adapter.spawn(attempt_input, launch)
+        result = adapter.collect("att-1")
+        assert result["output_truncated"] is False
+        verdict = verdict_from_output(str(result["stdout"]), output_truncated=False)
+        assert verdict is not None
+        assert verdict.verdict == "succeeded"
+
+    def test_absent_block_without_truncation_stays_none(self, tmp_path: Path) -> None:
+        """未截断且无块 → None 保留原语义（verifier 没写就是没写）。"""
+        from lhgp.acceptance.verdict import verdict_from_output
+
+        script = tmp_path / "plain.py"
+        script.write_text("import sys\nsys.stdout.write('just work' + chr(10))\n", encoding="utf-8")
+        adapter = SubprocessAdapter(
+            make_manifest(),
+            launch=LaunchSpec(
+                argv=(sys.executable, str(script)), env_allowlist=_child_env_allowlist()
+            ),
+        )
+        attempt_input = make_input(str(tmp_path))
+        launch = adapter.prepare(attempt_input)
+        adapter.spawn(attempt_input, launch)
+        result = adapter.collect("att-1")
+        assert verdict_from_output(str(result["stdout"]), output_truncated=False) is None
