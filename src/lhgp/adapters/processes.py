@@ -5,6 +5,10 @@
 - Linux: /proc/<pid>/stat（状态判活含僵尸 + 字段 22 启动时刻）；
 - macOS: libproc.proc_pidinfo(PROC_PIDTBSDINFO)——pbi_status 判活含
   SZOMB，pbi_start_tvsec/tvusec 给出与 Linux 同精度的稳定启动时刻。
+
+另外提供**进程树终止**（``terminate_tree``）：harness 普遍是「主进程拉起
+worker」的两级结构，只杀直接子进程会把 worker 留成孤儿继续写工作区——
+对合同来说这是「已取消却还在改盘」，比取消失败更难查。
 """
 
 from __future__ import annotations
@@ -14,8 +18,41 @@ import sys
 
 IDENTITY_TOLERANCE_SECONDS = 2.0
 
+# 进程树终止的等待上限：taskkill 在大树上可能需要一点时间，但不能无限等。
+TREE_KILL_TIMEOUT_SECONDS = 10.0
+
+
+def taskkill_argv(executable: str, pid: int, *, force: bool) -> list[str]:
+    """Windows 树终止的 argv（纯函数，便于在任意平台单测锁住形态）。
+
+    ``/T`` 连子孙一起终止；``/F`` 强杀。不加 ``/F`` 时 taskkill 发的是
+    可被目标处理的关闭请求，给了 harness 收尾的机会。
+    """
+    argv = [executable, "/T"]
+    if force:
+        argv.append("/F")
+    argv += ["/PID", str(pid)]
+    return argv
+
+
+def safe_process_group(pid: int) -> int | None:
+    """返回可以安全 ``killpg`` 的进程组号；不确定就返回 ``None``。
+
+    只有「该进程自己就是组长」时才安全（spawn 时的 ``start_new_session``
+    保证了这一点）。否则 ``getpgid`` 返回的可能是**推动者自己所在的组**，
+    killpg 会把守护进程连坐杀掉——这是本模块最不能出的错，所以判定条件
+    取 ``group == pid`` 而不是「和我不在同一组」。
+
+    这里是默认实现（Windows：没有 POSIX 进程组，恒 ``None``，取消走
+    ``taskkill /T``）；POSIX 分支各自覆盖它。
+    """
+    return None
+
+
 if sys.platform == "win32":  # pragma: no cover - platform-specific branch
     import ctypes
+    import shutil
+    import subprocess
     from ctypes import wintypes
 
     _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -82,6 +119,42 @@ if sys.platform == "win32":  # pragma: no cover - platform-specific branch
             return bool(_kernel32.TerminateProcess(handle, 1))
         finally:
             _kernel32.CloseHandle(handle)
+
+    def terminate_tree(pid: int, *, force: bool = False) -> bool:
+        """终止整棵进程树（Windows）。
+
+        用 ``taskkill /T`` 按父子关系遍历，先子后父。它按快照遍历，因此
+        「遍历开始后才 new 出来的曾孙」可能被漏掉——这是本实现的诚实边界，
+        不做「保证全灭」的声明。
+
+        Windows 上**没有可用的「礼貌的树终止」**：``taskkill`` 不带 ``/F``
+        只能给 GUI 目标发关闭请求，控制台 harness 一律回「只能被强制终止」。
+        所以 ``force=False`` 是先试一次不带 ``/F``（对 GUI 目标有效），
+        **一失败立刻升级 ``/F``**——那个失败是立即且可判定的，不是「再等等看」，
+        在这里偷懒会把树杀变成只杀直接子进程。两条都不可用时退回单进程
+        ``TerminateProcess``，绝不静默变成 no-op。
+        """
+        if pid <= 0:
+            return False
+        executable = shutil.which("taskkill")
+        if executable is not None:
+            if not force and _run_taskkill(executable, pid, force=False):
+                return True
+            if _run_taskkill(executable, pid, force=True):
+                return True
+        return terminate_pid(pid)
+
+    def _run_taskkill(executable: str, pid: int, *, force: bool) -> bool:
+        completed: subprocess.CompletedProcess[bytes] | None
+        try:
+            completed = subprocess.run(  # noqa: S603 — 固定 argv + 解析出的绝对路径
+                taskkill_argv(executable, pid, force=force),
+                capture_output=True,
+                timeout=TREE_KILL_TIMEOUT_SECONDS,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            completed = None
+        return completed is not None and completed.returncode == 0
 
 elif sys.platform == "darwin":  # pragma: no cover - exercised on macOS CI
     import signal
@@ -165,6 +238,36 @@ elif sys.platform == "darwin":  # pragma: no cover - exercised on macOS CI
             return False
         return True
 
+    def safe_process_group(pid: int) -> int | None:
+        """POSIX：仅当该进程自己是组长时返回组号，否则 None（见模块说明）。"""
+        if pid <= 0:
+            return None
+        try:
+            group = os.getpgid(pid)
+        except OSError:
+            return None
+        return group if group == pid else None
+
+    def terminate_tree(pid: int, *, force: bool = False) -> bool:
+        """终止整个进程组（macOS）。
+
+        spawn 时用了 ``start_new_session``，所以子进程自成一组的组长；
+        组内所有成员（harness 的 worker、worker 再拉起的孙进程）一次信号
+        全覆盖。不是组长时退回单进程终止，绝不 killpg——那可能打到推动者
+        自己所在的组。
+        """
+        if pid <= 0:
+            return False
+        group = safe_process_group(pid)
+        if group is not None:
+            try:
+                os.killpg(group, signal.SIGKILL if force else signal.SIGTERM)
+            except OSError:
+                pass
+            else:
+                return True
+        return terminate_pid(pid)
+
 
 else:  # pragma: no cover - exercised on Linux CI
     import signal
@@ -242,6 +345,34 @@ else:  # pragma: no cover - exercised on Linux CI
             return False
         return True
 
+    def safe_process_group(pid: int) -> int | None:
+        """POSIX：仅当该进程自己是组长时返回组号，否则 None（见模块说明）。"""
+        if pid <= 0:
+            return None
+        try:
+            group = os.getpgid(pid)
+        except OSError:
+            return None
+        return group if group == pid else None
+
+    def terminate_tree(pid: int, *, force: bool = False) -> bool:
+        """终止整个进程组（Linux）。
+
+        与 macOS 同款：spawn 用 ``start_new_session`` 让子进程当组长，
+        组内一次信号全覆盖；不是组长则退回单进程终止，绝不 killpg。
+        """
+        if pid <= 0:
+            return False
+        group = safe_process_group(pid)
+        if group is not None:
+            try:
+                os.killpg(group, signal.SIGKILL if force else signal.SIGTERM)
+            except OSError:
+                pass
+            else:
+                return True
+        return terminate_pid(pid)
+
 
 def identity_matches(pid: int, recorded_start_time: float | None) -> bool | None:
     """Confirm PID and recorded start time refer to the same process."""
@@ -255,8 +386,12 @@ def identity_matches(pid: int, recorded_start_time: float | None) -> bool | None
 
 __all__ = [
     "IDENTITY_TOLERANCE_SECONDS",
+    "TREE_KILL_TIMEOUT_SECONDS",
     "identity_matches",
     "process_alive",
     "process_start_time",
+    "safe_process_group",
+    "taskkill_argv",
     "terminate_pid",
+    "terminate_tree",
 ]

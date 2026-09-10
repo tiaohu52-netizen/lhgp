@@ -28,6 +28,7 @@ last_reviewed: 2026-09-07
 
 - [[playbook/write-test-first]] — 写测试的几个坑(集成 vs 单元、tmp DB 隔离、import 顺序)
 - [[playbook/quality-gate]] — 7 门顺序与 fail-closed 语义
+- [[playbook/four-layer-review]] — 审任何改动先跑的四层(类型/死代码/边界/真跑)，含反向验证判据
 
 ## Daemon
 

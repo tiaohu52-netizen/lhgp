@@ -88,7 +88,7 @@ class WindowsTaskSchedulerPort:
     daemon 的事件幂等性吸收。
     """
 
-    _TASK_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,200}$")
+    _TASK_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,200}\Z")
 
     def __init__(self, root: Path) -> None:
         self._root = Path(root).resolve()

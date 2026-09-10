@@ -4,6 +4,124 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version numbers
 follow [SemVer](https://semver.org/spec/v2.0.0.html); dates in ISO 8601.
 
+## [Unreleased]
+
+吸收外部同行的几处工程做法，落点都在**已有保证**上——不新增协议语义，
+线协议、schema、错误码不变（DESIGN v0.8，把 §14.1 两条威胁从「宣称」升级为
+「可验证的结构」）。来源：`openpi-dev/openpi`（Pi 编辑器的社区扩展包）的终端输出
+清洗、不可信数据的显式边界、进程树终止、漂移守护测试四条做法。
+
+### Added
+
+- **`lhgp.untrusted`（新包，零第三方依赖）**：`sanitize.py` 做结构性清洗，
+  `boundary.py` 造可验证注入围栏（DESIGN §14.2）。
+  - 清洗落在适配器**唯一的输出出口** `_MonitoredProcess.stdout_text()/stderr_text()`：
+    CSI/OSC/DCS/SOS/PM/APC 与两字节转义、C0/C1/DEL、除 ZWNJ/ZWJ 外的 Unicode `Cf`
+    全部剥离，保留 `\t`/`\n`/`\r`，且**幂等**。逐个消费方清洗必然漂移成几份口径。
+  - 围栏 token 由正文摘要派生（`LHGP-UNTRUSTED-<sha256 前 12 位>`），正文里形似
+    围栏的前缀被改写成不可能匹配的形态——「围栏内 = 全部正文」由构造保证。
+- **`resume.py` / 上下文快照的 handover 段改走围栏注入**：`handover.md` 是上一轮
+  执行者写的文件，原先在续跑 brief 里**逐字注入且无标注**，在快照里以裸
+  `## 交接` 段落出现（版式上等于告诉下一个执行者「这段与协议同源」）。
+  同一个文件里 `handover_prompt_addendum` 早已标了「不可信」——两处口径不一致，
+  现在统一到围栏。快照用 terse 声明：它有 `max_bytes` 容量合同（超限直接拒接
+  启动 attempt），每个 attempt 都要付这份字节。
+- **`processes.terminate_tree()`**（DESIGN §14.3）：POSIX 走 `killpg`，Windows 走
+  `taskkill /T`。`SubprocessAdapter.cancel()` 与重绑进程的 `terminate()` 都改用它。
+- **`tests/integration/test_process_tree_termination.py`**：真起两级进程（父→孙），
+  断言孙进程确实死了。判定用「pid + 启动时间」双重比对而非裸 pid——Windows 的
+  pid 会被复用，只比对 pid 会把「已死、pid 被别人接管」误判成还活着。
+- **`tests/unit/test_mcp_tool_surface.py::TestToolAnnotationDrift`**：4 条守护，
+  钉住注解分类的完备性与单一来源。
+
+### Changed
+
+- **MCP 工具注解收敛到单一真相源**。原先 7 个工具在自己的 schema 里内联写
+  `annotations`，加上两个集合，一共三处可写、谁也不知道谁赢。实际后果：
+  - `lhgp_prepare_goal`（立合同）、`lhgp_propose_plan`、`lhgp_send_message`
+    （落消息并进入下个 attempt 上下文）被声明为 `readOnlyHint=False` +
+    `destructiveHint=False`——对宿主来说这是「既不只读也不破坏」，**不会请求
+    人工确认**，模型可以直接改掉持久承诺；
+  - `lhgp_resume_attempt` 与 `_DESTRUCTIVE_TOOLS` **互相矛盾**：集合说 destructive，
+    内联说不是。内联赢，于是集合里那条是死代码；
+  - `longtask_user_confirm_spec_verdict` 谁都没写——它是 CANDIDATE 合同唯一的
+    签字出口，却以中立注解示人。
+  现在内联声明全部删除，两个集合是唯一真相源，派生改用**直接赋值**（不是
+  `setdefault`），内联声明再也覆盖不了它。分类结果 27 只读 + 24 destructive = 51，
+  零中立、零交集、零幽灵条目。
+- **`SubprocessAdapter.spawn()` 在 POSIX 传 `start_new_session=True`**：子进程自成
+  会话/进程组组长，取消时一次信号覆盖整组。Windows 的拉起参数与既有形态保持一致
+  （该参数在 Windows 被忽略，因此显式只在 POSIX 传）。
+- **`DESIGN.md` v0.8**：§14.1 威胁表新增/改写三行，新增 §14.2（不可信外部文本）、
+  §14.3（取消以进程树为单位），保证清单补两条，术语表补三条，§19 记审批行。
+
+### Fixed
+
+- **取消只杀直接子进程，harness 的 worker 成孤儿继续写工作区**。已复现：起两级
+  进程后调用旧的单进程终止，父进程已停而孙进程仍存活——对合同来说这是「已取消
+  却还在改盘」，没有事件、没有报错，只有盘上多出来的改动。新集成测试能抓住它
+  （旧行为下该测试变红）。
+- **ANSI 着色序列插进 `lhgp-verdict` 围栏会让有效证据退化成「无证据」**。
+  `parse_verdict_block` 拿到的若是未清洗原文，`\x1b[32m` 夹在围栏与标记之间即
+  匹配失败 → 返回 `None`（协议规定「无证据」）。清洗后同一段输出重新可解析，
+  由 `test_sanitize_recovers_verdict_fence_that_ansi_wrapped` 锁定。
+- **`safe_process_group()` 拒绝在任何不确定的情况下 `killpg`**：只有
+  `getpgid(pid) == pid`（进程自己是组长）才返回组号。否则组号可能指向**推动者
+  自己所在的组**，killpg 会把守护进程连坐杀掉——这是本模块最不能出的错，
+  判定条件因此取「我是组长」而不是「和我不在同一组」。
+
+### 第二轮：四层审查（类型 / 死代码 / 边界 / 真跑）
+
+按 `docs/wiki/playbook/four-layer-review.md` 审了上一轮的改动，本轮修的是审查
+查出来的东西，不是想出来的东西。
+
+#### Fixed
+
+- **四个标识符校验器全部被尾随换行穿过**。Python 的 `$` 也匹配「尾随换行之前」的
+  位置，所以 `re.match("^ab$", "ab" + chr(10))` **是匹配的**：`lhgp.untrusted` 的围栏
+  label、`resume` 的路径分量、`rpc/handlers/_common` 的 contract_id（两棵树各一份）、
+  `scheduler/wakeup` 的 task_id 都会接受带尾随换行的值。其中 label 那条是自己写的，
+  且 docstring 明写「含换行的标签本身就能伪造一行新的围栏，因此这里 fail-closed」——
+  **行为与自称的保证不符**，这是本轮最该修的一条。全部改为 `\Z`（纯收紧，只拒掉
+  尾随换行，正常值不受影响）。`wakeup` 那条实际用 `fullmatch`，本来就免疫，
+  一并统一。
+- **`output_sanitized` 可观察性缺口**：清洗会改写证据的字节，但 collect 结果里
+  看不见。现在与 `output_truncated` 并列上报——审计必须能区分「执行者的原始输出」
+  与「协议改写过的输出」，否则「不可信文本一定经过清洗」这条保证没有可观察面。
+
+#### Added
+
+- **`tests/unit/test_identifier_anchors.py`**：把 `$` 这一类锚点缺陷按校验点逐条钉住
+  （label / 路径分量 / contract_id 两棵树 / 点段），并锁定「收紧之后正常值仍被接受」。
+- **`tests/conformance/test_adapter_scenarios.py` 新增 3 条**：清洗旗子为真、为假
+  （恒为 True 的旗子是假信号，比没有更糟）、输出截断旗子为真且保留字节不超预算。
+  顺带补上一个从生产出来就没被任何测试断言过的旗子（`output_truncated`）。
+- **`docs/wiki/playbook/four-layer-review.md`**：四层审查的可复用方法，含各层的
+  判定词汇、本仓库的已知形状（façade 星号导入使该层对类型与死代码检测为黑箱），
+  以及第 4 层的反向验证判据（「失败测试名必须等于预期名」）。
+
+#### 审查发现但未修（需你裁决）
+
+- **整套分区租约机制没有生产入口**：`Partition` / `check_partition_compatible` /
+  `scope_paths` / `scope_stages` 只有测试在构造与调用；`lease/partition-conflict`
+  事件从未被发出，`PARTITION_CONFLICT` 错误码从未被抛出，`partition_id` 在所有
+  派工调用点都取默认值。而 `UrgencyTier.PARALLEL` 是可达的：它消耗一份
+  `max_escalations`，事件流里写「parallel dispatch (§6.2/§7.1)」，但 tick 与
+  RESPAWN 共用同一分支、只派一个重置 attempt。**即「并行加派」的行为等于重派，
+  而租约登记说它是并行。** 让并行安全的那套机制（分区互斥）没有任何入口。
+  注：`decide()` 在租约活着时封顶到 REMIND，所以这不会造成并发写；问题在
+  「声明与行为不符 + 事件记录不实」，属 R3b（多合同隔离与接力边界）范围。
+  修法二选一：把 PARALLEL 的行为与措辞都降为「串行重派」，或实现分区分配。
+  两者都改协议语义，按 CONTRIBUTING 需先过 DESIGN 审批。
+
+### 说明（未吸收的部分）
+
+`openpi` 的产物提交回执（原子发布 + 每产物 SHA-256 + `predecessorSha256`）**没有**
+吸收：它解决的问题是「journal 与 result 是唯一副本，崩溃在多次原子替换之间会留下
+混合集」，而本协议的文件投影在 DESIGN §3.1 下**可从事件表完整重建**（投影「可落后
+可重建，不可超前」），`_atomic_write` 已给出单文件原子性。缺的是「重建」这一动作的
+触发，不是「回执」。不属于本轮范围，记在此处备查而非静默略过。
+
 ## [0.1.0a13] - 2026-09-10
 
 绑定时机：第 9 轮外部审查指出，上一轮（a12）引入的内容指纹绑错了时间点——

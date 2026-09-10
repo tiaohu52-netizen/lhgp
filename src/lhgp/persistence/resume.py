@@ -39,6 +39,7 @@ from pathlib import Path
 
 from lhgp.persistence.events import EventType
 from lhgp.persistence.events_query import append_event
+from lhgp.untrusted.boundary import make_untrusted_block
 
 _RESUMED_EVENT_TYPE = EventType.ATTEMPT_RESUMED
 
@@ -54,7 +55,7 @@ _HANDOVER_FILE = "handover.md"
 # whitespace, NULs, shell metacharacters — is rejected before it ever
 # touches the filesystem.  This is the primary defense; the
 # ``is_relative_to`` check below is the safety net for symlink escapes.
-_SAFE_PATH_COMPONENT = re.compile(r"^[A-Za-z0-9._-]+$")
+_SAFE_PATH_COMPONENT = re.compile(r"^[A-Za-z0-9._-]+\Z")
 
 
 class ResumeBriefError(ValueError):
@@ -219,6 +220,14 @@ def build_resume_brief(
     timestamp = now if now is not None else datetime.now(UTC)
     resolved_next = next_attempt_id or _derive_next_attempt_id(attempt_id, timestamp)
 
+    # handover.md 是**上一轮执行者写的文件**，不是用户或协议写的。它必须
+    # 进入续跑者的提示词才有价值，但不能以「看起来和协议同源」的形态进入：
+    # 正文里可以自带一段形似收尾标记的文字，把后面的内容伪装成边界之外。
+    # 因此用带摘要围栏的不可信块包起来（DESIGN §14）。
+    handover_block = make_untrusted_block(
+        label="last-handover", title="Last handover", body=handover_text
+    ).rstrip("\n")
+
     body = (
         f"# Resume for {contract_id} / {attempt_id}\n"
         f"# Resuming into {resolved_next} at {timestamp.isoformat()}\n"
@@ -226,8 +235,7 @@ def build_resume_brief(
         "## Active context snapshot\n"
         f"{active_text}\n"
         "\n"
-        "## Last handover\n"
-        f"{handover_text}\n"
+        f"{handover_block}\n"
         "\n"
         "## Resume instructions\n"
         "Continue from the handover's next_action. The active.md above\n"

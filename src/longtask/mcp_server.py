@@ -1662,11 +1662,6 @@ TOOLS: dict[
                     "to": {"type": "string"},
                 },
             },
-            "annotations": {
-                "readOnlyHint": False,
-                "destructiveHint": False,
-                "openWorldHint": False,
-            },
         },
     ),
     "lhgp_inbox": (
@@ -1681,7 +1676,6 @@ TOOLS: dict[
                 "required": ["contract_id"],
                 "properties": {"contract_id": {"type": "string"}},
             },
-            "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False},
         },
     ),
     "lhgp_brief": (
@@ -1697,7 +1691,6 @@ TOOLS: dict[
                 "required": ["contract_id"],
                 "properties": {"contract_id": {"type": "string"}},
             },
-            "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False},
         },
     ),
     "lhgp_resume_attempt": (
@@ -1720,11 +1713,6 @@ TOOLS: dict[
                     },
                 },
             },
-            "annotations": {
-                "readOnlyHint": False,
-                "destructiveHint": False,
-                "openWorldHint": False,
-            },
         },
     ),
     "lhgp_board": (
@@ -1742,7 +1730,6 @@ TOOLS: dict[
                     "limit": {"type": "integer", "minimum": 1, "maximum": 500},
                 },
             },
-            "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False},
         },
     ),
     "lhgp_stats": (
@@ -1757,7 +1744,6 @@ TOOLS: dict[
                 "type": "object",
                 "properties": {"contract_id": {"type": "string"}},
             },
-            "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False},
         },
     ),
     "lhgp_propose_plan": (
@@ -1778,11 +1764,6 @@ TOOLS: dict[
                     "reason": {"type": "string"},
                     "note": {"type": "string"},
                 },
-            },
-            "annotations": {
-                "readOnlyHint": False,
-                "destructiveHint": False,
-                "openWorldHint": False,
             },
         },
     ),
@@ -2243,6 +2224,14 @@ TOOLS.update(
 # MCP tool annotations are advisory metadata consumed by hosts before execution.
 # Keep the policy explicit here so aliases and future tools cannot silently lose
 # the local-only trust boundary or be presented as harmless reads.
+#
+# 单一真相源（P6 收敛）：下面两个集合是**唯一**的分类声明，注解由它们派生。
+# 曾经有 7 个工具在自己的 schema 里内联写 annotations，其中 3 个把「会写持久
+# 状态」的工具声明成了 readOnly=False + destructive=False（宿主不会请求确认），
+# 还有一个与 _DESTRUCTIVE_TOOLS 互相矛盾（集合说 destructive、内联说不是）。
+# 现在内联声明一律删除，并且派生改用直接赋值而非 setdefault：即便有人再往
+# schema 里塞 annotations，也覆盖不了这里。漂移由
+# tests/unit/test_mcp_tool_surface.py::TestToolAnnotationDrift 钉住。
 _DESTRUCTIVE_TOOLS = {
     # Contract/Goal mutations.  ``destructiveHint`` is intentionally used for
     # any persistent state change, not only process termination: MCP hosts need
@@ -2269,6 +2258,15 @@ _DESTRUCTIVE_TOOLS = {
     # Plan-mode gate
     "lhgp_submit_plan",
     "lhgp_plan_signoff",
+    # 以下四条曾经以内联 annotations 或「谁都没写」的形式落在中立区
+    # （readOnly=False 且 destructive=False）——宿主不会为它们请求确认。
+    # 它们都写持久状态：prepare_goal 立合同、propose_plan 落 goal/proposed、
+    # send_message 落消息并进入下个 attempt 的上下文、
+    # user_confirm_spec_verdict 是 CANDIDATE 合同唯一的签字出口。
+    "lhgp_prepare_goal",
+    "lhgp_propose_plan",
+    "lhgp_send_message",
+    "longtask_user_confirm_spec_verdict",
 }
 _READ_ONLY_TOOLS = {
     "longtask_health",
@@ -2295,16 +2293,18 @@ _READ_ONLY_TOOLS = {
     "lhgp_portfolio",
     "lhgp_trace",
     "lhgp_deadline_report",
+    "lhgp_board",
+    "lhgp_brief",
+    "lhgp_stats",
+    "lhgp_inbox",
 }
 for _tool_name, (_tool_fn, _tool_schema) in list(TOOLS.items()):
-    _tool_schema.setdefault(
-        "annotations",
-        {
-            "readOnlyHint": _tool_name in _READ_ONLY_TOOLS,
-            "destructiveHint": _tool_name in _DESTRUCTIVE_TOOLS,
-            "openWorldHint": False,
-        },
-    )
+    # 直接赋值（不是 setdefault）：集合是唯一真相源，内联声明覆盖不了它。
+    _tool_schema["annotations"] = {
+        "readOnlyHint": _tool_name in _READ_ONLY_TOOLS,
+        "destructiveHint": _tool_name in _DESTRUCTIVE_TOOLS,
+        "openWorldHint": False,
+    }
 TOOL_NAMES = sorted(TOOLS.keys())
 
 

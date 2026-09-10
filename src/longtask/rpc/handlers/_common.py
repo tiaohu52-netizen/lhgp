@@ -227,7 +227,7 @@ def parse_contract_draft(
 # 合同 ID 的安全 slug（projections/contract_dir 直接以它拼目录：任何
 # 路径分隔符/盘符/../ 都会写出数据根之外——安全审查 RPC-C2）。
 # 与 canonical lhgp.rpc.handlers._common 保持一致。
-_CONTRACT_ID_RE = re.compile(r"^[0-9a-zA-Z][0-9a-zA-Z_.-]*$")
+_CONTRACT_ID_RE = re.compile(r"^[0-9a-zA-Z][0-9a-zA-Z_.-]*\Z")
 
 
 def _is_safe_contract_id(contract_id: str) -> bool:

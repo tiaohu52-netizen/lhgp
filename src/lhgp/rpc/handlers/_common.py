@@ -93,7 +93,7 @@ def require_principal(envelope: RequestEnvelope, params: dict[str, Any], *, acti
 # 路径分隔符/盘符/../ 都会写出数据根之外——安全审查 RPC-C2）。
 # 不强制 lt- 前缀：goal/prepare 的阶段合同沿用自定义 ID（如 stage 合同），
 # 防线是「无路径字符」而非命名风格。
-_CONTRACT_ID_RE = re.compile(r"^[0-9a-zA-Z][0-9a-zA-Z_.-]*$")
+_CONTRACT_ID_RE = re.compile(r"^[0-9a-zA-Z][0-9a-zA-Z_.-]*\Z")
 
 
 def _is_safe_contract_id(contract_id: str) -> bool:

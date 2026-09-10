@@ -1021,6 +1021,165 @@
           "summary": "_judge_verifier_outcomes 在 verifier succeeded 裁决合同 complete 后调用 _advance_goal_after_verified_contract：定位 plan 中 contract_id 匹配的阶段，校验其为当前阶段后经 advance_goal 走 revision-CAS 推进；推进失败不掩盖 verifier 证据（下次读取/推进可安全重试）。"
         }
       ]
+    },
+    {
+      "id": "untrusted-output-sanitized-at-the-single-ingest-boundary",
+      "statement": "不可信外部文本保证（DESIGN §14.2）：执行器 stdout/stderr 进入证据、投影与下一个执行者的提示词之前，必须经过结构性清洗——剥离 CSI/OSC/DCS/SOS/PM/APC 与两字节转义、C0/C1/DEL、以及除 ZWNJ/ZWJ 外的 Unicode Cf；保留 \t/\n/\r；清洗幂等。清洗只做结构性剥离，不做语义判断，也不改写措辞。落点是适配器唯一的输出出口，不是各消费方各自清洗。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/lhgp/untrusted/sanitize.py",
+        "src/longtask/adapters/subprocess_adapter.py",
+        "tests/unit/test_untrusted_sanitize.py"
+      ],
+      "evidence": [
+        {
+          "kind": "focused_test",
+          "path": "tests/unit/test_untrusted_sanitize.py",
+          "recorded_at": "2026-09-10",
+          "summary": "13 条：CSI 着色、OSC（BEL 与 ST 两种收尾）、DCS 字符串序列、双向覆写符 U+202E、C1、DEL、输出末尾截断的转义序列、制表/换行/回车保留、ZWNJ/ZWJ 保留、幂等、空输入；并锁定实战动机——ANSI 序列插进 lhgp-verdict 围栏时，清洗前 parse_verdict_block 返回 None（有效证据退化成无证据），清洗后同一段输出可解析。"
+        },
+        {
+          "kind": "source_static",
+          "path": "src/longtask/adapters/subprocess_adapter.py",
+          "recorded_at": "2026-09-10",
+          "summary": "_MonitoredProcess.stdout_text()/stderr_text() 在 decode 之后调用 sanitize_terminal_text；这是适配器唯一的输出出口，collect 的两个分支（终态事件已到 / 等进程退出）都从它取数。"
+        }
+      ]
+    },
+    {
+      "id": "untrusted-injection-fence-is-constructed-not-promised",
+      "statement": "不可信外部文本保证（DESIGN §14.2）：executor 写的 handover 内容进入提示词时（续跑 brief 与上下文快照两处），必须被可验证围栏包住。围栏 token 由正文摘要派生（LHGP-UNTRUSTED-<sha256 前 12 位>），正文里任何形似围栏的前缀被改写成不可能匹配的形态，因此「围栏内 = 全部正文」由构造保证；label 不合规 fail-closed 拒绝。声明明确这是提示词层防线而非安全边界——它不阻止模型被说服，只保证模型不会把执行者写的字当成协议或用户的话。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/lhgp/untrusted/boundary.py",
+        "src/lhgp/persistence/resume.py",
+        "src/longtask/persistence/context.py",
+        "tests/unit/test_untrusted_boundary.py"
+      ],
+      "evidence": [
+        {
+          "kind": "focused_test",
+          "path": "tests/unit/test_untrusted_boundary.py",
+          "recorded_at": "2026-09-10",
+          "summary": "11 条：开闭围栏配对、表头声明 NOT INSTRUCTIONS、正文自带的围栏前缀被中和（块里只留一行真正的闭合围栏）、敌意正文作为数据原样保留、摘要随正文变化、同样正文得同样围栏、正文先清洗再围栏、含换行或大写的 label 被拒、terse 与 full 围栏相同而字节更少。"
+        },
+        {
+          "kind": "source_static",
+          "path": "src/lhgp/persistence/resume.py",
+          "recorded_at": "2026-09-10",
+          "summary": "build_resume_brief 原先把 handover.md 逐字注入且无标注；现在经 make_untrusted_block(label=last-handover) 包装。同一代码库的 handover_prompt_addendum 早已标「不可信」，此处补上口径一致的另一半。"
+        },
+        {
+          "kind": "source_static",
+          "path": "src/longtask/persistence/context.py",
+          "recorded_at": "2026-09-10",
+          "summary": "上下文快照的交接字段原先以裸 `## 交接（上一 attempt 留下的现场）` 段落出现；现在包进 terse 围栏——快照有 max_bytes 容量合同（超限拒接启动 attempt），故用同一条规则的简版声明。"
+        }
+      ]
+    },
+    {
+      "id": "cancel-terminates-the-process-tree-not-just-the-child",
+      "statement": "取消保证（DESIGN §14.3）：取消 attempt 以整棵进程为单位发起，不只是直接子进程——harness 的 worker 若成孤儿会继续写工作区，形成「已取消却还在改盘」且无事件无报错。POSIX 下 spawn 即 start_new_session 使子进程自成组长，取消走进程组信号；Windows 走 taskkill /T，不带 /F 的失败立即升级 /F（Windows 没有可用的礼貌树终止）。安全前提：仅当 getpgid(pid) == pid 时才 killpg，组号无法确认为该进程自己时拒绝组信号，宁可少杀也不连坐推动者。诚实边界：taskkill 按快照遍历，其后 new 出的曾孙可能被漏掉，不做「保证全灭」声明。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/lhgp/adapters/processes.py",
+        "src/longtask/adapters/subprocess_adapter.py",
+        "tests/unit/test_processes_tree.py",
+        "tests/integration/test_process_tree_termination.py"
+      ],
+      "evidence": [
+        {
+          "kind": "integration_real_store",
+          "path": "tests/integration/test_process_tree_termination.py",
+          "recorded_at": "2026-09-10",
+          "summary": "真起两级进程（父→python 孙），断言孙进程确实消失。判定用「pid + 启动时间」双重比对而非裸 pid（Windows pid 会复用，裸 pid 会把「已死、pid 被接管」误判成活着）；读不到启动时间即判前提不成立而非空过。已做反向验证：改用旧的单进程终止后，父进程已停而孙进程仍存活，确认该测试能抓住这个 bug 而不是跟着实现自圆其说。"
+        },
+        {
+          "kind": "focused_test",
+          "path": "tests/unit/test_processes_tree.py",
+          "recorded_at": "2026-09-10",
+          "summary": "6 条：taskkill argv 的两种形态（含/不含 /F）、非正 pid 拒绝、POSIX 下自己是组长时返回组号、不是组长时返回 None、探测失败时返回 None。后三条锁的是「判错会杀掉推动者自己」这条最不能出的错。"
+        },
+        {
+          "kind": "source_static",
+          "path": "src/longtask/adapters/subprocess_adapter.py",
+          "recorded_at": "2026-09-10",
+          "summary": "cancel() 两条路径都以树为单位：优雅失败或宽限期内未退即升级强杀，且即使直接子进程已退出也照杀（此时残留的正是要清理的孙进程）。spawn() 在 POSIX 传 start_new_session=True，Windows 显式不传以保持既有拉起形态。"
+        }
+      ]
+    },
+    {
+      "id": "mcp-tool-annotation-classification-completeness",
+      "statement": "工具注解失真（DESIGN §14.1 表）：只读/破坏性两个集合是 MCP 工具注解的唯一分类真相源，注解由集合派生且用直接赋值（内联声明覆盖不了它）。每个工具必须恰好属于一个集合——中立注解（两者皆 False）对写持久状态的工具意味着宿主不会请求人工确认，是静默失效。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/longtask/mcp_server.py",
+        "tests/unit/test_mcp_tool_surface.py"
+      ],
+      "evidence": [
+        {
+          "kind": "focused_test",
+          "path": "tests/unit/test_mcp_tool_surface.py",
+          "recorded_at": "2026-09-10",
+          "summary": "TestToolAnnotationDrift 4 条：51 个工具零中立零交集、注解必须等于集合派生值（内联覆盖即红）、集合里不得有已不存在的工具名、写持久状态的工具抽查必须带 destructiveHint。已做反向验证：注入未分类工具、注入内联覆盖、注入幽灵条目三种漂移，三种都让对应断言变红。"
+        },
+        {
+          "kind": "source_static",
+          "path": "src/longtask/mcp_server.py",
+          "recorded_at": "2026-09-10",
+          "summary": "修复前 7 个工具内联写 annotations 且与集合互相覆盖：lhgp_prepare_goal（立合同）、lhgp_propose_plan、lhgp_send_message 被声明为中立（宿主不请求确认），lhgp_resume_attempt 与 _DESTRUCTIVE_TOOLS 自相矛盾（集合条目成死代码），longtask_user_confirm_spec_verdict（CANDIDATE 合同唯一签字出口）谁都没写。现内联声明全删，派生改直接赋值，分类结果 27 只读 + 24 destructive = 51。"
+        }
+      ]
+    },
+    {
+      "id": "identifier-validators-reject-trailing-newline",
+      "statement": "标识符校验的锚点边界：凡以 `^...$` 收尾的校验正则，Python 的 `$` 也匹配尾随换行之前的位置，因此 `re.match(\"^ab$\", \"ab\" + chr(10))` 是匹配的。所有标识符类校验必须用 `\\Z` 或 `fullmatch`，即「自称 fail-closed 的校验器必须真的拒绝尾随换行」。覆盖：不可信围栏 label、resume 路径分量、contract_id（lhgp 与 longtask 两棵树各一份）、scheduler task_id。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/lhgp/untrusted/boundary.py",
+        "src/lhgp/persistence/resume.py",
+        "src/lhgp/rpc/handlers/_common.py",
+        "src/longtask/rpc/handlers/_common.py",
+        "src/longtask/scheduler/wakeup.py",
+        "tests/unit/test_identifier_anchors.py"
+      ],
+      "evidence": [
+        {
+          "kind": "focused_test",
+          "path": "tests/unit/test_identifier_anchors.py",
+          "recorded_at": "2026-09-10",
+          "summary": "把这一类按校验点逐条钉住：label 的尾随 \n 与 \r\n 被拒且正常 label 仍被接受、resume 的 attempt_id/contract_id 尾随换行被拒、contract_id 两棵树各一份都被拒、点段（`.` / `..` / `lh-..-a`）仍被拒、正常 id 仍被接受。"
+        },
+        {
+          "kind": "manual_review",
+          "path": "docs/wiki/playbook/four-layer-review.md",
+          "recorded_at": "2026-09-10",
+          "summary": "反向验证：把 label 正则从 `\\Z` 改回 `$` 后 test_trailing_newline_is_rejected 变红（且失败测试名与预期一致），确认该用例不是装饰。"
+        }
+      ]
+    },
+    {
+      "id": "sanitized-output-is-observable-in-collect",
+      "statement": "不可信外部文本保证的可观察面（DESIGN §14.2）：清洗会改写证据的字节，因此 collect 结果必须与 output_truncated 并列上报 output_sanitized，使审计能区分「执行者的原始输出」与「协议改写过的输出」。旗子必须能取真假两值——恒为 True 的旗子是假信号。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/longtask/adapters/subprocess_adapter.py",
+        "tests/conformance/test_adapter_scenarios.py"
+      ],
+      "evidence": [
+        {
+          "kind": "integration_real_store",
+          "path": "tests/conformance/test_adapter_scenarios.py",
+          "recorded_at": "2026-09-10",
+          "summary": "真子进程场景 3 条：写入 ESC 着色 + U+202E 的载荷后 output_sanitized 为 True 且 stdout 里两者都不存在、正文仍在；干净输出为 False；超预算时 output_truncated 为 True 且保留字节不超预算。载荷用 bytes.fromhex 构造，源码里不留不可见字符。"
+        },
+        {
+          "kind": "manual_review",
+          "path": "src/longtask/adapters/subprocess_adapter.py",
+          "recorded_at": "2026-09-10",
+          "summary": "反向验证两种变异：摘掉 stdout_text 的清洗 → 清洗场景变红；把两个分支的 output_truncated 都写死 False → 截断场景变红（只改一个分支时测试照绿，说明必须改测试实际走的那条分支才算验证）。"
+        }
+      ]
     }
   ]
 }

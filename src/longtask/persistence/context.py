@@ -30,6 +30,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from lhgp.untrusted.boundary import make_untrusted_block
 from longtask.contracts.schema import ContractDraft, ContractView
 from longtask.persistence.events import EventType
 from longtask.persistence.events_query import get_latest_forecast_snapshot
@@ -734,13 +735,27 @@ def compile_context_snapshot(
         # 跨合同沉淀,放 deadline 之后、handover 之前 —— 风险感知 > 历史现场
         sections += [mem_text, ""]
     if handover:
+        # 交接字段是**上一轮执行者写的**（handover.md 解析而来），不是协议写的。
+        # 它不能以裸 `## 交接` 段落进快照：那样的版式等于告诉下一个执行者
+        # 「这段和协议同源」，而且多行字段能自带一个假的小节标题逃出去。
+        # 用带摘要围栏的不可信块包起来；terse 版声明因为快照有 max_bytes 容量
+        # 合同（超限直接拒接启动 attempt），每个 attempt 都要付这份字节。
+        handover_body = "\n".join(
+            [
+                f"- current_stage: {handover.get('current_stage', '')}",
+                f"- remaining:\n{handover.get('remaining', '')}",
+                f"- next_action: {handover.get('next_action', '')}",
+                f"- estimate_remaining_hours: {handover.get('estimate_remaining_hours', '')}",
+                f"- source_attempt_id: {handover.get('source_attempt_id', '')}",
+            ]
+        )
         sections += [
-            "## 交接（上一 attempt 留下的现场）",
-            f"- current_stage: {handover.get('current_stage', '')}",
-            f"- remaining:\n{handover.get('remaining', '')}",
-            f"- next_action: {handover.get('next_action', '')}",
-            f"- estimate_remaining_hours: {handover.get('estimate_remaining_hours', '')}",
-            f"- source_attempt_id: {handover.get('source_attempt_id', '')}",
+            make_untrusted_block(
+                label="handover",
+                title="交接（上一 attempt 留下的现场）",
+                body=handover_body,
+                terse=True,
+            ).rstrip("\n"),
             "",
         ]
     if digest:

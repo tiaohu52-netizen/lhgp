@@ -196,3 +196,50 @@ class TestToolSurfaceMatchesArchitectureDoc:
             if description.startswith("[LHGP] "):
                 description = description[len("[LHGP] ") :]
             assert description == legacy[1]["description"], f"{suffix}: description drift"
+
+
+class TestToolAnnotationDrift:
+    """注解分类必须完备且单一来源。
+
+    MCP 宿主用 ``destructiveHint`` 决定要不要请求人工确认、用 ``readOnlyHint``
+    决定能不能自动放行。一个**中立**注解（两者皆 False）对写持久状态的工具
+    意味着「宿主不会确认」，对只读工具意味着「白等一次确认」——两种都是静默
+    失效，不会报错。所以新增工具忘了分类必须让测试红，而不是让它悄悄上线。
+    """
+
+    def test_every_tool_is_classified_exactly_once(self) -> None:
+        names = set(TOOLS)
+        read_only = {n for n, (_, schema) in TOOLS.items() if schema["annotations"]["readOnlyHint"]}
+        destructive = {
+            n for n, (_, schema) in TOOLS.items() if schema["annotations"]["destructiveHint"]
+        }
+        assert names - read_only - destructive == set(), "工具没有分类（宿主不会请求确认）"
+        assert read_only & destructive == set(), "工具同时被标为只读与 destructive"
+
+    def test_annotations_are_derived_from_the_sets(self) -> None:
+        from longtask.mcp_server import _DESTRUCTIVE_TOOLS, _READ_ONLY_TOOLS
+
+        for name, (_, schema) in TOOLS.items():
+            assert schema["annotations"] == {
+                "readOnlyHint": name in _READ_ONLY_TOOLS,
+                "destructiveHint": name in _DESTRUCTIVE_TOOLS,
+                "openWorldHint": False,
+            }, f"{name}: 注解被内联声明覆盖（集合是唯一真相源）"
+
+    def test_classification_sets_have_no_stale_entries(self) -> None:
+        from longtask.mcp_server import _DESTRUCTIVE_TOOLS, _READ_ONLY_TOOLS
+
+        stale = (_READ_ONLY_TOOLS | _DESTRUCTIVE_TOOLS) - set(TOOLS)
+        assert stale == set(), f"集合里挂着不存在的工具名: {sorted(stale)}"
+
+    def test_mutating_tools_are_never_declared_harmless(self) -> None:
+        """抽查写持久状态的工具确实带 destructiveHint（回归锁定）。"""
+        for name in (
+            "lhgp_prepare_goal",
+            "lhgp_propose_plan",
+            "lhgp_resume_attempt",
+            "lhgp_send_message",
+            "lhgp_write_back",
+            "longtask_user_confirm_spec_verdict",
+        ):
+            assert TOOLS[name][1]["annotations"]["destructiveHint"] is True, name

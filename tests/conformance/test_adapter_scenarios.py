@@ -60,7 +60,11 @@ def make_input(
     attempt_id: str = "att-1",
     context_snapshot_path: str | None = None,
     task_prompt: str | None = None,
+    max_output_bytes: int | None = None,
 ) -> AttemptInput:
+    budget: dict[str, Any] = {"max_dispatches": 8}
+    if max_output_bytes is not None:
+        budget["max_output_bytes"] = max_output_bytes
     return AttemptInput(
         attempt_id=attempt_id,
         contract_id="lt-20260831-001",
@@ -74,7 +78,7 @@ def make_input(
         },
         handover_path="handover.md",
         workspace_root=workspace_root,
-        budget_remaining={"max_dispatches": 8},
+        budget_remaining=budget,
         partition_id=None,
         context_snapshot_path=context_snapshot_path,
         task_prompt=task_prompt,
@@ -385,6 +389,64 @@ class TestSubprocessSpawnLifecycle:
         result = adapter.collect("att-1")
         assert result["state"] == "cancelled"
         assert result["returncode"] != 0
+
+    def test_collect_reports_that_output_was_sanitized(self, tmp_path: Path) -> None:
+        """清洗改写了证据的字节，这件事必须在 collect 结果里可见（§14.2）。
+
+        可观察性是保证的一部分：审计必须能区分「执行者的原始输出」与
+        「协议改写过的输出」，否则清洗就是静默改写证据。
+        """
+        # 载荷 = ESC[31m + "red" + ESC[0m + U+202E + " evil" + LF。
+        # 用 hex 构造：源码里不留不可见字符，review 时才读得出来。
+        payload = bytes.fromhex("1b5b33316d7265641b5b306de280ae206576696c0a")
+        script = "import sys; sys.stdout.buffer.write(bytes.fromhex(sys.argv[1]))"
+        adapter = SubprocessAdapter(
+            make_manifest(),
+            launch=LaunchSpec(
+                argv=(sys.executable, "-c", script, payload.hex()),
+                env_allowlist=_child_env_allowlist(),
+            ),
+        )
+        launch = adapter.prepare(make_input(str(tmp_path)))
+        adapter.spawn(make_input(str(tmp_path)), launch)
+        result = adapter.collect("att-1")
+        stdout = str(result["stdout"])
+        assert chr(27) not in stdout
+        assert chr(0x202E) not in stdout
+        assert "red evil" in stdout
+        assert result["output_sanitized"] is True
+
+    def test_collect_reports_clean_output_as_not_sanitized(self, tmp_path: Path) -> None:
+        """旗子必须能区分真假——恒为 True 的旗子是假信号，比没有更糟。"""
+        script = "import sys; sys.stdout.write('plain output')"
+        adapter = SubprocessAdapter(
+            make_manifest(),
+            launch=LaunchSpec(
+                argv=(sys.executable, "-c", script), env_allowlist=_child_env_allowlist()
+            ),
+        )
+        launch = adapter.prepare(make_input(str(tmp_path)))
+        adapter.spawn(make_input(str(tmp_path)), launch)
+        result = adapter.collect("att-1")
+        assert result["output_sanitized"] is False
+
+    def test_collect_reports_output_truncation(self, tmp_path: Path) -> None:
+        """超出输出预算时截断必须可见，且保留字节不超过预算（§6.3 硬边界）。"""
+        budget = 100
+        script = "import sys; sys.stdout.write('x' * 4000)"
+        adapter = SubprocessAdapter(
+            make_manifest(),
+            launch=LaunchSpec(
+                argv=(sys.executable, "-c", script), env_allowlist=_child_env_allowlist()
+            ),
+        )
+        attempt_input = make_input(str(tmp_path), max_output_bytes=budget)
+        launch = adapter.prepare(attempt_input)
+        adapter.spawn(attempt_input, launch)
+        result = adapter.collect("att-1")
+        assert result["output_truncated"] is True
+        assert len(str(result["stdout"])) <= budget
+        assert result["output_sanitized"] is False
 
     def test_spawn_rejects_forged_launch_cwd(self, tmp_path: Path) -> None:
         """§14 适配器侧防线：伪造的 PreparedLaunch（cwd 越出 workspace）不能拉起。"""

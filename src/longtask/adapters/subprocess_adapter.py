@@ -21,6 +21,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
+from lhgp.untrusted.sanitize import has_terminal_controls, sanitize_terminal_text
 from longtask.adapters.base import (
     AttemptInput,
     ExecutorAdapter,
@@ -37,7 +38,7 @@ from longtask.adapters.processes import (
     identity_matches,
     process_alive,
     process_start_time,
-    terminate_pid,
+    terminate_tree,
 )
 from longtask.adapters.registry import LaunchSpec
 from longtask.contracts.schema import AttemptState, Enforcement
@@ -90,8 +91,12 @@ class _DetachedProcess:
         return process_alive(self.pid)
 
     def terminate(self) -> bool:
-        """尽力终止（拿不到句柄如实返回 False，不假装成功）。"""
-        return terminate_pid(self.pid)
+        """尽力终止整棵进程树（拿不到句柄如实返回 False，不假装成功）。
+
+        重绑进程只有 pid，没有会话关系，因此走的也是树终止而不是单进程杀：
+        harness 的 worker 会随主进程一起留下，只收主进程等于把写入源留活。
+        """
+        return terminate_tree(self.pid)
 
 
 # ── CLI 兼容性：harness 结构化终态事件（v2 归档候选路径的落地）──
@@ -152,11 +157,35 @@ class _MonitoredProcess:
         self._proc.kill()
 
     # -- 监控面 --
-    def stdout_text(self) -> str:
+    def _raw_stdout(self) -> str:
         return b"".join(self.stdout_buf).decode("utf-8", errors="replace")
 
-    def stderr_text(self) -> str:
+    def _raw_stderr(self) -> str:
         return b"".join(self.stderr_buf).decode("utf-8", errors="replace")
+
+    def stdout_text(self) -> str:
+        """累积输出 → 清洗后的文本（DESIGN §14.2 入站边界）。
+
+        清洗放在这里而不是各个消费方：collect 是本适配器唯一的输出出口，
+        证据固化、``lhgp-verdict`` 解析、投影写入都从它取数，逐个清洗必然
+        漂移成几份口径（终端清洗是幂等的，重复经过边界不会叠加损耗）。
+        """
+        return sanitize_terminal_text(self._raw_stdout())
+
+    def stderr_text(self) -> str:
+        return sanitize_terminal_text(self._raw_stderr())
+
+    def output_sanitized(self) -> bool:
+        """本次输出是否被清洗改动过（DESIGN §14.2）。
+
+        清洗**改写了证据的字节**，这件事必须和 ``output_truncated`` 一样在
+        collect 结果里可见：审计要能区分「执行者的原始输出」与「协议改写过的
+        输出」，否则「不可信文本一定经过清洗」这条保证就没有可观察面
+        （可观察性是 §14 的硬要求，不是附赠项）。
+        """
+        return has_terminal_controls(self._raw_stdout()) or has_terminal_controls(
+            self._raw_stderr()
+        )
 
     def join_readers(self, timeout: float = 10.0) -> None:
         """进程退出后收尾 reader 线程（管道 EOF 即自然结束）。"""
@@ -379,6 +408,11 @@ class SubprocessAdapter(ExecutorAdapter):
             env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            # POSIX：子进程自成会话/进程组组长，取消时能用 killpg 一次收掉
+            # 整棵树（harness 的 worker 不会留成孤儿继续写工作区）。
+            # Windows 无进程组，走 taskkill /T；该参数在 Windows 被忽略，
+            # 这里显式只在 POSIX 传，保持 Windows 的拉起参数与既有形态一致。
+            start_new_session=os.name == "posix",
         )
         # CLI 兼容性：包装成受监控进程（后台排水防管道死锁 + 终态事件扫描）
         monitored = _MonitoredProcess(
@@ -542,10 +576,15 @@ class SubprocessAdapter(ExecutorAdapter):
         }
 
     def cancel(self, attempt_id: str, reason: str) -> None:
-        """取消 attempt：terminate 后有宽限期，仍存活才升级 kill。"""
+        """取消 attempt：整棵树先礼后兵，仍存活才升级强杀。
+
+        只杀直接子进程会把 harness 的 worker 留成孤儿——对合同来说这是
+        「已取消却还在改盘」，比取消失败更难查（没有事件、没有报错，只有
+        盘上多出来的改动）。因此两条路径都以**树**为单位。
+        """
         proc = self._require(attempt_id)
         if isinstance(proc, _DetachedProcess):
-            # 重绑进程：只能尽力 terminate，无法等待其退出（非子进程）
+            # 重绑进程：只能尽力终止，无法等待其退出（非子进程）
             if proc.check() is not False:
                 proc.terminate()
                 self._cancelled.add(attempt_id)
@@ -553,12 +592,16 @@ class SubprocessAdapter(ExecutorAdapter):
         if proc.poll() is not None:
             # 已自行退出：无可取消对象，保留原终态（不伪装成 cancelled）
             return
-        proc.terminate()
-        try:
-            proc.wait(timeout=self._grace_period_seconds)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait()
+        graceful = terminate_tree(proc.pid)
+        if graceful:
+            with suppress(subprocess.TimeoutExpired):
+                proc.wait(timeout=self._grace_period_seconds)
+        # 优雅路径不可用、或宽限期内没退：强杀整棵树。即使直接子进程已经
+        # 退出也照杀——此时残留的正是要清理的孙进程。
+        if proc.poll() is None or not graceful:
+            terminate_tree(proc.pid, force=True)
+            with suppress(subprocess.TimeoutExpired):
+                proc.wait(timeout=self._grace_period_seconds)
         proc.close_streams()
         self._cancelled.add(attempt_id)
 
@@ -598,6 +641,7 @@ class SubprocessAdapter(ExecutorAdapter):
                     "stdout": proc.stdout_text(),
                     "stderr": proc.stderr_text(),
                     "output_truncated": proc.output_truncated,
+                    "output_sanitized": proc.output_sanitized(),
                 }
             # 无事件：等进程退出（语义与旧版一致——不退出就不结算）
             try:
@@ -624,6 +668,7 @@ class SubprocessAdapter(ExecutorAdapter):
                 "stdout": proc.stdout_text(),
                 "stderr": proc.stderr_text(),
                 "output_truncated": proc.output_truncated,
+                "output_sanitized": proc.output_sanitized(),
             }
 
     def _require(self, attempt_id: str) -> _MonitoredProcess | _DetachedProcess:

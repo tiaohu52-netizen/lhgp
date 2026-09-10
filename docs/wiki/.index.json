@@ -2,11 +2,11 @@
   "schema_version": 1,
   "generated_by": "scripts/build_wiki_index.py",
   "wiki_root": "docs\\wiki",
-  "page_count": 12,
+  "page_count": 14,
   "by_type": {
     "glossary": 1,
     "moc": 2,
-    "playbook": 8,
+    "playbook": 10,
     "": 1
   },
   "pages": [
@@ -518,6 +518,94 @@
       ]
     },
     {
+      "path": "playbook/four-layer-review.md",
+      "title": "Four-Layer Code Review",
+      "type": "playbook",
+      "status": "permanent",
+      "tags": [
+        "topic/quality",
+        "type/howto",
+        "audience/ai"
+      ],
+      "audience": [
+        "human",
+        "ai"
+      ],
+      "requires": [],
+      "related": [
+        "quality-gate",
+        "write-test-first",
+        "regression-from-external-review"
+      ],
+      "outgoing": [
+        "playbook/quality-gate.md",
+        "playbook/write-test-first.md",
+        "playbook/regression-from-external-review.md"
+      ],
+      "outgoing_raw": [],
+      "backlinks": [
+        "playbook/index.md"
+      ],
+      "block_ids": [
+        "from",
+        "ab"
+      ],
+      "headings": [
+        {
+          "level": 1,
+          "text": "四层代码审查"
+        },
+        {
+          "level": 2,
+          "text": "第 1 层 · 类型层"
+        },
+        {
+          "level": 2,
+          "text": "第 2 层 · 死代码层"
+        },
+        {
+          "level": 2,
+          "text": "第 3 层 · 边界层"
+        },
+        {
+          "level": 3,
+          "text": "三条硬规则"
+        },
+        {
+          "level": 3,
+          "text": "边界层的判定不是「有没有 bug」，而是「错了往哪边倒」"
+        },
+        {
+          "level": 2,
+          "text": "第 4 层 · 跑一遍层"
+        },
+        {
+          "level": 3,
+          "text": "反向验证（这一层真正的核心）"
+        },
+        {
+          "level": 1,
+          "text": "变异验证的最小形态：改坏 → 只跑那条测试 → 断言「变红」且失败名匹配 → 还原"
+        },
+        {
+          "level": 1,
+          "text": "判据: returncode != 0  且  FAILED 行里出现预期测试名  且 不是收集错误"
+        },
+        {
+          "level": 2,
+          "text": "本轮实测（2026-09-10，作为四层的样例记录）"
+        },
+        {
+          "level": 2,
+          "text": "反模式"
+        },
+        {
+          "level": 2,
+          "text": "验证清单"
+        }
+      ]
+    },
+    {
       "path": "playbook/index.md",
       "title": "Playbook — Index",
       "type": "moc",
@@ -542,6 +630,7 @@
         "playbook/add-cli-subcommand.md",
         "playbook/write-test-first.md",
         "playbook/quality-gate.md",
+        "playbook/four-layer-review.md",
         "playbook/daemon-tick-hook.md"
       ],
       "outgoing_raw": [
@@ -552,6 +641,7 @@
         "playbook/add-cli-subcommand",
         "playbook/write-test-first",
         "playbook/quality-gate",
+        "playbook/four-layer-review",
         "playbook/daemon-tick-hook"
       ],
       "backlinks": [
@@ -604,7 +694,9 @@
       ],
       "outgoing_raw": [],
       "backlinks": [
+        "playbook/four-layer-review.md",
         "playbook/index.md",
+        "playbook/regression-from-external-review.md",
         "playbook/write-test-first.md"
       ],
       "block_ids": [],
@@ -639,11 +731,106 @@
         },
         {
           "level": 2,
+          "text": "告警也必须可执行"
+        },
+        {
+          "level": 2,
           "text": "与 CLAIMS 的关系"
         },
         {
           "level": 2,
           "text": "验证清单(改完代码后自检)"
+        }
+      ]
+    },
+    {
+      "path": "playbook/regression-from-external-review.md",
+      "title": "Regression patterns from external review",
+      "type": "playbook",
+      "status": "permanent",
+      "tags": [
+        "topic/quality",
+        "type/lessons-learned",
+        "audience/ai"
+      ],
+      "audience": [
+        "human",
+        "ai"
+      ],
+      "requires": [],
+      "related": [
+        "write-test-first",
+        "quality-gate"
+      ],
+      "outgoing": [
+        "playbook/write-test-first.md",
+        "playbook/quality-gate.md"
+      ],
+      "outgoing_raw": [],
+      "backlinks": [
+        "playbook/four-layer-review.md"
+      ],
+      "block_ids": [],
+      "headings": [
+        {
+          "level": 1,
+          "text": "Regression patterns from external review"
+        },
+        {
+          "level": 2,
+          "text": "1. The mock-envelope bypass"
+        },
+        {
+          "level": 2,
+          "text": "2. Handler transitions only the status, not the full state"
+        },
+        {
+          "level": 2,
+          "text": "3. Two-namespace parser divergence"
+        },
+        {
+          "level": 2,
+          "text": "4. CLI branch conditionally imports"
+        },
+        {
+          "level": 2,
+          "text": "5. Spec-vs-execution shape mismatch"
+        },
+        {
+          "level": 2,
+          "text": "6. docstring blow-up"
+        },
+        {
+          "level": 2,
+          "text": "7. Concurrent multi-event handler without pre-read CAS"
+        },
+        {
+          "level": 1,
+          "text": "Single-threaded: events + state update both commit,"
+        },
+        {
+          "level": 1,
+          "text": "revision is consistent.  Test passes."
+        },
+        {
+          "level": 2,
+          "text": "8. The lazy \"no real entry, just mock\" test"
+        },
+        {
+          "level": 2,
+          "text": "New-PR checklist"
+        },
+        {
+          "level": 2,
+          "text": "9. Trusted pre-authorization at the Goal layer (model self-sign fix)"
+        },
+        {
+          "level": 2,
+          "text": "10. Goal-level execution config (workspace + executor_grant)"
+        },
+        {
+          "level": 2,
+          "text": "11. The optional field with a fail-open comparison"
         }
       ]
     },
@@ -849,8 +1036,10 @@
       ],
       "outgoing_raw": [],
       "backlinks": [
+        "playbook/four-layer-review.md",
         "playbook/index.md",
-        "playbook/quality-gate.md"
+        "playbook/quality-gate.md",
+        "playbook/regression-from-external-review.md"
       ],
       "block_ids": [],
       "headings": [
