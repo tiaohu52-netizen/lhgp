@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sys
 from collections.abc import Callable
 from datetime import datetime
@@ -1504,6 +1505,32 @@ TOOLS: dict[
             },
         },
     ),
+    # 签字门的正名（SPEC §19.3）：此前 CANDIDATE→PASSED 的唯一 MCP 入口只有
+    # longtask_* 别名轨——清别名会删掉能力本身。正名与别名同一个 handler、
+    # 同一份 schema，仅描述加 [LHGP] 前缀（与其他正名一致）。
+    "lhgp_user_confirm_spec_verdict": (
+        tool_user_confirm_spec_verdict,
+        {
+            "description": (
+                "[LHGP] 用户确认 CANDIDATE Spec 验收（Principal-gated）。"
+                '当 Spec 包含 judge="user" 判据时，verifier 通过后合同停在'
+                " CANDIDATE 等用户最终签字；这是唯一把它推到 PASSED 的路径。"
+                "模型客户端调用会返回 AUTH_FAILED——请提示用户在 CLI 执行"
+                " `lhgp contract user-confirm <contract_id>`。"
+            ),
+            "inputSchema": {
+                "type": "object",
+                "required": ["contract_id"],
+                "properties": {
+                    "contract_id": {"type": "string"},
+                    "note": {
+                        "type": "string",
+                        "description": "可选：用户签字的备注，会落进审计事件",
+                    },
+                },
+            },
+        },
+    ),
     "longtask_get_contract": (
         tool_get_contract,
         {
@@ -2267,6 +2294,7 @@ _DESTRUCTIVE_TOOLS = {
     "lhgp_propose_plan",
     "lhgp_send_message",
     "longtask_user_confirm_spec_verdict",
+    "lhgp_user_confirm_spec_verdict",
 }
 _READ_ONLY_TOOLS = {
     "longtask_health",
@@ -2367,6 +2395,15 @@ def _validate_arguments(args: dict[str, Any], schema: dict[str, Any]) -> str | N
 
 
 def _dispatch(ctx: dict[str, Any], method: str, params: Any, req_id: Any) -> dict[str, Any]:
+    profile_name = ctx.get("profile_name", "legacy")
+    profile_tools = ctx.get("profile_tools")
+    if profile_tools is None:
+        # 防御兜底：serve_stdio 一定先解析 profile；走到这里说明调用方
+        # 绕过了入口。按 legacy 全量继续会静默放大暴露面，按空集拒绝
+        # 则连 health 都不可用——选择 fail-closed：明确报错。
+        from longtask.mcp_profiles import ProfileError
+
+        raise ProfileError("profile not initialised; refusing to serve unprofiled context")
     if method == "initialize":
         return _make_response(
             req_id,
@@ -2374,14 +2411,18 @@ def _dispatch(ctx: dict[str, Any], method: str, params: Any, req_id: Any) -> dic
                 "protocolVersion": "2024-11-05",
                 "serverInfo": {"name": _server_name(), "version": __version__},
                 "capabilities": {"tools": {}},
+                # profile 名进 initialize 应答：宿主能直接看到自己拿到的是
+                # 哪个收窄面，排查「工具怎么不见了」不用猜。
+                "profile": profile_name,
             },
         )
     if method == "ping":
         return _make_response(req_id, {})
     if method == "tools/list":
+        listed = [{"name": name, **TOOLS[name][1]} for name in profile_tools]
         return _make_response(
             req_id,
-            {"tools": [{"name": name, **schema} for name, (_fn, schema) in TOOLS.items()]},
+            {"tools": listed, "profile": profile_name},
         )
     if method == "tools/call":
         if not isinstance(params, dict):
@@ -2392,6 +2433,16 @@ def _dispatch(ctx: dict[str, Any], method: str, params: Any, req_id: Any) -> dic
             return _make_error(req_id, -32602, "invalid arguments: arguments must be an object")
         if tool_name not in TOOLS:
             return _make_error(req_id, -32602, f"unknown tool: {tool_name}")
+        if tool_name not in profile_tools:
+            # 隐藏必须是不可达（fail-closed）：tools/list 不展示 profile 外
+            # 工具的同时，硬调也拒绝——否则「看不见」只是装饰，模型仍可
+            # 凭名字调用（DESIGN §11 暴露面收窄）。
+            return _make_error(
+                req_id,
+                -32602,
+                f"tool {tool_name} is outside this server's profile "
+                f"'{profile_name}' (LHGP_MCP_PROFILE); refusing to dispatch",
+            )
         try:
             fn, schema = TOOLS[tool_name]
             # R1（工具面审计）：inputSchema 在服务端强制执行——schema 只给
@@ -2441,6 +2492,17 @@ def serve_stdio(root: Path) -> None:
     编码无关，模型侧按 UTF-8 解析 JSON 字符串里 \\u 转义即可。
     """
     ctx = _make_context(root)
+    # profile 在连接建立前解析（fail-closed）：配置错了直接退出并说明原因，
+    # 不静默回落到全量——那会让「以为收窄了」的部署实际暴露 51 个工具。
+    from longtask.mcp_profiles import ProfileError, profile_for_environment
+
+    try:
+        profile_name, profile_tools = profile_for_environment(dict(os.environ))
+    except ProfileError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return
+    ctx["profile_name"] = profile_name
+    ctx["profile_tools"] = profile_tools
     try:
         for line in sys.stdin:
             line = line.strip()

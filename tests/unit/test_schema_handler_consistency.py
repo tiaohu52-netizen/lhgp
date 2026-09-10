@@ -16,6 +16,12 @@ import pytest
 
 from longtask.mcp_server import TOOLS
 
+# 导入 TOOLS/_dispatch 即真实入口（conftest 的 real_entry 棘轮口径）；
+# test_schema_covers_handler_reads 按 TOOLS 全量 parametrize，工具面
+# 增减会直接改变展开后的 item 数——2026-09-10 新增 lhgp_user_confirm_spec_verdict
+# 使欠款 114→115，正是棘轮要拦的「改工具面必须过这里」。
+pytestmark = pytest.mark.real_entry
+
 # handler 源码里合法的透传参数名：这些通过 **kwargs / _mcp_route 整包
 # 转发，不逐键读取；schema 缺它们不算不一致。
 PASSTHROUGH_TOOLS = {
@@ -89,10 +95,18 @@ def test_prepare_goal_registered_and_distinct() -> None:
 
 
 def test_dispatch_rejects_unknown_and_typed_arguments(tmp_path) -> None:
-    """R1：dispatch 层 schema 强制（required/类型/未知键）。"""
-    from longtask.mcp_server import _dispatch
+    """R1：dispatch 层 schema 强制（required/类型/未知键）。
 
-    ctx: dict = {}
+    ctx 按服务端真实形态构造（profile_tools = legacy 全量）：直呼 _dispatch
+    的旧空 ctx 自 profile 轮起被 fail-closed 拒绝，见
+    test_tool_profiles.py::test_unprofiled_context_refuses_to_serve。
+    """
+    from longtask.mcp_server import TOOLS, _dispatch
+
+    ctx: dict = {
+        "profile_name": "legacy",
+        "profile_tools": tuple(sorted(TOOLS)),
+    }
     # 未知键
     resp = _dispatch(ctx, "tools/call", {"name": "longtask_health", "arguments": {"bogus": 1}}, 1)
     assert "unknown parameter" in resp["error"]["message"]

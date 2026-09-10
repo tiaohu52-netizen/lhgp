@@ -1047,6 +1047,8 @@ def may_dispatch(contract: GoalCommitment, candidate: Candidate) -> Refusal | No
 5. 保留 `longtask` 兼容别名至少一个次版本；
 6. 最后迁移 Python 内部模块路径与删除别名。
 
+别名轨在删除前必须先补齐正名缺口（2026-09-10：`lhgp_user_confirm_spec_verdict` 已补——此前签字门只有 `longtask_user_confirm_spec_verdict` 一个 MCP 入口，直接清别名等于删掉 CANDIDATE→PASSED 的唯一程序化路径）。工具面按角色收窄的 profile 机制见 DESIGN §11.8。
+
 ---
 
 ## 20. 分阶段实施计划

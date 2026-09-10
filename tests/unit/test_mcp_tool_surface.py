@@ -37,7 +37,8 @@ LEGACY_ONLY_SUFFIXES = {
     "approve_contract",
     "attach_to_executor",
     "prepare_contract",
-    "user_confirm_spec_verdict",
+    # user_confirm_spec_verdict 2026-09-10 补了正名 lhgp_user_confirm_spec_verdict
+    # （签字门此前只有别名轨一个入口，清别名会删掉能力本身）。
 }
 
 

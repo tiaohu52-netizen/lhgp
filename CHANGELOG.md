@@ -122,6 +122,59 @@ follow [SemVer](https://semver.org/spec/v2.0.0.html); dates in ISO 8601.
 可重建，不可超前」），`_atomic_write` 已给出单文件原子性。缺的是「重建」这一动作的
 触发，不是「回执」。不属于本轮范围，记在此处备查而非静默略过。
 
+## [Unreleased·二] 工具面 profile（基线 6e5f2f8 之后，分支 feature/tool-surface-profiles）
+
+依用户裁决实施：「相对严厉的改动」——51 个工具全量挂进宿主已影响正常使用。
+基线先行：main 已锚定在 6e5f2f8（7 门全绿存档），本段全部改动只在分支上。
+
+### Added
+
+- **`src/longtask/mcp_profiles.py`**：工具面六档 profile。`tools/list` 只返回
+  profile 内工具；**`tools/call` 对 profile 外工具一律拒调**（-32602
+  "outside this server's profile"）——隐藏必须是真的不可达，否则模型仍可凭
+  名字硬调，「看不见」只是装饰。`initialize` / `tools/list` 应答带 `profile` 字段。
+  - `executor`(11) / `verifier`(7) / `planner`(12) / `operator`(36) / `full`(35 正名)
+    / `legacy`(52 全量)；
+  - **未设置 `LHGP_MCP_PROFILE` = legacy**，既有安装一次也不变；
+  - 未知取值**启动即退出**并说明原因，不静默回落；角色清单引用不存在的工具名
+    同样启动即报错（宁可不启动，不静默少暴露）。
+- **`lhgp_user_confirm_spec_verdict` 正名**：此前 CANDIDATE→PASSED 的唯一 MCP
+  入口只有 `longtask_user_confirm_spec_verdict`（别名轨独有）——直接清别名
+  等于删掉签字能力本身。正名与别名同 handler、同 schema，分类 destructive。
+- **`tests/unit/test_tool_profiles.py`**（17 条）：声明一致性 / 行为 / 默认不变 /
+  尺寸守护（executor/verifier/planner ≤ 全量一半+6，operator = full 减别名轨）。
+
+### Changed
+
+- **`_dispatch` 双处接入 profile**：tools/list 过滤 + tools/call fail-closed；
+  绕过 `serve_stdio` 的未初始化 context 拒绝服务（防静默全量）。
+- **契约同步**：ARCHITECTURE marker 51→52（35 正名 + 17 别名）、
+  `LEGACY_ONLY_SUFFIXES` 4→3（user_confirm 移出）、annotations destructive
+  集合补正名、SKILL 场景决策表统一 `lhgp_*` 正名（原先三种轨道名混用）并加
+  profile 说明、DESIGN v0.9 新增 §11.8、SPEC §19.3 补「清别名前必须先补齐
+  正名缺口」条款。
+
+### 量化（改动动机）
+
+- 全量 schema 34,007 B（粗估 8.5K token），其中 37% 为兼容别名重复；
+- executor 面 4,662 B（**−86%**）、verifier 2,563 B（−92%）、planner −79%；
+- 执行者原本能看见 `lhgp_approve_goal` 等 Principal-only 入口——模型调用会被
+  AUTH_FAILED，但**能看见就会去试**，每次都是注定失败的往返。
+
+### 反向验证（四项变异全部命中预期测试名）
+
+1. 摘掉越界拒调 → `test_call_outside_profile_is_refused` 红；
+2. executor 塞入 approve → `test_executor_cannot_see_principal_gates` 红；
+3. operator 丢签字门 → `test_operator_can_reach_the_signature_gate` 红；
+4. 未知 profile 静默回落 legacy → `test_unknown_profile_is_rejected_not_silently_defaulted` 红。
+另做过真子进程端到端：executor 下 tools/list 恰 11 个、硬调 approve 被拒、界内 health 正常。
+
+### 未做（下一步，需再过审批）
+
+- 17 个 `longtask_*` 别名的删除（SPEC §19.3：保留至少一个次版本；正名缺口已补齐，
+  剩余三个别名-only 名字均有正名对应）。
+- PARALLEL 档行为与措辞（见「审查发现但未修」，属 R3b）。
+
 ## [0.1.0a13] - 2026-09-10
 
 绑定时机：第 9 轮外部审查指出，上一轮（a12）引入的内容指纹绑错了时间点——

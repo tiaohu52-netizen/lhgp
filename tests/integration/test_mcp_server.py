@@ -477,7 +477,10 @@ class TestMCPDiscovery:
             # — 49 + 1 = 50.
             # 3rd-round follow-up: user-confirm path for CANDIDATE→PASSED
             # added longtask_user_confirm_spec_verdict — 50 + 1 = 51.
-            assert len(names) == 51
+            # 2026-09-10 profile 轮：签字门补正名 lhgp_user_confirm_spec_verdict
+            # — 51 + 1 = 52（默认 legacy profile 下 tools/list 仍是全量）。
+            assert len(names) == 52
+            assert tools["result"]["profile"] == "legacy"
             by_name = {item["name"]: item for item in tools["result"]["tools"]}
             assert by_name["lhgp_notifications"]["annotations"] == {
                 "readOnlyHint": True,

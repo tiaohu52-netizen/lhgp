@@ -1180,6 +1180,30 @@
           "summary": "反向验证两种变异：摘掉 stdout_text 的清洗 → 清洗场景变红；把两个分支的 output_truncated 都写死 False → 截断场景变红（只改一个分支时测试照绿，说明必须改测试实际走的那条分支才算验证）。"
         }
       ]
+    },
+    {
+      "id": "mcp-tool-surface-profiles",
+      "statement": "MCP 工具面 profile（DESIGN §11.8）：工具面按调用方角色收窄，是服务端声明而非提示词约定——tools/list 只返回 profile 内工具；tools/call 对 profile 外工具一律拒调（fail-closed，隐藏必须是不可达）；initialize 与 tools/list 应答携带 profile 名。六档：executor(11)/verifier(7)/planner(12)/operator(36)/full(35 正名)/legacy(52 全量)。未设置环境变量 = legacy，既有安装零变化；未知取值启动即退出，不静默回落；角色清单引用不存在的工具名启动即报错。签字门补正名 lhgp_user_confirm_spec_verdict（此前 CANDIDATE→PASSED 的唯一 MCP 入口只有 longtask_* 别名轨）。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/longtask/mcp_profiles.py",
+        "src/longtask/mcp_server.py",
+        "tests/unit/test_tool_profiles.py"
+      ],
+      "evidence": [
+        {
+          "kind": "focused_test",
+          "path": "tests/unit/test_tool_profiles.py",
+          "recorded_at": "2026-09-10",
+          "summary": "17 条：声明一致性（每个 role 工具真实存在、只收正名、executor 无批准权、verifier 无变更面、operator 可达签字门）、行为（tools/list 过滤、越界拒调、未初始化 context 拒服务、initialize 报 profile）、默认不变（未设置/空白 = legacy 全量）、尺寸守护（executor/verifier/planner ≤ 全量一半+6；operator = full 减别名轨）。"
+        },
+        {
+          "kind": "manual_review",
+          "path": "src/longtask/mcp_server.py",
+          "recorded_at": "2026-09-10",
+          "summary": "反向验证四项变异全部命中预期测试名：摘掉越界拒调→test_call_outside_profile_is_refused 红；executor 塞入 approve→test_executor_cannot_see_principal_gates 红；operator 丢签字门→test_operator_can_reach_the_signature_gate 红；未知 profile 静默回落→test_unknown_profile_is_rejected_not_silently_defaulted 红。另做过真子进程端到端：executor profile 下 initialize 应答 profile=executor、tools/list 恰 11 个、硬调 lhgp_approve_goal 返回 -32602 outside profile、界内 lhgp_health 正常。"
+        }
+      ]
     }
   ]
 }

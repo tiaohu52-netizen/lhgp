@@ -50,7 +50,7 @@ SPEC §19.3 规定迁移顺序：**不得先做全仓机械 rename**。最终目
 | **persistence/projections+context+notifications** | `longtask/persistence/` | `lhgp/persistence/` | 文件投影、上下文编译、通知 outbox |
 | **promoter/reconcile+records** | `longtask/promoter/` | `lhgp/promoter/` | 重启恢复四分支 |
 | **adapters/subprocess+registry+factory** | `longtask/adapters/` | `lhgp/adapters/` | 子进程适配器、执行器注册表 |
-| **mcp_server** | `longtask/mcp_server.py` | `lhgp/mcp_server.py` | MCP 工具注册表 `TOOLS`：<!-- mcp-tools: total=51 canonical=34 legacy=17 --> 51 个工具入口（34 个 `lhgp_*` 正名 + 17 个 `longtask_*` 兼容别名）。该数字由 `tests/unit/test_mcp_tool_surface.py` 与本行标记对账，改工具面必须同步改标记 |
+| **mcp_server** | `longtask/mcp_server.py` | `lhgp/mcp_server.py` | MCP 工具注册表 `TOOLS`：<!-- mcp-tools: total=52 canonical=35 legacy=17 --> 52 个工具入口（35 个 `lhgp_*` 正名 + 17 个 `longtask_*` 兼容别名；默认 `LHGP_MCP_PROFILE=legacy` 全量，可按角色收窄，见 `mcp_profiles.py`）。该数字由 `tests/unit/test_mcp_tool_surface.py` 与本行标记对账，改工具面必须同步改标记 |
 | **cli/daemon_proc+daemon_loop+tick+runner** | `longtask/cli/` | `lhgp/cli/` | daemon 生命周期与主循环（daemon_loop 内调用 `_enforce_deadlines`） |
 
 **简记**：协议概念（模型/验收/准入/预测/传输）在 `lhgp`；运行时机械
