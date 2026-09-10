@@ -30,6 +30,7 @@ from longtask.adapters.base import (
 )
 from longtask.adapters.factory import build_adapter
 from longtask.adapters.registry import ExecutorRegistry, RegistryEntry
+from longtask.contracts.acceptance import evidence_binding
 from longtask.contracts.schema import (
     AttemptRole,
     AttemptState,
@@ -672,7 +673,14 @@ class AttemptRunner:
                 # current revision and the contract can
                 # land in COMPLETE without a fresh check.
                 if contract is not None:
-                    payload["spec_hash"] = contract.draft.acceptance.spec_hash
+                    # 8th-round P1 fix: the caller-supplied ``spec_hash`` is
+                    # optional, and the old binding treated "both sides
+                    # missing" as a match -- so an edited acceptance could
+                    # complete on evidence gathered against the previous
+                    # requirement.  Stamp the runtime-computed content
+                    # fingerprint alongside it; ``user_confirm`` requires the
+                    # fingerprint to agree.
+                    payload.update(evidence_binding(contract.draft.acceptance))
                 typed_checks = (
                     [
                         check

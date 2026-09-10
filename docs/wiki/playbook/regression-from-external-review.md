@@ -335,7 +335,7 @@ this list:
     ``auto_approve`` claim — strip it at
     ``parse_contract_draft`` boundary.  A Goal-less
     contract, or a Goal without ``pre_authorized``, is
-    never auto-approved.  See pattern 8 below.
+    never auto-approved.  See pattern 9 below.
 12. **Goal-level execution config**: a spec-only stage
     synthesised contract must inherit
     ``Goal.plan.execution_config.workspace_root`` and
@@ -345,7 +345,7 @@ this list:
     stage drafts that omit ``file_effects`` /
     ``authority`` also inherit from the Goal.  An
     explicit per-stage value always wins.  See
-    pattern 9 below.
+    pattern 10 below.
 13. **MCP runtime → Principal-only tools**: when a
     Principal-only tool is invoked via the MCP runtime
     (the runtime builds a ``ctx`` without an
@@ -353,8 +353,13 @@ this list:
     with explicit guidance, **not** ``INTERNAL``.  The
     model should know to escalate to the user, not see
     a server fault.
+14. **No fail-open guard on an optional field**: if a guard
+    compares two values to decide "this evidence is still
+    valid", it must reject when either side is missing, and
+    the value it compares must be computed by the runtime —
+    never a label the caller chose.  See pattern 11 below.
 
-## 8. Trusted pre-authorization at the Goal layer (model self-sign fix)
+## 9. Trusted pre-authorization at the Goal layer (model self-sign fix)
 
 **Symptom (5th-round review 2026-09-08)**: ``auto_approve_drafted_contract``
 trusted the per-contract ``draft.auto_approve.enabled`` field — a
@@ -408,7 +413,7 @@ field)**:
   — sets ``Goal.plan.pre_authorized`` to match the
   claimed action scope.
 
-## 9. Goal-level execution config (workspace + executor_grant)
+## 10. Goal-level execution config (workspace + executor_grant)
 
 **Symptom (5th-round review 2026-09-08, follow-up)**: a
 spec-only stage synth path dropped the user's
@@ -453,5 +458,57 @@ helper)**:
   spec-only synth inherits executor grant,
   inline-stage-draft inherits when missing, explicit
   per-stage wins, no-executor-grant regression pin.
+
+## 11. The optional field with a fail-open comparison
+
+**Symptom (8th-round review 2026-09-10)**: ``user_confirm``
+refused to complete a contract on stale verifier evidence
+only when *both* sides of a comparison were present and
+differed.  The compared field — ``acceptance.spec_hash`` —
+is optional and supplied by the caller, so the ordinary case
+(nobody filled it in) fell through the guard and the contract
+landed in COMPLETE/passed against a requirement nobody had
+checked.  Worse: an honest caller who *had* used hashes was
+less protected after editing, because the patch turned the
+current value into ``None`` — which the same rule read as
+"equal".
+
+**Why the unit tests missed it**: every existing test seeded
+the two-sided case (``hash-done`` vs ``hash-new``).  A guard
+that fires on exactly one of four input states looks healthy
+from that direction; only a caller who leaves the optional
+field out discovers it.
+
+**Fix (mandatory for any "is this evidence still valid?"
+comparison)**:
+- Compare an identity the **runtime computes** from the
+  content (``Acceptance.content_fingerprint``), not a label
+  the caller supplied.  A caller-chosen hash proves nothing
+  and cannot be invalidated by an edit the caller did not
+  announce.
+- Make the comparison **fail closed**: missing identity is
+  "does not match", never "matches".  Test all four states
+  (absent/absent, present/absent, absent/present,
+  present/present) — the two-sided pair is only one of them.
+- Stamp the identity at **every** producer of the evidence,
+  including the recovery paths: the runner that collects a
+  finished attempt, the reconciler that settles one after a
+  daemon restart, and the write-back handler.  One producer
+  that forgets reintroduces the hole for that flow only,
+  which is how this stayed hidden.
+- Tighten only: keep the older veto alongside the new one, so
+  no previously-rejected sequence starts passing.
+- Refusals must name their reason ("edited" vs "no
+  fingerprint"); the operator's next step differs.
+
+**Pinned in**:
+- ``tests/unit/test_acceptance_content_binding.py`` — the
+  four spec_hash states, unbound legacy evidence, the
+  identical-content relabel veto, the happy path that must
+  still confirm, and a scan requiring every verifier-success
+  producer to stamp the binding.
+- ``tests/unit/test_plan_approval_migration.py`` — the
+  7th-round two-sided case, kept green to prove the
+  tightening did not loosen anything.
 
 Skip a check, the 5th-round-style leak is one PR away.

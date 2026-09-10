@@ -165,6 +165,33 @@
   ],
   "implementation_claims": [
     {
+      "id": "verifier-evidence-bound-to-acceptance-content",
+      "statement": "完成结论与验收内容绑定：user_confirm 只采信带当前 Acceptance.content_fingerprint 的 verifier 证据；指纹缺失、不一致或调用方改动 spec_hash 标记者一律 STATE_FORBIDDEN 并要求重新核验",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/lhgp/contracts/acceptance.py",
+        "src/longtask/rpc/handlers/contract.py",
+        "src/longtask/cli/runner.py",
+        "src/longtask/promoter/reconcile.py",
+        "src/longtask/rpc/executor_api.py",
+        "tests/unit/test_acceptance_content_binding.py"
+      ],
+      "evidence": [
+        {
+          "kind": "focused_test",
+          "path": "tests/unit/test_acceptance_content_binding.py",
+          "recorded_at": "2026-09-10",
+          "summary": "第 8 轮外部审查复现的四种 spec_hash 组合（双缺/编辑丢标/事后加标/双标）在验收被改后均拒绝完成；无内容标识的旧证据拒绝；未改动验收的正常路径仍可完成；三个证据生产端（runner 回收、reconcile 崩溃恢复、write-back）均被扫描要求盖章。"
+        },
+        {
+          "kind": "focused_test",
+          "path": "tests/unit/test_plan_approval_migration.py",
+          "recorded_at": "2026-09-10",
+          "summary": "第 7 轮的两侧不同哈希拒绝路径仍绿，证明本次收紧未放宽任何已有判定。"
+        }
+      ]
+    },
+    {
       "id": "skeleton-gates-green",
       "statement": "骨架代码通过全部七道质量门（format/lint/arch/deps/claims/typecheck/test+coverage），门自身 fail-closed",
       "lifecycle": "verified",

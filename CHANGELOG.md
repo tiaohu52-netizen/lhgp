@@ -4,6 +4,56 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version numbers
 follow [SemVer](https://semver.org/spec/v2.0.0.html); dates in ISO 8601.
 
+## [0.1.0a12] - 2026-09-10
+
+验收内容绑定：第 8 轮外部审查用一个真实 MCP 会话复现出「改完验收条件后，
+合同仍能凭旧证据变成 COMPLETE / passed」。根因是一处 fail-open 比较：
+守卫只在两边哈希**都非空且不同**时拒绝，而 `spec_hash` 是可选且由调用方自报的。
+
+### Fixed
+
+- **核验证据改由 runtime 计算的内容指纹绑定**：`Acceptance.spec_hash` 原先兼任绑定依据，
+  但它默认为 `None`、MCP 也只在调用方主动传时才转发，所以四种输入状态里只有
+  「两边都填且不同」这一种会拒绝。更糟的是：本来老实用哈希的调用方在改验收时
+  忘了重填，当前值变成 `None`，同一条规则反而把它读成「相等」而放行。
+  新增 `src/lhgp/contracts/acceptance.py::Acceptance.content_fingerprint`——由 runtime 对
+  `standard` + `checks`（typed、保序）+ `verifier` + `spec` 取 sha256，调用方无法伪造或漏填。
+  `src/longtask/rpc/handlers/contract.py::_latest_verifier_evidence` 改为 **fail-closed**：
+  缺内容标识一律视为不匹配。旧的 `spec_hash` 否决保留，本改动只收紧不放宽。
+- **三个证据生产端全部盖章**：`cli/runner.py`（正常回收）、`promoter/reconcile.py`
+  （daemon 重启后的崩溃恢复——原先这条路径写出的 verifier 事件**完全没有**内容标识，
+  却在旧规则下无条件算匹配）、`rpc/executor_api.py`（write-back，payload 里嵌 `role`
+  因而可被匹配器看到）。三处统一走 `evidence_binding()`，并由
+  `test_every_verifier_success_producer_stamps_the_binding` 扫描兜住未来的第四个生产者。
+- **拒绝文案说明下一步**：`STATE_FORBIDDEN` 现在区分 `edited`（验收被改）/
+  `spec_hash`（调用方改标）/ `unbound`（旧证据无指纹，永不可信）。
+  原来三种都显示「acceptance was edited」，运维会去找一次根本没发生过的编辑。
+- **`_latest_verifier_evidence` 被连调两次**：`handle_contract_user_confirm` 里同一行
+  复制粘贴了两遍，结果一致故无行为影响，但每次确认都多扫一遍事件流。
+- **`test_canonical_modules_preserve_module_execution_entrypoints` 环境敏感**：子进程
+  `--help` 输出含中文，而父进程按主机 locale（GBK）严格解码；环境里只要存在
+  `PYTHONIOENCODING` 它就以 `UnicodeDecodeError` 变红——测的是外壳不是入口点。
+  按本文件既有先例（cp1252 那条）把两侧编码钉成 UTF-8。
+
+### Added
+
+- **`tests/unit/test_acceptance_content_binding.py`**：18 条回归，覆盖审查者复现矩阵的
+  四种 `spec_hash` 状态、无标识旧证据、仅改标不误伤、以及**必须仍然能完成**的阳性对照
+  （fail-closed 改动同样有能力锁死正常路径）；另含指纹跨存储往返稳定、typed 与 mapping
+  写法同值、每个实质字段变动都改变指纹。
+- **claims 记账**：新增 `verifier-evidence-bound-to-acceptance-content`（44 条声明，43 verified）。
+- **方法论沉淀**：`docs/wiki/playbook/regression-from-external-review.md` 新增 pattern 11
+  「可选字段 + fail-open 比较」，并把它加进 New-PR checklist 第 14 项。
+
+### Changed
+
+- **口径修正**：`Acceptance.spec_hash` 的注释原本声称「runtime 会在合同准备时捕获 spec
+  内容哈希」，而 runtime 从不重算它；MCP 工具描述与 `schemas/contract.schema.json` 同步
+  改为「调用方自报标签，不作为证据绑定」。
+- **修正本文档的重复编号**：playbook 里有两个 `## 8`，导致 `tests/conftest.py` 把
+  real_entry 规则引向 `pattern 7`（实为 pattern 8）。尾部章节重编为 9 / 10，
+  两处内部引用同步修正。
+
 ## [0.1.0a11] - 2026-09-10
 
 门禁可信度：本轮不增加新能力，而是把四类「门绿着但并没有在看东西」的失效

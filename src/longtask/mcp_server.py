@@ -1436,8 +1436,10 @@ TOOLS: dict[
                     "spec_hash": {
                         "type": "string",
                         "description": (
-                            "6th-round P2: spec 的内容哈希，用于 plan gate "
-                            "和 verifier 证据的内容绑定。"
+                            "6th-round P2: 调用方自报的 spec 内容标签（可选）。"
+                            "供 plan gate 比对与审计；**不作为核验证据的内容绑定**"
+                            "——绑定由 runtime 自行计算的 acceptance 指纹负责（第 8 轮），"
+                            "因此省略它不会削弱任何保护，填错也不会绕过它。"
                         ),
                     },
                 },

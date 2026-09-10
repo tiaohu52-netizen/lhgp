@@ -21,6 +21,7 @@ import sqlite3
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
 
+from longtask.contracts.acceptance import evidence_binding
 from longtask.contracts.authority import binding_for_executor, models_allow
 from longtask.contracts.schema import ContractState
 from longtask.persistence.attempts import get_attempt
@@ -379,6 +380,18 @@ def handle_attempt_write_back(
                             "reported_by": "model",
                             "role": attempt_role,
                             "evidence": evidence,
+                            # 8th-round: the runtime, not the model, writes the
+                            # content identity of what was checked, so a
+                            # verifier cannot forge a fingerprint that matches
+                            # a later acceptance edit.  This event carries
+                            # ``role`` inside the payload, so the evidence
+                            # matcher can reach it; it must therefore be bound
+                            # like every other verifier success event.
+                            **(
+                                evidence_binding(contract.draft.acceptance)
+                                if attempt_role == "verifier" and contract is not None
+                                else {}
+                            ),
                             **({"model_id": actual_model} if actual_model else {}),
                         },
                         attempt_id=attempt_id,

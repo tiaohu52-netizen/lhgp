@@ -317,13 +317,24 @@ def test_supporting_namespaces_reexport_single_implementation() -> None:
 
 
 def test_canonical_modules_preserve_module_execution_entrypoints() -> None:
-    """Canonical module paths must behave like their installed console scripts."""
+    """Canonical module paths must behave like their installed console scripts.
 
+    The child's encoding is pinned on both sides: ``--help`` carries CJK, and
+    with ``text=True`` alone the parent decodes it with the host locale, so an
+    ambient ``PYTHONIOENCODING`` (set by whoever runs the suite) turned this
+    into a ``UnicodeDecodeError`` that had nothing to do with the entry point
+    under test.
+    """
+
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
     cli = subprocess.run(  # noqa: S603
         [sys.executable, "-m", "lhgp.cli.main", "--version"],
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=env,
     )
     assert cli.stdout.strip().startswith("lhgp ")
 
@@ -332,6 +343,9 @@ def test_canonical_modules_preserve_module_execution_entrypoints() -> None:
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=env,
     )
     assert "LHGP" in mcp.stdout
 

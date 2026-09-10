@@ -7,7 +7,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "longtask-protocol"
-version = "0.1.0a11"
+version = "0.1.0a12"
 description = "远期目标协议参考实现：跨会话、跨 Agent 的本地合同、调度与验收运行时"
 readme = "README.md"
 requires-python = ">=3.11"

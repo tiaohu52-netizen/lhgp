@@ -129,7 +129,7 @@
         },
         "spec_hash": {
           "type": ["string", "null"],
-          "description": "spec 内容哈希，绑合同修订"
+          "description": "调用方自报的 spec 内容标签（可选，供 plan gate 与审计）；核验证据的内容绑定由 runtime 计算的 acceptance 指纹负责"
         }
       },
       "additionalProperties": false

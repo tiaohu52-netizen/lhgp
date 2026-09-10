@@ -2,7 +2,7 @@
 
 Enforces the "real entry" rule (see
 ``docs/wiki/playbook/regression-from-external-review.md``,
-pattern 7): a test that imports ``RequestEnvelope`` or
+pattern 8): a test that imports ``RequestEnvelope`` or
 ``route`` from the RPC layer is almost certainly testing
 through the production entry point, not a mock.  Such tests
 must carry the ``real_entry`` marker so the CI log makes the
@@ -135,7 +135,7 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
                 f"\n[real_entry check] {path.name} imports {hits} "
                 f"but is not marked @pytest.mark.real_entry.  "
                 f"See docs/wiki/playbook/regression-from-external-review.md "
-                f"pattern 7.  Either add the marker (if the test "
+                f"pattern 8.  Either add the marker (if the test "
                 f"exercises the real entry point) or move the test "
                 f"to tests/integration/."
             )

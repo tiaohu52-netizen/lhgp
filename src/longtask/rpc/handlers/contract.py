@@ -779,7 +779,6 @@ def handle_contract_user_confirm(
     # type".  Keeping the raise outside the try block
     # sidesteps the issue.
     verifier_evidence = _latest_verifier_evidence(conn, contract_id, expected_revision)
-    verifier_evidence = _latest_verifier_evidence(conn, contract_id, expected_revision)
     # 5th-round P1 regression fix: when the user_confirm
     # path closes the contract, the
     # CONTRACT_COMPLETED event must carry meaningful
@@ -806,6 +805,7 @@ def handle_contract_user_confirm(
     verifier_matched = bool(verifier_evidence.get("matched"))
     verifier_stale = bool(verifier_evidence.get("stale"))
     verifier_no_event = bool(verifier_evidence.get("no_event"))
+    verifier_reason = str(verifier_evidence.get("reason") or "")
     verifier_attempt_id = verifier_evidence.get("attempt_id")
     verifier_payload = verifier_evidence.get("payload") or {}
     if not verifier_matched and verifier_stale and pre_acceptance == AcceptanceStatus.CANDIDATE:
@@ -826,13 +826,13 @@ def handle_contract_user_confirm(
         # an extra super() chain in traceback assembly
         # that fails with "obj is not an instance or
         # subtype of type").
+        explanation = _REFUSAL_EXPLANATIONS.get(verifier_reason, verifier_reason)
         refusal = RpcError(
             code=ErrorCode.STATE_FORBIDDEN,
             message=(
                 f"contract {contract_id} has no valid verifier "
-                "evidence (acceptance was edited after the last "
-                "verifier pass); re-run verification before "
-                "user_confirm"
+                f"evidence for the current acceptance ({explanation}); "
+                "re-run verification before user_confirm"
             ),
         )
         raise refusal
@@ -945,6 +945,18 @@ def handle_contract_user_confirm(
     }
 
 
+#: Why a confirm was refused, phrased as the operator's next step.
+#: "unbound" and "edited" read the same in a log but differ in the field:
+#: one says the evidence predates the binding and can never be trusted, the
+#: other says a perfectly good check went out of date.
+_REFUSAL_EXPLANATIONS: dict[str, str] = {
+    "edited": "acceptance was edited after the last verifier pass",
+    "spec_hash": "acceptance.spec_hash changed after the last verifier pass",
+    "unbound": "the last verifier pass carries no acceptance content "
+    "fingerprint, so it cannot be proved to cover the current requirement",
+}
+
+
 def _latest_verifier_evidence(
     conn: sqlite3.Connection, contract_id: str, revision: int
 ) -> dict[str, Any]:
@@ -954,17 +966,25 @@ def _latest_verifier_evidence(
     dict with four keys:
 
     - ``attempt_id`` / ``payload``: the verifier event that
-      ran against the contract's current ``acceptance.spec_hash``
+      ran against the contract's current acceptance content
     - ``matched`` (bool): True when a content-bound match
       was found.
     - ``stale`` (bool): True when at least one verifier
-      event exists but its ``spec_hash`` differs from the
-      current ``acceptance.spec_hash`` — the evidence is
-      from a prior acceptance version.  ``stale`` lets
-      the caller refuse the confirm on the audit-trail
-      grounds that the verifier ran against a different
-      spec; without this signal the synthesised-evidence
-      branch would happily complete the contract.
+      event exists but none of them is bound to the current
+      acceptance — the evidence is from a prior acceptance
+      version, or carries no content identity at all.
+      ``stale`` lets the caller refuse the confirm on the
+      audit-trail grounds that the verifier ran against a
+      different spec; without this signal the
+      synthesised-evidence branch would happily complete
+      the contract.
+    - ``reason`` (str | None): why nothing matched, in the
+      caller's terms — ``"edited"`` (fingerprint differs),
+      ``"unbound"`` (evidence predates the fingerprint
+      binding and proves nothing), or ``"spec_hash"`` (the
+      caller re-labelled its spec_hash).  Distinct refusals
+      need distinct next steps, so a wall of text that says
+      only "no evidence" is not actionable.
     - ``no_event`` (bool): True when no verifier event
       exists at all (hand-rolled fixtures that stage
       the contract directly into CANDIDATE without a
@@ -977,14 +997,41 @@ def _latest_verifier_evidence(
     longer enough — the caller must distinguish "no
     event at all" from "event exists but content is
     stale", because the appropriate next step differs.
+
+    8th-round P1 fix: the binding moved from the optional,
+    caller-supplied ``spec_hash`` to the runtime-computed
+    ``content_fingerprint`` and became fail-closed.  The old
+    rule rejected only when *both* hashes were present and
+    differed, so omitting the optional field — or editing the
+    acceptance without re-supplying it, which turns the
+    current value into ``None`` — made any prior evidence look
+    like a match.  A missing identity is now treated as "does
+    not match", never as "matches".
     """
+    from longtask.contracts.acceptance import (
+        EVIDENCE_FINGERPRINT_KEY,
+        EVIDENCE_SPEC_HASH_KEY,
+    )
     from longtask.persistence.events_query import get_events
     from longtask.persistence.store import get_contract
 
     contract = get_contract(conn, contract_id)
-    current_spec_hash = contract.draft.acceptance.spec_hash if contract is not None else None
+    if contract is None:
+        return {
+            "attempt_id": None,
+            "payload": {},
+            "matched": False,
+            "stale": False,
+            "no_event": True,
+            "reason": None,
+        }
+    current_fingerprint = contract.draft.acceptance.content_fingerprint
+    current_spec_hash = contract.draft.acceptance.spec_hash
 
     no_event = True
+    saw_unbound = False
+    saw_edit = False
+    saw_spec_hash_conflict = False
     for event in get_events(conn, contract_id=contract_id):
         is_verifier = event.role == "verifier" or (
             event.role is None
@@ -999,16 +1046,27 @@ def _latest_verifier_evidence(
             payload = json.loads(event.payload_json or "{}")
         except (TypeError, ValueError):
             payload = {}
-        # Content binding: a verifier event whose spec_hash
-        # differs from the contract's current spec_hash is
-        # from a prior acceptance version — flag it stale
-        # and skip.
-        event_spec_hash = payload.get("spec_hash")
+        # Content binding, fail-closed: evidence must carry the runtime
+        # fingerprint of the acceptance that is current now.  Anything
+        # else -- a different fingerprint, or no fingerprint at all --
+        # proves nothing about what the verifier checked.
+        event_fingerprint = payload.get(EVIDENCE_FINGERPRINT_KEY)
+        if event_fingerprint != current_fingerprint:
+            if event_fingerprint is None:
+                saw_unbound = True
+            else:
+                saw_edit = True
+            continue
+        # 6th-round veto kept on purpose: a caller that re-labelled its
+        # spec_hash over identical content is still refused, so this
+        # change only tightens, never loosens.
+        event_spec_hash = payload.get(EVIDENCE_SPEC_HASH_KEY)
         if (
             current_spec_hash is not None
             and event_spec_hash is not None
             and event_spec_hash != current_spec_hash
         ):
+            saw_spec_hash_conflict = True
             continue
         return {
             "attempt_id": event.attempt_id,
@@ -1016,13 +1074,22 @@ def _latest_verifier_evidence(
             "matched": True,
             "stale": False,
             "no_event": False,
+            "reason": None,
         }
+    reason: str | None = None
+    if saw_edit:
+        reason = "edited"
+    elif saw_spec_hash_conflict:
+        reason = "spec_hash"
+    elif saw_unbound:
+        reason = "unbound"
     return {
         "attempt_id": None,
         "payload": {},
         "matched": False,
         "stale": not no_event,
         "no_event": no_event,
+        "reason": reason,
     }
 
 

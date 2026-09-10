@@ -36,6 +36,7 @@ from longtask.adapters.handles import (
     parse_legacy_session_ref,
 )
 from longtask.adapters.processes import process_alive
+from longtask.contracts.acceptance import evidence_binding
 from longtask.contracts.schema import AttemptState
 from longtask.persistence.attempts import (
     StoredAttempt,
@@ -421,6 +422,16 @@ def _collect(
             payload["exit_code_known"] = False
 
     succeeded = state == AttemptState.SUCCEEDED.value
+    if succeeded and attempt.role == "verifier":
+        # 8th-round P1 fix: this is the crash-recovery twin of the runner's
+        # stamping.  A verifier attempt settled here carries no content
+        # identity at all, and the old "both hashes missing means match"
+        # rule made it unconditional pass-through evidence -- so a contract
+        # whose verifier was recovered after a daemon restart could be
+        # confirmed against an acceptance that had been edited since.
+        contract = get_contract(conn, cid)
+        if contract is not None:
+            payload.update(evidence_binding(contract.draft.acceptance))
     append_event(
         conn,
         contract_id=cid,

@@ -213,7 +213,7 @@ wheels = [
 
 [[package]]
 name = "longtask-protocol"
-version = "0.1.0a11"
+version = "0.1.0a12"
 source = { editable = "." }
 
 [package.optional-dependencies]
