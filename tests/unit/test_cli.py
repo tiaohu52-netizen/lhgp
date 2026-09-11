@@ -44,6 +44,8 @@ from longtask.persistence.store import (
 
 pytestmark = pytest.mark.unit
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
 NOW = datetime(2026, 9, 1, 12, 0, 0, tzinfo=UTC)
 LATER = datetime(2026, 9, 5, 23, 59, 59, tzinfo=UTC)
 
@@ -535,3 +537,55 @@ def test_request_verification_cli_dry_run(
     output = capsys.readouterr().out
     assert "contract/request-verification" in output
     assert "检查现有交付物" in output
+
+
+@pytest.mark.real_entry
+class TestCliFacadeDirection:
+    """`lhgp/cli/` 是 `longtask/cli/` 的门面——方向必须与地图一致。
+
+    pyproject 的入口注释曾写「旧名保留一个次版本作为兼容 shim」，方向正好说反：
+    canonical 的 `lhgp`/`lhgpd`/`lhgp-mcp` 才是指向 longtask 实现的 shim。这个
+    方向被读错就会重演审计 B2 的失败模式：在 3 行门面里找真实现（或改错那一
+    侧）。此处把实测方向钉住，改反了会红。
+
+    带 `real_entry` 标记：本类确实会导入真实入口模块（`lhgp.cli.main` /
+    `longtask.cli.main`）做对象同一性核对，不是替身。
+    """
+
+    def test_canonical_cli_modules_are_thin_facades(self) -> None:
+        canonical = REPO_ROOT / "src" / "lhgp" / "cli"
+        implementation = REPO_ROOT / "src" / "longtask" / "cli"
+        assert canonical.is_dir() and implementation.is_dir()
+        for path in sorted(canonical.glob("*.py")):
+            if path.name == "__init__.py":
+                continue
+            source = path.read_text(encoding="utf-8")
+            lines = len([line for line in source.splitlines() if line.strip()])
+            assert lines <= 20, (
+                f"{path.name} 不再是薄门面（{lines} 行）——CLI 真身方向可能变了，"
+                "请同步 ARCHITECTURE「真身位置地图」"
+            )
+            assert f"from longtask.cli.{path.stem} import" in source, (
+                f"{path.name} 不再转发 longtask.cli.{path.stem}"
+            )
+
+    def test_facade_re_exports_the_same_objects(self) -> None:
+        """门面必须完整转发真身的**公开**面，且是同一批对象（不是复制品）。
+
+        只比公开名：真身未定义 ``__all__``，门面走 ``import *``，下划线私有辅助
+        函数（``_dispatch_rpc`` 等 4 个）按 Python 语义本就不进 ``import *``。
+        实测确认这是既定边界而非缺口——仓库内无任何代码经 canonical 命名空间
+        访问私有名（``lhgp.cli.*._private`` 零引用），且真身的 40 个公开名门面
+        一个不少。把私有名也要求转发会造出一条永远红的假断言。
+        """
+        import importlib
+
+        for name in ("main", "runner", "tick"):
+            canonical = importlib.import_module(f"lhgp.cli.{name}")
+            implementation = importlib.import_module(f"longtask.cli.{name}")
+            expected = {n for n in dir(implementation) if not n.startswith("_")}
+            missing = {n for n in expected if not hasattr(canonical, n)}
+            assert missing == set(), f"lhgp.cli.{name} 漏了公开名 {sorted(missing)}"
+            for attr in ("main", "entrypoint"):
+                if hasattr(implementation, attr):
+                    assert getattr(canonical, attr) is getattr(implementation, attr)

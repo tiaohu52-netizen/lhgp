@@ -26,8 +26,12 @@ dev = [
 ]
 
 [project.scripts]
-# P6 双轨分发（SPEC §19.3）：新名 lhgp/lhgpd/lhgp-mcp 为主入口；
-# 旧名 longtask/longtask-mcp 保留一个次版本作为兼容 shim。
+# P6 双轨分发（SPEC §19.3）：对外的推荐名字是 lhgp/lhgpd/lhgp-mcp。
+# 注意方向：**canonical 名才是 shim**——lhgp.cli.* / lhgp.mcp_server 全部转发到
+# longtask 实现（真身在 longtask/cli、longtask/mcp_server.py，见 ARCHITECTURE
+# 「真身位置地图」）。旧名 longtask/longtask-mcp 直接指向真实现，保留到兼容窗口
+# 结束。别在 3 行的 lhgp/cli/main.py 里找真实现（方向由
+# tests/unit/test_cli.py::TestCliFacadeDirection 钉住）。
 lhgp = "lhgp.cli.main:entrypoint"
 lhgpd = "lhgp.cli.daemon_proc:lhgpd_entrypoint"
 lhgp-mcp = "lhgp.mcp_server:main"
