@@ -38,13 +38,26 @@ longtask-mcp = "longtask.mcp_server:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src/longtask", "src/lhgp"]
 # 附带 §17 skill 资源（不是 Python 包，但模型工具链会读 MANIFEST.json 索引）
-artifacts = ["skills/long-horizon-goals/SKILL.md", "skills/longtask-contract/MANIFEST.json"]
+# 清单必须覆盖 skills/ 下的**每一个**文件：.codex-plugin/plugin.json 声明的是
+# 整个 "skills" 目录，漏一个就等于对使用者撒谎（审计 C5：flowgen 曾被漏掉，
+# 从 wheel 安装的插件静默少一个 skill）。该清单由
+# tests/unit/test_p6_plugin_package.py 与 scripts/check_artifacts.py 从文件系统
+# 推导后核对，不靠人工维护。
+artifacts = [
+    "skills/flowgen/MANIFEST.json",
+    "skills/flowgen/SKILL.md",
+    "skills/long-horizon-goals/SKILL.md",
+    "skills/longtask-contract/MANIFEST.json",
+    "skills/longtask-contract/SKILL.md",
+]
 
 [tool.hatch.build.targets.wheel.force-include]
 # wheel 安装也要保留插件 companion 资源；否则仅从 wheel 安装时模型侧
 # 无法发现 skill/MCP 配置（源码包仍保留完整仓库布局）。
 ".codex-plugin/plugin.json" = ".codex-plugin/plugin.json"
 ".mcp.json" = ".mcp.json"
+"skills/flowgen/MANIFEST.json" = "skills/flowgen/MANIFEST.json"
+"skills/flowgen/SKILL.md" = "skills/flowgen/SKILL.md"
 "skills/long-horizon-goals/SKILL.md" = "skills/long-horizon-goals/SKILL.md"
 "skills/longtask-contract/MANIFEST.json" = "skills/longtask-contract/MANIFEST.json"
 "skills/longtask-contract/SKILL.md" = "skills/longtask-contract/SKILL.md"

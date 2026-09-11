@@ -8,6 +8,7 @@ JSON，并符合官方插件清单的 companion path 形状。
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -18,6 +19,16 @@ pytestmark = pytest.mark.unit
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
+# 与 scripts/check_artifacts.py 的 _STRICT_SEMVER 同口径：Codex 插件清单要求
+# 严格 SemVer，PEP 440 的 0.1.0a13 不合法。
+_STRICT_SEMVER = re.compile(
+    r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
+    r"(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
+    r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
+)
+# companion 自己的预发布号形状（longtask-contract 跟包版本走，flowgen 独立）。
+_PEP440_PRERELEASE = re.compile(r"^\d+\.\d+\.\d+a\d+$")
+
 
 class TestPluginManifest:
     def test_plugin_json_exists_and_is_valid_json(self) -> None:
@@ -27,11 +38,65 @@ class TestPluginManifest:
         assert data["name"] == "lhgp"
         # The Codex plugin manifest requires strict SemVer; the Python package
         # may remain on a prerelease while the plugin surface is in preview.
-        assert data["version"] == "0.1.0"
+        #
+        # 审计 C6：这里原先写 `data["version"] == "0.1.0"`——一条字面量断言。
+        # 它既挡不住该挡的（把 0.1.0 改成合法的 0.2.0 也会红，于是合法升版被
+        # 拦下），又没验注释声称的那件事。改为验**属性**，与
+        # scripts/check_artifacts.py 的 _STRICT_SEMVER 同口径（PEP 440 的
+        # `0.1.0a13` 不是合法 SemVer，必须被拒）。
+        version = data["version"]
+        assert isinstance(version, str)
+        assert _STRICT_SEMVER.fullmatch(version), (
+            f"plugin.json version {version!r} 不是严格 SemVer"
+            "（Codex 插件清单不接受 0.1.0a13 这类 PEP 440 预发布号）"
+        )
         assert data["skills"] == "skills"
         assert data["mcpServers"] == ".mcp.json"
         assert data["author"]["name"] == "LHGP maintainers"
         assert data["interface"]["displayName"] == "远期目标协议"
+
+    def test_every_advertised_skill_has_an_entry_file(self) -> None:
+        """plugin.json 声明整个 `skills` 目录，所以每个子目录都得能装载。
+
+        没有 SKILL.md 的子目录对宿主来说不是 skill——声明了整个目录却放一个
+        装不出来的子目录，等于对使用者撒谎。
+        """
+        data = json.loads((REPO_ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
+        skills_root = REPO_ROOT / data["skills"]
+        assert skills_root.is_dir()
+        dirs = sorted(p for p in skills_root.iterdir() if p.is_dir())
+        assert dirs, f"{skills_root} 下没有任何 skill 子目录"
+        for skill_dir in dirs:
+            assert (skill_dir / "SKILL.md").is_file(), (
+                f"{skill_dir.name} 没有 SKILL.md，装不成 skill"
+            )
+
+    def test_companion_manifests_are_consistent(self) -> None:
+        """有 MANIFEST.json 的 companion 必须自洽（flowgen 原先完全没被测试）。
+
+        不要求每个 skill 都有 MANIFEST：`long-horizon-goals` 只有 SKILL.md 是
+        现状（宿主按 SKILL.md 装载即够）。但对**存在**的清单，版本号形状、
+        协议版本与 entry 指向都要成立，否则模型工具链的索引会指向不存在的文件。
+        """
+        manifests = sorted((REPO_ROOT / "skills").glob("*/MANIFEST.json"))
+        assert manifests, "skills/ 下没有任何 MANIFEST.json"
+        seen: set[str] = set()
+        for manifest_path in manifests:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            name = manifest["name"]
+            assert name == manifest_path.parent.name, (
+                f"{manifest_path} 的 name={name!r} 与目录名不符"
+            )
+            assert name not in seen, f"两个 companion 用了同一个 name: {name}"
+            seen.add(name)
+            assert manifest["protocol_version"] == "lhgp/v1alpha1"
+            version = manifest["version"]
+            assert isinstance(version, str)
+            assert _PEP440_PRERELEASE.fullmatch(version), (
+                f"{name} 的 version {version!r} 不是 0.1.0aN 形状"
+            )
+            entry = manifest_path.parent / manifest["entry"]
+            assert entry.is_file(), f"{name} 的 entry {entry} 不存在"
 
     def test_plugin_referenced_skill_path_exists(self) -> None:
         data = json.loads((REPO_ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
@@ -111,11 +176,27 @@ class TestEntryPointAlignment:
         assert "longtask-mcp = " in pyproject
 
     def test_wheel_includes_plugin_companion_resources(self) -> None:
-        """wheel 不能退化成只含 runtime 的包，必须携带模型接入资源。"""
+        """wheel 不能退化成只含 runtime 的包，必须携带模型接入资源。
+
+        审计 C5：这里原先手写 3 条资源路径，于是 `skills/flowgen/` 的两个文件
+        被漏在 wheel 之外，而 plugin.json 声明的是整个 `skills` 目录——从 wheel
+        安装的插件静默少一个 skill。改为**从文件系统推导**必需清单：skills/ 下
+        每一个文件都必须出现在 force-include 里，新增 skill 不可能再被漏掉。
+        （制品层面的核对在 scripts/check_artifacts.py，它同样改为推导。）
+        """
         pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
-        for resource in (
-            '".codex-plugin/plugin.json" = ".codex-plugin/plugin.json"',
-            '".mcp.json" = ".mcp.json"',
-            '"skills/long-horizon-goals/SKILL.md" = "skills/long-horizon-goals/SKILL.md"',
-        ):
-            assert resource in pyproject
+        for resource in _required_wheel_resources():
+            assert f'"{resource}" = "{resource}"' in pyproject, (
+                f"{resource} 未进 wheel force-include；从 wheel 安装的插件会缺这个文件"
+            )
+
+
+def _required_wheel_resources() -> list[str]:
+    """必须在 wheel 里出现的 companion 资源（推导，不手写）。"""
+    resources = [".codex-plugin/plugin.json", ".mcp.json"]
+    resources += sorted(
+        path.relative_to(REPO_ROOT).as_posix()
+        for path in (REPO_ROOT / "skills").rglob("*")
+        if path.is_file()
+    )
+    return resources
