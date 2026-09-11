@@ -4,6 +4,32 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version numbers
 follow [SemVer](https://semver.org/spec/v2.0.0.html); dates in ISO 8601.
 
+## [Unreleased]
+
+### Fixed
+
+- **`schemas/*.json` 与运行时的漂移（审计 B10）**：三个 schema 文件在 `src/` 里
+  没有任何读者，也没有门在守它们与运行时的关系，于是各自长成了另一套说法。实测：
+  - `event.schema.json` **会拒绝 100% 的真实事件**——它声明
+    `additionalProperties: false` 却只列 10 个属性（`events` 表有 14 列），把可空的
+    `contract_id`/`request_id` 写进 `required`（`append_event` 的 `request_id`
+    默认就是 `None`：守护进程自发因果链上的事件本来没有它），`actor` 枚举还漏掉运行时
+    真正在写的 `verifier`/`promoter`/`context`/`auto-lesson`。现按 DDL 与真实写入点
+    逐项重写，每处 `description` 注明依据。
+  - `executor-manifest.schema.json` 文档化了运行时没有的 `user_policy`（出自
+    DESIGN §12.4 的示例；`ExecutorManifest` 无此字段、`registry.to_manifest()`
+    从不产出、整个 `src` 搜不到它）。**保留字段但标注为预留未实现**——与 E2 饥饿保护、
+    7 个 RPC 方法同一种处置：设计承诺不等于已交付，也不静默删除。
+  - `contract.schema.json` 是唯一一致的一个（真实 `contract/get` 视图通过校验），未改动。
+- **新增漂移门 `tests/unit/test_schemas_match_runtime.py`**（7 条）：断言**关系**而不是
+  字面清单——`PRAGMA` 列集 ⊆ schema 属性且反向无多余、`required` 等于表的
+  NOT NULL ∪ 主键集、4 种真实事件形状必须通过 schema、**AST 扫描 `src` 里每一个字面量
+  `append_event(actor=/role=)` 都必须被枚举接受**、manifest 属性集与 dataclass 字段
+  双向对齐、真实 manifest 实例必须通过 schema。反向验证：删掉 `event` 的 `role` 声明
+  → 3 条红；给 manifest 加幻影字段 → 目标条红；恢复后文件逐字节一致。
+  这条门当场抓出了人工阅读漏掉的事实：`actor="auto-lesson"`
+  （`src/lhgp/feedback/lessons.py:137`）。
+
 ## [0.1.0a14] - 2026-09-11
 
 本版把 a13 之后积累的十一轮增量（即下方 `[Unreleased·二]`…`[Unreleased·十一]` 各节）
@@ -94,11 +120,11 @@ follow [SemVer](https://semver.org/spec/v2.0.0.html); dates in ISO 8601.
   「不可用」、插件版本「不一致」、两个 `RpcError`「不同类」）逐条记录为**不成立**，
   而不是照单修改代码。
 
-## [Unreleased]
+## [Unreleased·一]
 
-> **当前没有未发布变更。** 本节与下方 `[Unreleased·二]`…`[Unreleased·十一]` 各节的
-> 内容已随 **0.1.0a14**（2026-09-11）交付；逐轮记录按原样保留以便追溯，不再作为
-> 未发布项。`[Unreleased·N]` 是分轮工作日志，`[0.1.0aN]` 才是发布记录。
+> 本节与下方 `[Unreleased·二]`…`[Unreleased·十一]` 是**分轮工作日志**，内容已随
+> **0.1.0a14**（2026-09-11）交付；按原样保留以便追溯。文件顶部那个 `[Unreleased]`
+> 才是 a14 之后的活跃节。`[Unreleased·N]` 是日志，`[0.1.0aN]` 是发布记录。
 
 吸收外部同行的几处工程做法，落点都在**已有保证**上——不新增协议语义，
 线协议、schema、错误码不变（DESIGN v0.8，把 §14.1 两条威胁从「宣称」升级为

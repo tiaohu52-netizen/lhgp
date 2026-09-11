@@ -1466,6 +1466,31 @@
           "summary": "模块 docstring 显式声明接线状态：check_write_fence 是生产路径；Partition/check_partition_compatible 设计先行、未接线，保留待 ADR-005，且不得被描述为已有能力。events.py 两个预留事件类型、urgency.py 枚举保留理由、tick.py case 兼容历史数据重放均同步注释。"
         }
       ]
+    },
+    {
+      "id": "schemas-match-runtime-shapes",
+      "statement": "仓库 schemas/*.json 与运行时形状一致（审计 B10，2026-09-11 实测修正）：event.schema.json 声明 events 表的全部 14 列、required 等于表的 NOT NULL ∪ 主键集、actor/role 枚举覆盖 src 全部字面量写入点；executor-manifest.schema.json 的属性集等于 ExecutorManifest 字段 ∪ 显式设计预留集（user_policy 出自 DESIGN §12.4 的示例，运行时无此概念——ExecutorManifest 没有该字段、registry.to_manifest() 从不产出，属预留而非已实现）；contract.schema.json 接受真实 draft 序列化。口径说明：三个 schema 在 src 里没有运行时读者，本声明是「文档与代码一致」而不是「运行时按 schema 校验」。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "schemas/contract.schema.json",
+        "schemas/event.schema.json",
+        "schemas/executor-manifest.schema.json",
+        "tests/unit/test_schemas_match_runtime.py"
+      ],
+      "evidence": [
+        {
+          "kind": "focused_test",
+          "path": "tests/unit/test_schemas_match_runtime.py",
+          "recorded_at": "2026-09-11",
+          "summary": "7 条断言关系而非字面清单：PRAGMA 列集 ⊆ schema 属性且反向无多余、required == NOT NULL ∪ 主键、4 种真实事件形状（有/无 request_id、role 空/verifier、无合同）通过 schema、AST 扫 src 的 append_event(actor=/role=) 字面量全部被枚举接受、manifest 属性集与 dataclass 字段双向对齐、真实 manifest 实例通过 schema。反向验证：删掉 event 的 role 声明 → 3 条红；给 manifest 加幻影字段 → 目标条红；恢复后逐字节一致。AST 扫描当场抓出人工阅读漏掉的 actor='auto-lesson'（src/lhgp/feedback/lessons.py:137）。"
+        },
+        {
+          "kind": "source_static",
+          "path": "schemas/event.schema.json",
+          "recorded_at": "2026-09-11",
+          "summary": "重写前该文件会拒绝 100% 的真实事件：additionalProperties:false 却只列 10 个属性（events 表 14 列）、把可空的 contract_id/request_id 写进 required、actor 枚举只有 user|daemon|adapter|model。现按 DDL 与真实写入点逐项重写，每处 description 注明依据（含 role='model' 正是 B9b 修掉的缺陷）。"
+        }
+      ]
     }
   ]
 }

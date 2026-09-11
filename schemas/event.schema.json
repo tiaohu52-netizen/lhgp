@@ -2,35 +2,83 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://longtask.dev/schemas/event.schema.json",
   "title": "LongTask Event",
-  "description": "协议事件（DESIGN.md §13.3 事件表最小公共字段；专有 payload 在 schemas/events/ 逐一定义）",
+  "description": "协议事件的 events 表行形状（DESIGN.md §13.3；专有 payload 在 payload_json 里，逐类型定义见 schemas/events/）。审计 B10（2026-09-11）按 DDL 与真实写入点逐项实测后重写：原文件声明 additionalProperties:false 却只列 10 个属性，且把可空的 contract_id/request_id 列为必填、actor 枚举只收 user|daemon|adapter|model，因此用它校验任何真实事件都会被拒——schema 与运行时是两份互不相干的说法。",
   "type": "object",
   "required": [
     "event_id",
-    "contract_id",
     "event_type",
     "payload_json",
-    "request_id",
+    "payload_schema_version",
     "created_at",
     "actor",
     "schema_version"
   ],
   "properties": {
     "event_id": { "type": "integer", "minimum": 1 },
-    "contract_id": { "type": "string", "minLength": 1 },
+    "contract_id": {
+      "type": ["string", "null"],
+      "minLength": 1,
+      "description": "列可空（DDL 无 NOT NULL），append_event 的 contract_id 也是 str | None"
+    },
+    "goal_id": {
+      "type": ["string", "null"],
+      "minLength": 1,
+      "description": "稳定 Goal 身份，可与 contract_id 不同；append_event 在缺席时回落到 contract_id"
+    },
     "attempt_id": { "type": ["string", "null"] },
     "lease_generation": { "type": ["integer", "null"], "minimum": 1 },
+    "contract_revision": {
+      "type": ["integer", "null"],
+      "minimum": 1,
+      "description": "P1：事件所属合同修订号"
+    },
+    "role": {
+      "type": ["string", "null"],
+      "enum": [
+        "executor",
+        "verifier",
+        "daemon",
+        "user",
+        "promoter",
+        "scheduler",
+        "system",
+        null
+      ],
+      "description": "值域取自 DDL 注释（executor/verifier/daemon/user/promoter/scheduler/system）。实测曾出现 'model'——那正是审计 B9b 修掉的缺陷：核验器成功事件因为 role 不对而在 tick 裁决里一条都看不到。"
+    },
     "event_type": {
       "type": "string",
       "pattern": "^[a-z]+/[a-z-]+$",
-      "description": "词汇表见 longtask.persistence.events.EventType；只增不改"
+      "description": "词汇表见 lhgp.persistence.events.EventType；只增不改"
     },
     "payload_json": {
       "type": "string",
       "description": "JSON 编码的专有 payload；公共字段 actor/reason/evidence"
     },
-    "request_id": { "type": "string", "minLength": 1 },
+    "payload_schema_version": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "NOT NULL (DDL DEFAULT 2)；append_event 缺席时回落到 schema_version"
+    },
+    "request_id": {
+      "type": ["string", "null"],
+      "minLength": 1,
+      "description": "客户端请求幂等键。列可空且 append_event 的默认值是 None：守护进程自发因果链上的事件本来就没有它——把它列成必填非空是实测推翻的写法，不是宽容。"
+    },
     "created_at": { "type": "string", "format": "date-time" },
-    "actor": { "enum": ["user", "daemon", "adapter", "model"] },
+    "actor": {
+      "enum": [
+        "user",
+        "daemon",
+        "adapter",
+        "model",
+        "verifier",
+        "promoter",
+        "context",
+        "auto-lesson"
+      ],
+      "description": "本列的值域 = DESIGN §13.3 记录的 user|daemon|adapter|model ∪ src 里实测写入的 verifier|promoter|context|auto-lesson（audit B10；auto-lesson 由 tests/unit/test_schemas_match_runtime.py 的 AST 扫描从 lhgp/feedback/lessons.py 抓出，人工阅读漏了它）。注意 DESIGN 那四个值说的是 payload 里的 actor 字段，不是本列，两者不要混。新增写入点必须同步本枚举（同一测试会静态扫 src 的 append_event(actor=/role=) 字面量来守这条）。"
+    },
     "schema_version": { "type": "integer", "minimum": 1 }
   },
   "additionalProperties": false

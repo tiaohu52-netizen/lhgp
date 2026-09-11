@@ -67,6 +67,7 @@
     },
     "user_policy": {
       "type": "object",
+      "description": "预留未实现（审计 B10，2026-09-11 实测）：DESIGN.md §12.4 的 manifest 示例里有这一段，但运行时没有这个概念——ExecutorManifest 无此字段、registry.to_manifest() 也从不产出它，整个 src 里搜不到 user_policy。保留在此是因为它是设计文档承诺的形状，不是因为它能用；适配器作者写了它不会报错，也不会生效。",
       "properties": {
         "enabled": { "type": "boolean", "default": false },
         "allow_interference": { "type": "boolean", "default": false },
