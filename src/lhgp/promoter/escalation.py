@@ -27,6 +27,7 @@ def decide(
     budget_escalations_left: int,
     estimate_stalled: bool,
     partitions_allowed: bool = True,
+    budget_cost_left: float | None = None,
 ) -> EscalationDecision:
     if tier is None:
         return EscalationDecision(
@@ -36,6 +37,16 @@ def decide(
         capped = min(tier, UrgencyTier.REMIND)
         return _free(
             capped, f"lease alive: cap at remind (§7), u-tier {int(tier)} -> {int(capped)}"
+        )
+    if budget_cost_left is not None and budget_cost_left <= 0:
+        # 成本预算（§6.3）：唯一按钱画的线。放在 STEER 换挡之前——
+        # 「无租约的 STEER 会转 RESPAWN 拉新会话」，那同样要花钱；
+        # 成本耗尽后任何形式的派工都必须停，只能交人。
+        return EscalationDecision(
+            UrgencyTier.HAND_TO_USER,
+            f"cost budget exhausted ({budget_cost_left:.2f} left): hand to user (§6.3)",
+            False,
+            False,
         )
     if tier is UrgencyTier.STEER:
         # DESIGN §6.2 档 3：u >= 1.0，或「无活跃租约且 u >= 0.5」→ 重派。

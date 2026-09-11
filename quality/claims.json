@@ -1279,6 +1279,42 @@
           "summary": "真 SQLite + 真注册表 + run_daemon_tick 连跑 5 轮：attempt 计数零增量、attempt/started 与 escalation/dispatch-deferred 事件零新增、三个合同状态逐字不变（active/active/blocked）。"
         }
       ]
+    },
+    {
+      "id": "budget-max-cost-enforced-at-dispatch",
+      "statement": "成本预算线（SPEC §12.3.2，DESIGN v0.11）：合同 MAY 在 budget 声明 max_cost（正数，缺席=不设线）。强制点在 decide()——全部 attempt 的 cost_estimate 自报合计触线时返回 HAND_TO_USER，且先于「无租约 STEER 转 RESPAWN」换挡（转向重派同样花钱）；租约活着时维持 §7 封顶。解析对齐 JSON schema 严格口径（数字字符串/bool/null 拒收）；未声明合同行为与既往版本一致。budget 序列化/读回的三处手写字段清单（save、revisions 快照、_row_to_contract_view）必须包含该字段，由存取回环回归测试钉死。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/lhgp/contracts/budget.py",
+        "src/lhgp/contracts/contract_draft.py",
+        "src/lhgp/contracts/validation.py",
+        "src/lhgp/promoter/escalation.py",
+        "src/longtask/cli/tick.py",
+        "src/longtask/persistence/store.py",
+        "src/lhgp/persistence/usage.py",
+        "tests/unit/test_budget_max_cost.py",
+        "tests/integration/test_cost_budget_enforcement.py"
+      ],
+      "evidence": [
+        {
+          "kind": "integration_real_store",
+          "path": "tests/integration/test_cost_budget_enforcement.py",
+          "recorded_at": "2026-09-11",
+          "summary": "tick 端到端 2 条：成本触线合同（自报 2.0 ≥ max_cost 1.0、紧迫度 u=4 达 RESPAWN 区）→ blocked(need-user) 且 blocked 事件写明 cost budget exhausted、零新派工；同轮对照组（未声明 max_cost）正常派工（门不误伤）；未触线合同正常派工（线不提前收紧）。"
+        },
+        {
+          "kind": "focused_test",
+          "path": "tests/unit/test_budget_max_cost.py",
+          "recorded_at": "2026-09-11",
+          "summary": "18 条：缺席 None/显式 null 拒收/正数解析/负数零 bool 字符串串拒收、validate()、raw 校验、decide 五分支（耗尽先于 STEER 换挡、余量为正正常 RESPAWN、None 向后兼容、PARALLEL 档同样被拦、活租约仍封顶）、JSON schema 正例负例。"
+        },
+        {
+          "kind": "manual_review",
+          "path": "tests/unit/test_attempt_usage.py",
+          "recorded_at": "2026-09-11",
+          "summary": "反向验证两项变异命中预期测试名：decide 成本分支改 if False → 单测红；tick 成本合计改 if False → 端到端红。另存取回环 2 条（max_cost=9.75 写入即读回、缺席读回 None）——端到端首跑曾因 store 三处手写字段清单缺该字段而静默失效，此为真 bug 非测试错误。"
+        }
+      ]
     }
   ]
 }

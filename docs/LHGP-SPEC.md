@@ -688,6 +688,17 @@ executor candidate
 
 `Goal satisfied` 的唯一合法推导是：当前 contract revision 的所有 mandatory checks 已有未过期 evidence，并由允许的验收路径产生 `acceptance.passed` 事件。
 
+### 12.3.2 成本预算线（budget.max_cost）
+
+合同 MAY 在 budget 声明 `max_cost`（正数；货币单位由部署约定）。语义：
+
+- 口径 = 该合同全部 attempt（executor 与 verifier）usage 自报的
+  `cost_estimate` 合计，与 §12.3.1 同源同界（下界语义）；
+- 合计 ≥ `max_cost` 时，升级阶梯 MUST 交人（`HAND_TO_USER`）且不再派工——
+  **先于**「无租约 STEER 转 RESPAWN」的换挡：转向重派同样要花钱；
+- 租约活着时维持 §7 封顶语义（成本线是派工侧的门，不改变提醒行为）；
+- 未声明 `max_cost` 的合同行为与既往版本完全一致。
+
 ### 12.3.1 attempt 消耗台账（usage）
 
 执行者写回（`attempt/write-back`）MAY 携带 `usage` 对象，自报本 attempt 的

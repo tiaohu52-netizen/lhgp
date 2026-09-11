@@ -45,6 +45,22 @@ def _strict_float(value: Any, field: str) -> float:
     return parsed
 
 
+def _optional_positive_float(value: Any, field: str) -> float | None:
+    """可选正数字段：**键缺席**时调用方传 None 得 None；键存在时值必须为
+    有限正数——显式 null / 错型 / 非正数一律拒（与 JSON schema 的
+    ``type: number`` 对齐，避免两套校验对同一份草案给出不同结论）。"""
+    if value is None:
+        raise TypeError(f"{field} must not be null; omit the field instead")
+    # 不走 _strict_float 的字符串宽口径：数字字符串会被 JSON schema 与
+    # validate_raw 拒收，这里若放行就是两套校验两个结论（fail-closed）。
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError(f"{field} must be a positive number, got {value!r}")
+    parsed = float(value)
+    if not math.isfinite(parsed) or parsed <= 0:
+        raise TypeError(f"{field} must be a positive number, got {parsed}")
+    return parsed
+
+
 @dataclass(frozen=True, slots=True)
 class ContractDraft:
     """Contract draft composed from the five protocol field groups."""
@@ -112,6 +128,9 @@ class ContractDraft:
                 "max_attempt_minutes": self.budget.max_attempt_minutes,
                 "max_output_bytes": self.budget.max_output_bytes,
                 "verification_attempts_reserved": self.budget.verification_attempts_reserved,
+                # 可选字段只在声明时输出：省略键 = 未设成本线（与「缺席 None」
+                # 的解析语义互为镜像，且旧 schema 读者不会看到 null）。
+                **({"max_cost": self.budget.max_cost} if self.budget.max_cost is not None else {}),
             },
             "authority": authority_to_dict(self.authority),
             "attention": attention_to_dict(self.attention),
@@ -158,6 +177,11 @@ def from_dict(data: dict[str, Any]) -> ContractDraft:
         verification_attempts_reserved=_strict_int(
             budget_raw.get("verification_attempts_reserved", DEFAULT_VERIFICATION_RESERVED),
             "verification_attempts_reserved",
+        ),
+        max_cost=(
+            _optional_positive_float(budget_raw["max_cost"], "budget.max_cost")
+            if "max_cost" in budget_raw
+            else None
         ),
     )
     return ContractDraft(

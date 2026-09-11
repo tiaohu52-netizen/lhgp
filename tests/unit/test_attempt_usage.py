@@ -322,3 +322,57 @@ class TestStatsUsageAggregation:
             assert "usage_totals" not in stats
         finally:
             conn.close()
+
+
+class TestBudgetMaxCostRoundTrip:
+    def test_max_cost_survives_save_and_load(self, tmp_path: Path) -> None:
+        """max_cost 必须过 save_contract → budget_json → _row_to_contract_view 回环。
+
+        本轮端到端测试曾因此静默失效：Budget 数据类有字段、解析有字段，
+        但 store 的手写序列化/读回两处字段清单都没它——能力在场，钱线却
+        消失在存取之间。这条测试把「写入即读回」钉死。
+        """
+        from lhgp.persistence.store import get_contract
+
+        conn = _conn(tmp_path)
+        try:
+            _contract(conn)
+            save_contract(
+                conn,
+                contract_id="lt-usage-mc",
+                draft=ContractDraft(
+                    title="mc",
+                    objective="o",
+                    deadline_at=NOW + timedelta(hours=2),
+                    hard_constraints={"file_effects": {"mode": "workspace-write"}},
+                    acceptance=Acceptance(standard="s", checks=("c1",)),
+                    workload_initial_hours=1.0,
+                    budget=Budget(
+                        max_dispatches=3,
+                        max_escalations=1,
+                        max_concurrent_attempts=1,
+                        max_attempt_minutes=30,
+                        max_output_bytes=1024,
+                        max_cost=9.75,
+                    ),
+                ),
+                now=NOW,
+                actor="user",
+            )
+            view = get_contract(conn, "lt-usage-mc")
+            assert view is not None
+            assert view.draft.budget.max_cost == 9.75
+        finally:
+            conn.close()
+
+    def test_absent_max_cost_round_trips_as_none(self, tmp_path: Path) -> None:
+        from lhgp.persistence.store import get_contract
+
+        conn = _conn(tmp_path)
+        try:
+            _contract(conn)
+            view = get_contract(conn, CID)
+            assert view is not None
+            assert view.draft.budget.max_cost is None
+        finally:
+            conn.close()

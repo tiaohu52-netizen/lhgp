@@ -78,4 +78,29 @@ def _float_field(raw: dict[str, Any], field: str) -> float:
     return float(value)
 
 
-__all__ = ["UsageInvalidError", "normalize_usage"]
+def total_cost(usage_json_values: Any) -> float:
+    """把若干行 usage_json 的 cost_estimate 合成总消耗（tick 成本预算线用）。
+
+    容忍存量脏数据：非 JSON、非 dict、非法值一律跳过（台账透明但不脆弱）；
+    语义与 stats.usage_totals 一致——自报是下界。
+    """
+    import json
+
+    total = 0.0
+    for raw in usage_json_values:
+        if not raw:
+            continue
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(parsed, dict):
+            continue
+        value = parsed.get("cost_estimate")
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+            continue
+        total += float(value)
+    return total
+
+
+__all__ = ["UsageInvalidError", "normalize_usage", "total_cost"]
