@@ -14,6 +14,7 @@ P1 起 schema 升到 v2（DESIGN §13.3）：
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import sqlite3
 from collections.abc import Callable, Sequence
@@ -1639,22 +1640,23 @@ def patch_contract(
             else current.draft.workload_initial_hours
         )
 
-        # 构造一份 patch 后的 draft 视图用于写新快照
-        patched_draft = ContractDraft(
-            title=current.draft.title,
-            objective=current.draft.objective,
-            deadline_at=current.draft.deadline_at,
-            hard_constraints=current.draft.hard_constraints,
+        # 构造一份 patch 后的 draft 视图用于写新快照。
+        #
+        # 审计 B6：这里原先是**手写枚举** 14 个字段重建 ContractDraft，而该类有
+        # 15 个字段——漏掉的 auto_approve 有 default_factory，于是不报错、只静默
+        # 填入安全基线（AutoApprove(enabled=False)）。后果是
+        # contract_revisions.auto_approve_json 对**每一个被 patch 的修订**都记成
+        # 「未授予自动批准」，而活行仍保留真实授权：审计记录里一次静默的授权降级
+        # （SPEC §798 把该表记为「不可变合同版本与批准信息」）。
+        #
+        # 改用 dataclasses.replace：patch 只覆盖它真正要改的三个字段，其余字段
+        # 由类自身拷贝。这样 ContractDraft 以后新增字段也不可能再被漏掉——手写
+        # 枚举是这类漂移的根源，不是某一行的疏忽。
+        patched_draft = dataclasses.replace(
+            current.draft,
             acceptance=new_acceptance,
-            workload_initial_hours=new_workload,
-            budget=current.draft.budget,
             soft_guidance=new_soft_guidance,
-            context=current.draft.context,
-            execution=current.draft.execution,
-            client_meta=current.draft.client_meta,
-            authority=current.draft.authority,
-            attention=current.draft.attention,
-            continuity=current.draft.continuity,
+            workload_initial_hours=new_workload,
         )
 
         conn.execute(
