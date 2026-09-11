@@ -779,21 +779,35 @@ DESIGN §12.1）。该宣告是**自报**的，因此事件行 MAY 携带
 
 ## 13. 权威存储与事件模型
 
-### 13.1 最小持久实体
+### 13.1 持久实体
 
-参考实现至少需要：
+本合同把"必须能回答的问题"分成两类落地：
+
+**独立表（参考实现以表承载，可逐行查询）**
 
 - `goals`：稳定 goal identity；
 - `contract_revisions`：不可变合同版本与批准信息；
-- `events`：追加式领域事件；
+- `events`：追加式领域事件（所有状态变更的追加日志）；
 - `attempts`：所属 contract、Goal、角色、executor、model、外部句柄和终态；
 - `leases`：contract/partition、generation、holder、expiry；
-- `checkpoints`：结构化进度与估计；
-- `artifacts`：位置、hash、media type 与产生 attempt；
-- `evidence`：check、结论、来源与有效 revision；
 - `decisions`：用户/运行时决定及其所属 contract、Goal 与 revision；
 - `idempotency`：request id、payload hash、原结果；
-- `wakeups`：计划、触发、降级与重复去重。
+- `evidence`：check、结论、来源与有效 revision（verifier 落库事务内逐条写入，
+  直接支撑 ``verification_history`` API，不再需要解析事件 payload_json）。
+
+**由事件流与文件投影承载（参考实现不要求独立表）**
+
+以下实体语义上等价地落在 ``events.payload_json`` 与 ``goals/<id>/`` 投影里；
+参考实现**不要求**为它们建独立表。若未来出现跨 attempt 结构化查询的硬需求，
+可在事件 payload 上建提取视图，或升格为独立表。
+
+- `checkpoints`：结构化进度与估计——当前由 ``attempts`` 写回进度与
+  ``handover.md`` 交接文件承载，事件流可重建；
+- `artifacts`：位置、hash、media type 与产生 attempt——当前即 workspace 内
+  文件，交付物由 typed check 在验收时核验，协议层不重复追踪；
+- `wakeups`：计划、触发、降级与重复去重——L1（Windows 计划任务 / RTC）
+  由合同表 ``next_wakeup_at`` 与 ``wakeup/*`` 事件承载；L2/L3 多源唤醒
+  为已登记的 accepted_debt，未部署。
 
 状态快照、事件和幂等记录必须在同一事务提交。文件投影只能在事务提交后生成；损坏或落后时从权威数据重建。
 

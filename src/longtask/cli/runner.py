@@ -107,6 +107,45 @@ def _tail_text(value: object) -> str:
     return text[-OUTPUT_TAIL_CHARS:]
 
 
+def _write_evidence(
+    conn: sqlite3.Connection,
+    *,
+    contract_id: str,
+    attempt_id: str,
+    contract_revision: int | None,
+    evidence: list[dict[str, Any]],
+    now: datetime,
+) -> None:
+    """把 verifier 产出的 evidence 行写入独立表（SPEC §13.1）。
+
+    ``payload["evidence"]`` 每条形如 ``{check_id, outcome, source, model_outcome?}``，
+    由 ``merge_evidence`` 合成。``is_deterministic`` 判定：当确定性评估直接产出
+    pass/fail（非 undetermined）时为 True——即该结论不依赖模型观察。
+    """
+    from lhgp.persistence.evidence import EvidenceRow, record_evidence
+
+    rows = [
+        EvidenceRow(
+            contract_id=contract_id,
+            attempt_id=attempt_id,
+            contract_revision=contract_revision if contract_revision is not None else 0,
+            check_id=str(item.get("check_id", "")),
+            outcome=str(item.get("outcome", "undetermined")),
+            source=str(item.get("source", "")),
+            is_deterministic=str(item.get("outcome", "undetermined")) != "undetermined"
+            and "model" not in str(item.get("source", "")),
+            model_outcome=str(item.get("model_outcome")) if item.get("model_outcome") else None,
+            details=str(item.get("details")) if item.get("details") else None,
+            check_spec_hash=str(item.get("check_spec_hash"))
+            if item.get("check_spec_hash")
+            else None,
+        )
+        for item in evidence
+        if str(item.get("check_id", "")).strip()
+    ]
+    record_evidence(conn, rows, now=now)
+
+
 def contract_workspace(draft: ContractDraft) -> str:
     """合同冻结区声明的 workspace_root；未声明返回空串（适配器按 launch.cwd 兜底或拒接）。"""
     file_effects = draft.hard_constraints.get("file_effects")
@@ -767,6 +806,17 @@ class AttemptRunner:
                 role=role,
                 contract_revision=info.get("contract_revision"),
             )
+            # SPEC §13.1：验收证据落成独立表（不再只躺在事件 payload_json 里），
+            # 与 attempt 终态事件同一事务——事件写了证据就必须写，绝不分离。
+            if role == AttemptRole.VERIFIER.value and payload.get("evidence"):
+                _write_evidence(
+                    self._conn,
+                    contract_id=contract_id,
+                    attempt_id=attempt_id,
+                    contract_revision=info.get("contract_revision"),
+                    evidence=payload["evidence"],
+                    now=now,
+                )
             # P1：更新 attempts 行状态（DESIGN §7 attempt 轴）
             self._conn.execute(
                 """

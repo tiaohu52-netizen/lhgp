@@ -150,16 +150,17 @@ class TestNormalizeUsage:
         assert normalize_usage(None) == {}
 
 
-class TestSchemaV5:
-    def test_store_schema_version_is_5(self) -> None:
-        assert STORE_SCHEMA_VERSION == 5
+class TestSchemaV6:
+    def test_store_schema_version_is_6(self) -> None:
+        assert STORE_SCHEMA_VERSION == 6
 
     def test_store_config_default_tracks_the_schema_constant(self) -> None:
         """漂移守护：StoreConfig 的手写默认值必须与 STORE_SCHEMA_VERSION 一致。
 
-        v3→v4 迁移时这里漏升过一次（4==4 恰好活着），升到 5 才炸出来——
-        原因是打开旧于配置的库会被 StoreTamperedError 拒收，所有 runner
-        集成测试集体红。两处值必须一起动，这条测试保证不再靠巧合。
+        v3→v4 迁移时这里漏升过一次（4==4 恰好活着），之后每次升版都靠
+        ``StoreConfig`` 默认值跟着动；本轮升到 6（evidence 表）。打开旧于
+        配置的库会被 StoreTamperedError 拒收，所有 runner 集成测试集体红。
+        两处值必须一起动，这条测试保证不再靠巧合。
         """
         from longtask.persistence.types import StoreConfig
 
@@ -170,7 +171,7 @@ class TestSchemaV5:
         try:
             cols = {r[1] for r in conn.execute("PRAGMA table_info(attempts)")}
             assert "usage_json" in cols
-            assert conn.execute("PRAGMA user_version").fetchone()[0] == 5
+            assert conn.execute("PRAGMA user_version").fetchone()[0] == 6
         finally:
             conn.close()
 
@@ -374,5 +375,132 @@ class TestBudgetMaxCostRoundTrip:
             view = get_contract(conn, CID)
             assert view is not None
             assert view.draft.budget.max_cost is None
+        finally:
+            conn.close()
+
+
+class TestEvidenceTable:
+    """SPEC §13.1 evidence 独立表（schema v6）。"""
+
+    def test_fresh_db_has_evidence_table(self, tmp_path: Path) -> None:
+        conn = _conn(tmp_path)
+        try:
+            tables = {
+                r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            }
+            assert "evidence" in tables
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(evidence)")}
+            for required in (
+                "contract_id",
+                "attempt_id",
+                "contract_revision",
+                "check_id",
+                "outcome",
+                "source",
+                "is_deterministic",
+                "recorded_at",
+            ):
+                assert required in cols, required
+        finally:
+            conn.close()
+
+    def test_v5_db_is_upgraded_idempotently(self, tmp_path: Path) -> None:
+        conn = sqlite3.connect(tmp_path / "state.db")
+        # 建一个最小可迁移的 v5 库：包含 v1→v5 迁移所依赖的 contracts/attempts 列。
+        # 只建 contracts 表会因 v1→v2 迁移引用 title 等列而失败。
+        conn.executescript(
+            """
+            CREATE TABLE contracts (
+                contract_id TEXT PRIMARY KEY, revision INTEGER NOT NULL,
+                title TEXT, objective TEXT, state TEXT NOT NULL,
+                deadline_status TEXT NOT NULL DEFAULT 'not_due',
+                acceptance_status TEXT NOT NULL DEFAULT 'pending',
+                authority_json TEXT NOT NULL DEFAULT '{}',
+                attention_json TEXT NOT NULL DEFAULT '{}',
+                continuity_json TEXT NOT NULL DEFAULT '{}',
+                hard_constraints_json TEXT NOT NULL DEFAULT '{}',
+                acceptance_json TEXT NOT NULL DEFAULT '{}',
+                workload_initial_hours REAL NOT NULL,
+                budget_json TEXT NOT NULL DEFAULT '{}',
+                soft_guidance_json TEXT NOT NULL DEFAULT '{}',
+                context_json TEXT NOT NULL DEFAULT '{}',
+                execution_json TEXT NOT NULL DEFAULT '{}',
+                client_meta_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                next_wakeup_at TEXT, next_decision_at TEXT,
+                schema_version INTEGER NOT NULL DEFAULT 1
+            );
+            CREATE TABLE attempts (
+                attempt_id TEXT PRIMARY KEY, goal_id TEXT NOT NULL,
+                contract_id TEXT, contract_revision INTEGER NOT NULL,
+                role TEXT NOT NULL, executor_id TEXT, model_id TEXT,
+                state TEXT NOT NULL, lease_generation INTEGER,
+                partition_id TEXT, admitted_at TEXT NOT NULL,
+                started_at TEXT, terminal_at TEXT, return_code INTEGER,
+                error_class TEXT, payload_json TEXT NOT NULL DEFAULT '{}',
+                updated_at TEXT NOT NULL, external_run_id TEXT,
+                session_locator TEXT, recovery_strategy TEXT,
+                process_identity_json TEXT, capability_snapshot_json TEXT,
+                handle_registered_at TEXT, orphaned_at TEXT,
+                session_token_hash TEXT, usage_json TEXT
+            );
+            """
+        )
+        conn.execute("PRAGMA user_version=5")
+        conn.commit()
+        try:
+            ensure_schema(conn)
+            assert conn.execute("PRAGMA user_version").fetchone()[0] == 6
+            ensure_schema(conn)  # 幂等
+        finally:
+            conn.close()
+
+    def test_record_and_read_back(self, tmp_path: Path) -> None:
+        from datetime import UTC
+
+        from lhgp.persistence.evidence import (
+            EvidenceRow,
+            get_evidence_for_contract,
+            record_evidence,
+        )
+
+        conn = _conn(tmp_path)
+        try:
+            now = datetime(2026, 9, 11, 12, 0, 0, tzinfo=UTC)
+            record_evidence(
+                conn,
+                [
+                    EvidenceRow(
+                        contract_id="lt-x",
+                        attempt_id="att-v",
+                        contract_revision=2,
+                        check_id="file-exists:a.py",
+                        outcome="pass",
+                        source="ws/a.py",
+                        is_deterministic=True,
+                    ),
+                    EvidenceRow(
+                        contract_id="lt-x",
+                        attempt_id="att-v",
+                        contract_revision=2,
+                        check_id="command-exit-zero:make",
+                        outcome="undetermined",
+                        source="model",
+                        is_deterministic=False,
+                        model_outcome="pass",
+                        details="model filled the gap",
+                    ),
+                ],
+                now=now,
+            )
+            rows = get_evidence_for_contract(conn, "lt-x")
+            assert len(rows) == 2
+            # 按时间倒序；两条同秒，按 evidence_id 倒序
+            assert rows[0]["check_id"] in ("file-exists:a.py", "command-exit-zero:make")
+            passed = next(r for r in rows if r["outcome"] == "pass")
+            assert passed["is_deterministic"] is True
+            undet = next(r for r in rows if r["outcome"] == "undetermined")
+            assert undet["is_deterministic"] is False
+            assert undet["model_outcome"] == "pass"
         finally:
             conn.close()

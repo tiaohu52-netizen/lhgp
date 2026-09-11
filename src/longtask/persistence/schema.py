@@ -26,7 +26,7 @@ from longtask.persistence.types import StoreConfig
 # P1=v2: goal/deadline/acceptance columns added
 # P6=v3: user_evaluations + acceptance_diffs tables added
 # memory-and-wiki Phase 2=v4: memories table added
-STORE_SCHEMA_VERSION = 5
+STORE_SCHEMA_VERSION = 6
 
 
 def connect(config: StoreConfig) -> sqlite3.Connection:
@@ -321,6 +321,9 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     # ── 迁移：v4 → v5（attempt usage 台账列）──
     _migrate_v4_to_v5(conn)
 
+    # ── 迁移：v5 → v6（evidence 验收证据表）──
+    _migrate_v5_to_v6(conn)
+
     # events(goal_id / request_id) 列由上面的迁移物化（v1 库 ALTER TABLE
     # 后才存在），因此这两个 partial index 只能在迁移之后建——否则真实
     # v1 库在 ensure_schema 阶段直接 OperationalError（安全审查 持久化-C1）。
@@ -482,6 +485,40 @@ def _migrate_v3_to_v4(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_memories_source "
         "ON memories(source_contract_id) WHERE source_contract_id IS NOT NULL"
     )
+
+
+def _migrate_v5_to_v6(conn: sqlite3.Connection) -> None:
+    """v5 → v6 原地迁移：新增 evidence 验收证据表（SPEC §13.1）。
+
+    此前每条 check 的产出只落在 verifier 终态事件的 ``payload_json`` 里——
+    能查，但要解析 JSON 才能回答"合同 X 哪些 check 通过了"，又慢又脆，
+    且撑不住 SPEC §13.1 自己要求的 ``verification_history`` API。本迁移
+    补齐这张独立表；数据由 runner 在 verifier 落库的同一事务写入。
+    """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS evidence (
+            evidence_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            contract_id TEXT NOT NULL,
+            attempt_id TEXT NOT NULL,
+            contract_revision INTEGER NOT NULL,
+            check_id TEXT NOT NULL,
+            outcome TEXT NOT NULL,
+            source TEXT NOT NULL,
+            is_deterministic INTEGER NOT NULL,
+            model_outcome TEXT,
+            details TEXT,
+            check_spec_hash TEXT,
+            recorded_at TEXT NOT NULL,
+            schema_version INTEGER NOT NULL DEFAULT 1
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_evidence_contract "
+        "ON evidence(contract_id, recorded_at DESC)"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_evidence_attempt ON evidence(attempt_id)")
 
 
 def _migrate_v4_to_v5(conn: sqlite3.Connection) -> None:

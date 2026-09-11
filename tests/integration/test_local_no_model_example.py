@@ -86,6 +86,16 @@ def test_local_example_reaches_terminal_state_with_verified_artifact(tmp_path: P
         assert executors.get("executor") == "local-worker"
         assert executors.get("verifier") == "local-checker"
 
+        # 验收证据落成独立表（SPEC §13.1）：verifier 的每条 check 产出在
+        # evidence 表里各有一行，与 attempt 终态事件同一事务写入。断言必须
+        # 打在表上而不是事件 payload 里——后者在证据表被摘除后照样存在
+        # （本轮反向验证踩到过这个假验证坑）。
+        from lhgp.persistence.evidence import get_evidence_for_contract
+
+        evidence_rows = get_evidence_for_contract(conn, CONTRACT_ID)
+        assert evidence_rows, "verifier 未往 evidence 表落任何证据行"
+        assert any(r["outcome"] == "pass" for r in evidence_rows), evidence_rows
+
         # 完成声明带 per-attempt 凭据：worker 按推荐形态在事件行里回带 token
         attested = [
             json.loads(p or "{}").get("completion_attested")
