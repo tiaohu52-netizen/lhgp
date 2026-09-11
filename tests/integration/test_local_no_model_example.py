@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import subprocess
 import sys
@@ -27,6 +28,21 @@ DELIVERABLE = "result.txt"
 MARKER = "LHGP-LOCAL-EXAMPLE-OK"
 
 
+def _utf8_env() -> dict[str, str]:
+    """被测脚本的 stdout 钉死在 UTF-8。
+
+    示例脚本本身不设定输出编码（这是正确的：交互式控制台下应跟随宿主
+    locale，中文 Windows 的 cmd.exe 才读得对）。但测试把 stdout 接成管道
+    并按 UTF-8 解码，管道下 CPython 会回落到 `locale.getpreferredencoding()`
+    ——中文 Windows 是 cp936——于是断言里的中文变成替换符而失败，
+    与示例是否真的跑通无关。
+
+    CONTRIBUTING「测试纪律」要求测试确定性：编码由测试显式提供，
+    不让断言依赖跑测试的机器。
+    """
+    return {**os.environ, "PYTHONIOENCODING": "utf-8"}
+
+
 def _run_example(data_dir: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(  # noqa: S603 — 固定 argv，无外部输入
         [sys.executable, str(EXAMPLE_DIR / "run_example.py"), "--data-dir", str(data_dir)],
@@ -34,6 +50,7 @@ def _run_example(data_dir: Path) -> subprocess.CompletedProcess[str]:
         text=True,
         encoding="utf-8",
         errors="replace",
+        env=_utf8_env(),
         timeout=300,
     )
 
@@ -139,6 +156,7 @@ def test_example_reports_troubleshooting_when_it_fails(tmp_path: Path) -> None:
         text=True,
         encoding="utf-8",
         errors="replace",
+        env=_utf8_env(),
         timeout=300,
     )
     # 示例自带草稿生成，所以这个坏文件不影响成功路径；此处只断言
