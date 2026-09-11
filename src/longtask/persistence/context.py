@@ -905,6 +905,36 @@ class CapacityRefusedError(Exception):
     """容量合同不满足：拒绝启动 attempt（§4.1 fail-closed）。"""
 
 
+# 注入附言的截断标记：显式声明「后面还有内容被截掉了」，并指出全文位置。
+# 被截断这个事实本身也是信息——上一版的裸 text[:N] 把它连同半行一起吞了。
+_TRUNCATION_MARK = "\n…（交接摘要超出准入预算已截断，完整内容读 handover.md）"
+
+
+def truncate_at_line_boundary(text: str, max_chars: int) -> str:
+    """截断到**行界**并显式标记；绝不静默拦腰切断（DESIGN §4.1 注入面）。
+
+    - 文本不超预算：原样返回，无标记；
+    - 超预算且预算内存在换行：保留到最后一个完整行 + 标记（含标记总长
+      不超预算——标记占用的字节从预算里出，不偷偷突破）；
+    - 超预算且首行 alone 就超预算：无法兼顾行界，退化为硬切 + 标记
+      （诚实边界：此场景下行界与预算不可兼得，标记保证「被截断」可见）。
+    """
+    if max_chars <= 0:
+        raise ValueError(f"max_chars must be positive, got {max_chars}")
+    if len(text) <= max_chars:
+        return text
+    budget = max_chars - len(_TRUNCATION_MARK)
+    if budget <= 0:
+        raise ValueError(
+            f"max_chars {max_chars} cannot even hold the truncation marker "
+            f"({len(_TRUNCATION_MARK)} chars)"
+        )
+    candidate = text[:budget]
+    if "\n" in candidate:
+        candidate = candidate.rsplit("\n", 1)[0]
+    return candidate + _TRUNCATION_MARK
+
+
 def handover_prompt_addendum(root: Path, contract_id: str) -> str:
     """交接摘要的任务文本附言（修复再派 attempt 缺上下文的缺口）。
 
@@ -924,7 +954,7 @@ def handover_prompt_addendum(root: Path, contract_id: str) -> str:
     if not parts:
         return ""
     text = " ".join(parts)
-    return text[:HANDOVER_IN_PROMPT_CHARS]
+    return truncate_at_line_boundary(text, HANDOVER_IN_PROMPT_CHARS)
 
 
 # Auto-handover detector: same string used by the daemon loop's HANDOVER_DUE

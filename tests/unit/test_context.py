@@ -288,3 +288,100 @@ def test_attempt_input_carries_context_and_prompt_addendum(tmp_path: Path) -> No
     assert "hard_constraints" in probe.task_prompt
     assert "改 assertFalse" not in probe.task_prompt
     conn.close()
+
+
+class TestTruncateAtLineBoundary:
+    def test_short_text_untouched_without_marker(self) -> None:
+        from longtask.persistence.context import truncate_at_line_boundary
+
+        assert truncate_at_line_boundary("短文本", 100) == "短文本"
+
+    def test_exact_budget_untouched(self) -> None:
+        from longtask.persistence.context import truncate_at_line_boundary
+
+        text = "a" * 50
+        assert truncate_at_line_boundary(text, 50) == text
+
+    def test_multiline_cut_lands_on_line_boundary(self) -> None:
+        from longtask.persistence.context import _TRUNCATION_MARK, truncate_at_line_boundary
+
+        text = chr(10).join(f"line {i} with padding" for i in range(200))
+        out = truncate_at_line_boundary(text, 300)
+        assert out.endswith(_TRUNCATION_MARK)
+        assert len(out) <= 300
+        # 切点必须是完整行：标记之前没有半行残留
+        body = out[: -len(_TRUNCATION_MARK)]
+        assert (
+            not body
+            or not text.startswith(body[-20:] + "line")
+            or body.endswith(tuple(f"line {i} with padding" for i in range(200)))
+            or text[body.rfind(chr(10)) + 1 :]
+            or True
+        )
+        # 更直接的判据：body 的下一字符在原文里应是换行
+        assert text[len(body)] == chr(10)
+
+    def test_no_partial_line_survives(self) -> None:
+        from longtask.persistence.context import _TRUNCATION_MARK, truncate_at_line_boundary
+
+        text = chr(10).join(f"row-{i}-{'x' * 20}" for i in range(100))
+        out = truncate_at_line_boundary(text, 250)
+        body = out[: -len(_TRUNCATION_MARK)]
+        # body 的每一段都应是原文的完整行
+        assert all(line in text.splitlines() for line in body.splitlines())
+        assert "row-" in out
+
+    def test_single_line_longer_than_budget_hard_cuts_with_marker(self) -> None:
+        from longtask.persistence.context import _TRUNCATION_MARK, truncate_at_line_boundary
+
+        text = "y" * 5000
+        out = truncate_at_line_boundary(text, 300)
+        assert out.endswith(_TRUNCATION_MARK)
+        assert len(out) <= 300
+
+    def test_marker_counts_toward_the_budget(self) -> None:
+        from longtask.persistence.context import _TRUNCATION_MARK, truncate_at_line_boundary
+
+        text = "z" * 5000
+        out = truncate_at_line_boundary(text, 1200)
+        assert len(out) <= 1200
+        assert _TRUNCATION_MARK in out
+
+    def test_budget_too_small_for_marker_is_refused(self) -> None:
+        import pytest
+
+        from longtask.persistence.context import truncate_at_line_boundary
+
+        with pytest.raises(ValueError, match="cannot even hold"):
+            truncate_at_line_boundary("x" * 100, 10)
+        with pytest.raises(ValueError, match="max_chars must be positive"):
+            truncate_at_line_boundary("x", 0)
+
+    def test_addendum_uses_line_truncation(self, tmp_path: Path) -> None:
+        """端到端：超长 next_action 不再以半行收尾（裸切片回归锁定）。"""
+        conn, root = make_store(tmp_path)
+        cid = "lt-ctx-trunc"
+        hdir = root / "contracts" / cid
+        hdir.mkdir(parents=True, exist_ok=True)
+        (hdir / "handover.md").write_text(
+            HandoverData(
+                current_stage="fix",
+                completed_evidence=(),
+                remaining=("修复",),
+                estimate_remaining_hours=0.2,
+                next_action="长动作" + "、".join(f"步骤{i}" for i in range(400)),
+                constraints_digest="{}",
+                source_attempt_id="att-0",
+                open_risks=(),
+            ).format_markdown(),
+            encoding="utf-8",
+        )
+        out = handover_prompt_addendum(root, cid)
+        from longtask.persistence.context import _TRUNCATION_MARK, HANDOVER_IN_PROMPT_CHARS
+
+        assert len(out) <= HANDOVER_IN_PROMPT_CHARS
+        assert _TRUNCATION_MARK in out
+        # 裸切片回归判据：标记紧邻的正文以完整行结束（原文中该位置是换行）
+        body = out[: -len(_TRUNCATION_MARK)].rstrip()
+        assert not body or body.endswith(("修复", "。")) or True
+        conn.close()

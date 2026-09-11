@@ -122,6 +122,30 @@ follow [SemVer](https://semver.org/spec/v2.0.0.html); dates in ISO 8601.
 可重建，不可超前」），`_atomic_write` 已给出单文件原子性。缺的是「重建」这一动作的
 触发，不是「回执」。不属于本轮范围，记在此处备查而非静默略过。
 
+## [Unreleased·七] 交接附言截断纪律：行界 + 显式标记
+
+四层审查（第 3 层边界）在注入面清单里剩下的最后一处裸切片：
+`handover_prompt_addendum` 用 `text[:1200]` 截交接摘要——切在半行中间时，
+下一个执行者读到一句无头无尾的话，且看不出后面还有内容。**「被截断」
+这个事实本身也是信息**（openpi bg_watch 的 `WATCH_LINE_MAX_CHARS` 同款
+纪律：报告行封顶并显式以 … 收尾）。
+
+### Changed
+
+- 新增 `truncate_at_line_boundary(text, max_chars)`（context.py，纯函数）：
+  多行文本截到**最后一个完整行** + 显式标记「已截断，完整内容读
+  handover.md」；标记字节计入预算（含标记总长不超上限，不偷偷突破）；
+  单行超预算的退化场景（行界与预算不可兼得）硬切 + 标记，诚实边界
+  写在 docstring。
+- `handover_prompt_addendum` 改走该函数。
+
+### Tests
+
+- 8 条单测：短文本不动 / 恰好预算不动 / 多行切点为完整行（判据：body
+  下一字符在原文是换行）/ 无半行残留 / 单行退化硬切 / 标记计预算 /
+  预算小于标记拒收（fail-closed）/ 端到端超长 next_action。
+- 反向验证：退回裸切片后 `test_addendum_uses_line_truncation` 红。
+
 ## [Unreleased·六] 成本预算线 budget.max_cost（台账的强制面）
 
 第五轮回答「烧了多少」，本轮回答「最多烧多少」——预算第一次能按**钱**
