@@ -69,6 +69,11 @@ def validate_raw(data: object) -> list[str]:
             value = budget.get(name)
             if not isinstance(value, int) or value <= 0:
                 errors.append(f"budget.{name} must be a positive int, got {value!r}")
+        max_cost = budget.get("max_cost")
+        if max_cost is not None and (
+            isinstance(max_cost, bool) or not isinstance(max_cost, (int, float)) or max_cost <= 0
+        ):
+            errors.append(f"budget.max_cost must be a positive number, got {max_cost!r}")
     return errors
 
 

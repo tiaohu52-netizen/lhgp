@@ -686,7 +686,13 @@ def compile_context_snapshot(
         section_title = "## ⚡ 收到的指令（必须遵守）"
         sections += [section_title, ""]
         for d in directives:
-            text = str(d.get("text", ""))[:_DIRECTIVE_TEXT_CHARS]
+            # 指令进 active.md → 进提示词：静默截断会让模型把半句话当完整指令
+            # 执行（且看不出后面还有）。行界 + 显式标记，同 handover 附言纪律。
+            text = truncate_at_line_boundary(
+                str(d.get("text", "")),
+                _DIRECTIVE_TEXT_CHARS,
+                marker=_DIRECTIVE_TRUNCATION_MARK,
+            )
             sender = str(d.get("from", "unknown"))
             target = d.get("to_agent")
             line = f"- **{text}**  —  from `{sender}`"
@@ -905,6 +911,41 @@ class CapacityRefusedError(Exception):
     """容量合同不满足：拒绝启动 attempt（§4.1 fail-closed）。"""
 
 
+# 截断标记：显式声明「后面还有内容被截掉了」。被截断这个事实本身也是信息——
+# 调用方一律传自己的标记（说明去哪里看全文），函数不猜上下文；默认标记用于
+# 没有更好指引的场景。
+_TRUNCATION_MARK = "\n…（超出长度预算已截断）"
+_HANDOVER_TRUNCATION_MARK = "\n…（交接摘要超出准入预算已截断，完整内容读 handover.md）"
+# 指令渲染成单行 bullet（``- **<text>**  —  from …``），因此它的标记
+# **不能带换行**——否则会把 bullet 撕成两行。handover 附言是段落，保留
+# 前导换行用于分隔。
+_DIRECTIVE_TRUNCATION_MARK = " …（指令过长已截断，完整内容见消息层）"
+
+
+def truncate_at_line_boundary(text: str, max_chars: int, *, marker: str = _TRUNCATION_MARK) -> str:
+    """截断到**行界**并显式标记；绝不静默拦腰切断（DESIGN §4.1 注入面）。
+
+    - 文本不超预算：原样返回，无标记；
+    - 超预算且预算内存在换行：保留到最后一个完整行 + 标记（含标记总长
+      不超预算——标记占用的字节从预算里出，不偷偷突破）；
+    - 超预算且首行 alone 就超预算：无法兼顾行界，退化为硬切 + 标记
+      （诚实边界：此场景下行界与预算不可兼得，标记保证「被截断」可见）。
+    """
+    if max_chars <= 0:
+        raise ValueError(f"max_chars must be positive, got {max_chars}")
+    if len(text) <= max_chars:
+        return text
+    budget = max_chars - len(marker)
+    if budget <= 0:
+        raise ValueError(
+            f"max_chars {max_chars} cannot even hold the truncation marker ({len(marker)} chars)"
+        )
+    candidate = text[:budget]
+    if "\n" in candidate:
+        candidate = candidate.rsplit("\n", 1)[0]
+    return candidate + marker
+
+
 def handover_prompt_addendum(root: Path, contract_id: str) -> str:
     """交接摘要的任务文本附言（修复再派 attempt 缺上下文的缺口）。
 
@@ -924,7 +965,9 @@ def handover_prompt_addendum(root: Path, contract_id: str) -> str:
     if not parts:
         return ""
     text = " ".join(parts)
-    return text[:HANDOVER_IN_PROMPT_CHARS]
+    return truncate_at_line_boundary(
+        text, HANDOVER_IN_PROMPT_CHARS, marker=_HANDOVER_TRUNCATION_MARK
+    )
 
 
 # Auto-handover detector: same string used by the daemon loop's HANDOVER_DUE

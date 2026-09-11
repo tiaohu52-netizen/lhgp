@@ -26,7 +26,7 @@ from longtask.persistence.types import StoreConfig
 # P1=v2: goal/deadline/acceptance columns added
 # P6=v3: user_evaluations + acceptance_diffs tables added
 # memory-and-wiki Phase 2=v4: memories table added
-STORE_SCHEMA_VERSION = 4
+STORE_SCHEMA_VERSION = 5
 
 
 def connect(config: StoreConfig) -> sqlite3.Connection:
@@ -234,7 +234,8 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             capability_snapshot_json TEXT,
             handle_registered_at TEXT,
             orphaned_at TEXT,  -- 进入 orphan grace 的起点（§11.3 分支 3）
-            session_token_hash TEXT  -- per-attempt 会话凭据哈希
+            session_token_hash TEXT,  -- per-attempt 会话凭据哈希
+            usage_json TEXT  -- 消耗台账：执行者写回自报的 token/成本（§11.3）
         )
         """
     )
@@ -316,6 +317,9 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
 
     # ── 迁移：v3 → v4（memory-and-wiki Phase 2 memories 表）──
     _migrate_v3_to_v4(conn)
+
+    # ── 迁移：v4 → v5（attempt usage 台账列）──
+    _migrate_v4_to_v5(conn)
 
     # events(goal_id / request_id) 列由上面的迁移物化（v1 库 ALTER TABLE
     # 后才存在），因此这两个 partial index 只能在迁移之后建——否则真实
@@ -478,6 +482,22 @@ def _migrate_v3_to_v4(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_memories_source "
         "ON memories(source_contract_id) WHERE source_contract_id IS NOT NULL"
     )
+
+
+def _migrate_v4_to_v5(conn: sqlite3.Connection) -> None:
+    """v4 → v5 原地迁移：attempts 增加 usage_json 列（attempt 消耗台账）。
+
+    预算控制的是「派几次」，此前没有任何账记「烧了多少」——执行者写回时
+    自报的 token/成本无处落，stats 只能报墙钟与退出码。usage 由写回链路
+    写入（harness 最清楚自己的消耗），格式校验 fail-closed（见
+    persistence/usage.py），本迁移只负责列存在且幂等。
+    """
+
+    def _add_column_if_missing(table: str, col_def: str) -> None:
+        with suppress(sqlite3.OperationalError):
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {col_def}")
+
+    _add_column_if_missing("attempts", "usage_json TEXT")
 
 
 def _migrate_v1_to_v2(conn: sqlite3.Connection) -> None:

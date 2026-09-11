@@ -126,34 +126,46 @@ class TestRespawn:
         assert d.tier == UrgencyTier.RESPAWN
 
 
-class TestParallel:
-    def test_stalled_and_partitionable_goes_parallel(self) -> None:
-        # 档 3 后估算连续停滞且可分区 → 档 4（DESIGN §6.2/§7.1）
-        d = decide_with(UrgencyTier.RESPAWN, estimate_stalled=True, partitions_allowed=True)
-        assert d.tier == UrgencyTier.PARALLEL
-        assert d.consumes_dispatch
-        assert d.consumes_escalation
+class TestStalledRespawnIsHonest:
+    """档 4 未实现：估算停滞一律如实记为串行重派，绝不产出 PARALLEL 档。
 
-    def test_parallel_needs_last_of_both_budgets(self) -> None:
-        # 两项预算恰好各剩 1：档 4 仍可行
+    旧实现产出 UrgencyTier.PARALLEL 并写下 "parallel dispatch" 的决策理由，
+    实际执行与档 3 完全相同——调度器在决策历史里说谎。本类钉住修正后的
+    契约：档位、理由、预算三项都必须如实。
+    """
+
+    def test_stalled_never_claims_parallel(self) -> None:
+        d = decide_with(UrgencyTier.RESPAWN, estimate_stalled=True, partitions_allowed=True)
+        assert d.tier == UrgencyTier.RESPAWN
+        assert d.consumes_dispatch
+        # 没做额外的事，就不收额外的预算
+        assert not d.consumes_escalation
+
+    def test_reason_discloses_that_parallel_is_unimplemented(self) -> None:
+        d = decide_with(UrgencyTier.RESPAWN, estimate_stalled=True, partitions_allowed=True)
+        assert "serial respawn" in d.reason
+        assert "not implemented" in d.reason
+        # 被请求的并行意图仍可在审计里看到（不隐藏）
+        assert "partitions_requested=True" in d.reason
+
+    def test_last_of_both_budgets_still_serial(self) -> None:
         d = decide_with(
             UrgencyTier.RESPAWN,
             estimate_stalled=True,
             budget_dispatches_left=1,
             budget_escalations_left=1,
         )
-        assert d.tier == UrgencyTier.PARALLEL
-
-    def test_escalations_exhausted_falls_back_to_serial(self) -> None:
-        # escalations 触顶：退回档 3 串行换人，不升档 5
-        d = decide_with(UrgencyTier.RESPAWN, estimate_stalled=True, budget_escalations_left=0)
         assert d.tier == UrgencyTier.RESPAWN
         assert d.consumes_dispatch
-        assert not d.consumes_escalation
-        assert "serial" in d.reason
 
-    def test_unpartitionable_falls_back_to_serial(self) -> None:
-        # §7.1：无法干净分区的合同不允许档 4，只能串行换人
+    def test_escalations_exhausted_changes_nothing(self) -> None:
+        # 档 4 已不消耗 escalations：该项为 0 与为满值的结果必须一致
+        zero = decide_with(UrgencyTier.RESPAWN, estimate_stalled=True, budget_escalations_left=0)
+        rich = decide_with(UrgencyTier.RESPAWN, estimate_stalled=True, budget_escalations_left=9)
+        assert zero.tier == rich.tier == UrgencyTier.RESPAWN
+        assert not zero.consumes_escalation and not rich.consumes_escalation
+
+    def test_unpartitionable_also_serial(self) -> None:
         d = decide_with(UrgencyTier.RESPAWN, estimate_stalled=True, partitions_allowed=False)
         assert d.tier == UrgencyTier.RESPAWN
         assert d.consumes_dispatch
@@ -170,3 +182,50 @@ class TestParallel:
         d = decide_with(UrgencyTier.RESPAWN, estimate_stalled=False)
         assert d.tier == UrgencyTier.RESPAWN
         assert not d.consumes_escalation
+
+
+class TestParallelTierIsUnreachable:
+    """穷举决策输入空间：没有任何组合能产出 PARALLEL 档。
+
+    比逐个手挑用例更硬——它同时锁住「未来有人无意中恢复那条分支」的情形。
+    档 4 的实现（分区租约）尚未接线，见 ADR-005；在它真正落地前，
+    决策历史里不得出现一个名义上是并行、实际是串行的档位。
+    """
+
+    def test_no_input_combination_yields_parallel(self) -> None:
+        combos = 0
+        for tier in list(UrgencyTier):
+            for lease_alive in (False, True):
+                for stalled in (False, True):
+                    for partitions in (False, True):
+                        for dispatches_left in (0, 1, 3):
+                            for escalations_left in (0, 1, 3):
+                                decision = decide(
+                                    tier,
+                                    lease_alive=lease_alive,
+                                    budget_dispatches_left=dispatches_left,
+                                    budget_escalations_left=escalations_left,
+                                    estimate_stalled=stalled,
+                                    partitions_allowed=partitions,
+                                )
+                                combos += 1
+                                assert decision.tier is not UrgencyTier.PARALLEL, (
+                                    f"输入组合产出了未实现的并行档: tier={tier} "
+                                    f"lease_alive={lease_alive} stalled={stalled} "
+                                    f"partitions={partitions} dispatches={dispatches_left} "
+                                    f"escalations={escalations_left}"
+                                )
+        assert combos > 100, f"输入空间只覆盖了 {combos} 组，断言强度不足"
+
+    def test_honest_reason_when_stall_is_observed(self) -> None:
+        """停滞且可加派时的理由必须自陈「并行未实现」，不假装并行。"""
+        decision = decide(
+            UrgencyTier.RESPAWN,
+            lease_alive=False,
+            budget_dispatches_left=3,
+            budget_escalations_left=3,
+            estimate_stalled=True,
+            partitions_allowed=True,
+        )
+        assert decision.tier == UrgencyTier.RESPAWN
+        assert "not implemented" in decision.reason

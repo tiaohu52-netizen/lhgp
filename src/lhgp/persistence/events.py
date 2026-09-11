@@ -39,6 +39,7 @@ class EventType(StrEnum):
     LEASE_RELEASED = "lease/released"
     LEASE_RECLAIMED = "lease/reclaimed"
     LEASE_FENCED = "lease/fenced"
+    # 预留（未接线）：分区租约未接线，本事件从未被写出（ADR-005）。
     LEASE_PARTITION_CONFLICT = "lease/partition-conflict"
     CONTEXT_POLICY_APPROVED = "context/policy-approved"
     CONTEXT_SNAPSHOT_BUILT = "context/snapshot-built"
@@ -57,6 +58,7 @@ class EventType(StrEnum):
     ESCALATION_REMINDED = "escalation/reminded"
     ESCALATION_STEERED = "escalation/steered"
     ESCALATION_SPAWNED = "escalation/spawned"
+    # 预留（未接线）：档 4 分区并行未实现，本事件从未被写出。
     ESCALATION_PARALLELIZED = "escalation/parallelized"
     ESCALATION_HANDED_TO_USER = "escalation/handed-to-user"
     VERIFICATION_REQUESTED = "verification/requested"

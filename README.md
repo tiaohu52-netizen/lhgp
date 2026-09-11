@@ -79,6 +79,22 @@ Expected states: `drafted → cancelled`. The example deadline must remain in th
 The abbreviated `prepare` command creates placeholder acceptance criteria;
 it is not an unattended-execution template.
 
+### A real execution example (no model)
+
+The control-plane walkthrough above never executes anything. For the full loop —
+`doctor → prepare → approve → execute → verify → satisfied`, with a plain-program
+executor and an **independent** verifier, no model account and no network — see
+[`examples/local-no-model/`](examples/local-no-model/README.md):
+
+```text
+uv run python examples/local-no-model/run_example.py
+```
+
+It returns a terminal contract whose deliverable was verified by a second
+attempt, and it fails with troubleshooting pointers instead of a bare error.
+An integration test asserts the success is not fabricated
+(`tests/integration/test_local_no_model_example.py`).
+
 ### Before delegating real work
 
 An execution contract needs an absolute workspace path, meaningful acceptance checks,

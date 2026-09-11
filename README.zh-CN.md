@@ -64,6 +64,21 @@ uv run lhgp --data-dir runtime/quickstart get lt-20260905-quickstart
 ```
 
 预期状态为 `drafted → cancelled`。示例日期仅供控制面演示，使用时须晚于当前时间。
+
+### 真实执行示例（无模型）
+
+上面的控制面演示不执行任何工作。完整链路——
+`doctor → prepare → approve → execute → verify → satisfied`，执行者是普通程序、
+核验者是**独立**的第二个 attempt，无需模型账号与网络——见
+[`examples/local-no-model/`](examples/local-no-model/README.md)：
+
+```text
+uv run python examples/local-no-model/run_example.py
+```
+
+它返回一个终态合同，交付物由独立核验者判定通过；失败时给出排查出口而不是
+只丢一句错误。集成测试 `tests/integration/test_local_no_model_example.py`
+硬断言这次成功**不是被人工写进去的**。
 简写 `prepare` 生成占位验收项，不能直接当作无人值守执行模板。
 
 ### 交给 Agent 执行之前

@@ -250,7 +250,7 @@ authority:
       roles: [executor, verifier]
   required_capabilities: [spawn, observe, checkpoint, recover]
   allowed_controls: [notify, followup, steer, spawn]
-  allow_parallel: false
+  allow_parallel: false  # 可声明但当前不产生并行行为（档 4 未实现，见 DESIGN §6.3/§7.1）
 
 constraints:
   workspace_root: D:/workspace/project
@@ -488,7 +488,7 @@ probability evidence without guessing from the numeric value alone.
 | green | `P_finish ≥ 0.85` 且 `slack_p90 ≥ 0` | 安静等待下一有意义事件 |
 | yellow | `0.65 ≤ P_finish < 0.85` | 提醒当前 attempt 更新估计；预留 verifier 容量 |
 | orange | `0.40 ≤ P_finish < 0.65` 或停滞 | steer、缩短 checkpoint 周期、准备串行换人 |
-| red | `P_finish < 0.40` 或 `slack_p90 < 0` | 在授权内使用更合适执行器/模型、安全分区并行，或立即请求用户缩范围/扩预算/延期 |
+| red | `P_finish < 0.40` 或 `slack_p90 < 0` | 在授权内使用更合适执行器/模型，或立即请求用户缩范围/扩预算/延期（分区并行未实现，见 DESIGN §6.3） |
 | missed | `now > due_at` 且未通过验收 | 原子记录 miss，按 `on_miss` 暂停仲裁或继续迟到执行 |
 
 风险升级的候选动作还必须通过 authority、constraints、budget 与 cooldown。没有合法动作时，系统应立刻 `blocked(need-user)`，而不是不断重试同一不可行方案。
@@ -688,6 +688,34 @@ executor candidate
 
 `Goal satisfied` 的唯一合法推导是：当前 contract revision 的所有 mandatory checks 已有未过期 evidence，并由允许的验收路径产生 `acceptance.passed` 事件。
 
+### 12.3.2 成本预算线（budget.max_cost）
+
+合同 MAY 在 budget 声明 `max_cost`（正数；货币单位由部署约定）。语义：
+
+- 口径 = 该合同全部 attempt（executor 与 verifier）usage 自报的
+  `cost_estimate` 合计，与 §12.3.1 同源同界（下界语义）；
+- 合计 ≥ `max_cost` 时，升级阶梯 MUST 交人（`HAND_TO_USER`）且不再派工——
+  **先于**「无租约 STEER 转 RESPAWN」的换挡：转向重派同样要花钱；
+- 租约活着时维持 §7 封顶语义（成本线是派工侧的门，不改变提醒行为）；
+- 未声明 `max_cost` 的合同行为与既往版本完全一致。
+
+### 12.3.1 attempt 消耗台账（usage）
+
+执行者写回（`attempt/write-back`）MAY 携带 `usage` 对象，自报本 attempt 的
+资源消耗：`input_tokens` / `output_tokens`（必填，非负整数）、
+`cache_read_tokens` / `cache_write_tokens`（可选，非负整数）、
+`cost_estimate`（可选，非负数；货币单位由部署约定，协议不解释）。
+
+- 形状校验 fail-closed：负数、错型、未知键 MUST 拒收（`VALIDATION_FAILED`），
+  不得静默截断——台账是预算强制的地基，脏数据进账等于预算线画在沙子上。
+- 台账落 `attempts.usage_json`（存储 schema v5）；终态写回的事件 payload
+  同时携带 `usage` 供审计。
+- 自报值是**下界**：上下文压缩、缓存刷新可能使真实消耗更高。消费方
+  （stats 聚合、未来预算强制）MUST 不得把它当精确值。
+- 同一 attempt 的重复写回按最后一次自报为准（台账记终局累计，非逐次增量）。
+- 预算强制（如 `budget.max_cost`）不在本版本：需要动合同冻结区 schema，
+  单独走设计审批。
+
 ### 12.4 验收证据通道与裁决合成
 
 verifier 报告验收结果的通道有两条，按 harness 能力选择：
@@ -703,8 +731,26 @@ verifier 报告验收结果的通道有两条，按 harness 能力选择：
    ```
    ````
 
+**完成事件行的凭据（MAY）**：会话型 harness 用 RPC 写回；一次性 CLI 执行者
+也可以在 stdout 里宣告完成（实现层的 ``attempt/finished`` 事件行，见
+DESIGN §12.1）。该宣告是**自报**的，因此事件行 MAY 携带
+``session_token``（spawn 时经 ``LHGP_SESSION_TOKEN`` 注入的 per-attempt 凭据）：
+
+- 携带且匹配 → 运行时把该次完成标记为**凭据自报**（``completion_attested``），
+  落进 attempt 终态事件供审计区分；
+- 不携带 → 仍按既有语义采信（存量 harness 不受影响），标记为非凭据自报；
+- 携带但不匹配，或本 attempt 未注入凭据却携带 → **拒绝该行**（防其他
+  attempt 的输出回显被当作完成声明）。
+
    运行时解析最后一个 `lhgp-verdict` 块；缺失或非法 JSON 时该通道视为
    无证据（不猜、不静默兜底）。
+
+   **截断与缺失必须可区分**：判定块约定在 stdout 末尾，而
+   `budget.max_output_bytes` 保留的是头部。输出被截断且未解析出判定块时，
+   运行时 MUST 记录"判定块随预算截断丢失"（`verdict_source_loss`）而非
+   静默按无证据处理——两者下游同为 undetermined/人工仲裁，但责任方与修法
+   不同：前者调大预算重跑即恢复证据，后者是 verifier 未按约定输出。混在
+   一起会让"跑成功了却总进人工仲裁"无从排查。
 
 **裁决合成规则**（确定性评估 × 模型观察，逐 check）：
 
@@ -1046,6 +1092,8 @@ def may_dispatch(contract: GoalCommitment, candidate: Candidate) -> Refusal | No
 4. 引入 `lhgp` 公开命令和数据目录迁移工具；
 5. 保留 `longtask` 兼容别名至少一个次版本；
 6. 最后迁移 Python 内部模块路径与删除别名。
+
+别名轨在删除前必须先补齐正名缺口（2026-09-10：`lhgp_user_confirm_spec_verdict` 已补——此前签字门只有 `longtask_user_confirm_spec_verdict` 一个 MCP 入口，直接清别名等于删掉 CANDIDATE→PASSED 的唯一程序化路径）。工具面按角色收窄的 profile 机制见 DESIGN §11.8。
 
 ---
 

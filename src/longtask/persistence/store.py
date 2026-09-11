@@ -254,6 +254,8 @@ def _row_to_contract_view(row: sqlite3.Row | tuple[Any, ...]) -> ContractView:
         verification_attempts_reserved=int(
             budget_dict.get("verification_attempts_reserved", DEFAULT_VERIFICATION_RESERVED)
         ),
+        # 消耗台账的成本线（§6.3）：老库存 JSON 无此字段 → None = 不按成本设限
+        max_cost=budget_dict.get("max_cost"),
     )
     draft = ContractDraft(
         title=title,
@@ -1173,6 +1175,11 @@ def save_contract(
                         "verification_attempts_reserved": (
                             draft.budget.verification_attempts_reserved
                         ),
+                        **(
+                            {"max_cost": draft.budget.max_cost}
+                            if draft.budget.max_cost is not None
+                            else {}
+                        ),
                     },
                     ensure_ascii=False,
                 ),
@@ -1304,6 +1311,11 @@ def _write_revision_snapshot(
                     "max_attempt_minutes": draft.budget.max_attempt_minutes,
                     "max_output_bytes": draft.budget.max_output_bytes,
                     "verification_attempts_reserved": (draft.budget.verification_attempts_reserved),
+                    **(
+                        {"max_cost": draft.budget.max_cost}
+                        if draft.budget.max_cost is not None
+                        else {}
+                    ),
                 },
                 ensure_ascii=False,
             ),
@@ -1768,6 +1780,7 @@ def write_back(
     contract_revision: int | None = None,  # P1
     goal_id: str | None = None,  # P1
     model_id: str | None = None,
+    usage: dict[str, Any] | None = None,
 ) -> WriteBackResult:
     """带 generation fencing 的执行结果写回（DESIGN §7、§11.3、§14.1）。
 
@@ -1814,6 +1827,18 @@ def write_back(
             conn.execute(
                 "UPDATE attempts SET model_id = ?, updated_at = ? WHERE attempt_id = ?",
                 (str(model_id).strip(), now.isoformat(), attempt_id),
+            )
+        # 消耗台账（§11.3）：执行者自报，形状已由调用方经 normalize_usage
+        # fail-closed 校验；这里只落库。同一 attempt 的重复写回按「最后
+        # 一次为准」——台账记的是该 attempt 终局的累计自报，不是逐次增量。
+        if usage:
+            conn.execute(
+                "UPDATE attempts SET usage_json = ?, updated_at = ? WHERE attempt_id = ?",
+                (
+                    json.dumps(usage, ensure_ascii=False, sort_keys=True),
+                    now.isoformat(),
+                    attempt_id,
+                ),
             )
 
         new_revision: int | None = None

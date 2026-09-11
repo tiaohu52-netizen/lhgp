@@ -31,8 +31,8 @@ description: 将需要跨会话、跨 Agent 推进的用户目标转成 LHGP 合
 2. `doctor` — 做本机只读预检，确认数据库和已启用 CLI 可启动；发现缺失命令时先
    修环境或换候选，不要先批准合同消耗预算
 3. `list_executors` — 查可用执行器池（Codex / Claude Code / 任何 CLI 适配器）
-4. `prepare_contract` — 起草合同：objective / acceptance / deadline / budget / authority
-5. `approve_contract` — **仅限用户**：模型调用返回 AUTH_FAILED。向用户说明合同内容与影响，请用户在 CLI 执行 `lhgp approve <id>`；`update_goal` 同理（Goal 计划修订也是 Principal 决定权，ADR-004 规则 6）
+4. `lhgp_prepare_goal` — 起草合同：objective / acceptance / deadline / budget / authority
+5. `lhgp_approve_goal` — **仅限用户**：模型调用返回 AUTH_FAILED。向用户说明合同内容与影响，请用户在 CLI 执行 `lhgp approve <id>`；`lhgp_update_goal` 同理（Goal 计划修订也是 Principal 决定权，ADR-004 规则 6）
 6. `get_contract` — 看运行状态、当前 attempt、leasing，以及该合同隔离的
   `decision_history`（风险档、升级原因、预算余量和下一步依据）；可传
   `decision_limit` 控制决策历史条数，`attempt_limit` 控制 attempt 历史条数。
@@ -59,18 +59,24 @@ executor；调用 `lhgp_request_verification`（兼容名
 
 | 你想做什么 | 调用 | 关键参数 | 响应里看什么 |
 |---|---|---|---|
-| 确认 MCP 在线 | `health` | — | 工具名列表 |
-| 派工前排查环境 | `doctor` | — | FAIL 项 = 待处理问题 |
-| 接手会话盘点工作 | `list_contracts` → `list_goals` | state 过滤 | deadline_snapshot 风险 |
-| 看某合同现状/为什么 blocked | `get_contract` | contract_id | decision_history + verification_history |
-| 看多阶段流程走到哪 | `get_goal` | goal_id | progress + 各阶段合同状态 |
-| 不知道下一步合法动作 | `next_goal_action` | goal_id | action 字段照做 |
-| 阶段需要新合同 | `goal_contract_draft` → 给用户审阅 → `prepare_contract` | goal_id + stage_id | 草案是只读预览 |
-| 交付物疑似完成 | `request_verification` | contract_id | 预算耗尽则停手交用户 |
-| 阶段验收已通过 | `advance_goal` | goal_id + stage_id + revision | STAGE_NOT_PASSED = 还没验收 |
-| 执行者写进度/终态 | `write_back` | fencing 三元组 | LEASE_FENCED = 重新取代次 |
+| 确认 MCP 在线 | `lhgp_health` | — | 工具名列表 |
+| 派工前排查环境 | `lhgp_doctor` | — | FAIL 项 = 待处理问题 |
+| 接手会话盘点工作 | `lhgp_list_contracts` → `lhgp_list_goals` | state 过滤 | deadline_snapshot 风险 |
+| 看某合同现状/为什么 blocked | `lhgp_get_contract` | contract_id | decision_history + verification_history |
+| 看多阶段流程走到哪 | `lhgp_get_goal` | goal_id | progress + 各阶段合同状态 |
+| 不知道下一步合法动作 | `lhgp_next_goal_action` | goal_id | action 字段照做 |
+| 阶段需要新合同 | `goal_contract_draft` → 给用户审阅 → `lhgp_prepare_goal` | goal_id + stage_id | 草案是只读预览 |
+| 交付物疑似完成 | `lhgp_request_verification` | contract_id | 预算耗尽则停手交用户 |
+| 阶段验收已通过 | `lhgp_advance_goal` | goal_id + stage_id + revision | STAGE_NOT_PASSED = 还没验收 |
+| 执行者写进度/终态 | `lhgp_write_back` | fencing 三元组 | LEASE_FENCED = 重新取代次 |
 | 用户要求停止 | `lhgp_interrupt_attempt` | attempt_id | 事件归属真实发起者 |
 | 合同 blocked 想知道原因 | `lhgp_notifications` | goal_id/status | include_payload 默认 false |
+
+工具名统一用 `lhgp_*` 正名。MCP 网关可按角色收窄工具面
+（`LHGP_MCP_PROFILE=executor|verifier|planner|operator|full|legacy`，未设置 = 全量）：
+执行者/核验者会话按角色启动后只看见自己需要的工具，越界调用会被直接拒绝——
+如果某个 `lhgp_*` 工具不在你的工具列表里且报 "outside this server's profile"，
+那是部署侧的收窄，不是协议错误，找操作者而不是反复重试。
 
 ## 运行中审计与控制（扩展工具）
 

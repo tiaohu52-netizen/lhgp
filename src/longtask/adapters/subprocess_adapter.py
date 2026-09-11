@@ -14,6 +14,7 @@ spawn 只收结构化 argv（列表参数、shell=False），模型输出是不�
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -109,6 +110,18 @@ class _DetachedProcess:
 #    判定，比裸退出码诚实（退出码仍如实并报，两者矛盾时以事件为准
 #    并标注 exit_code_conflict）。
 FINISHED_EVENT_PREFIX = '{"event":"attempt/finished"'
+# 容错扫描：JSON 序列化器对键值间空白的处理各不相同（Python 的
+# json.dumps 默认在 ':' 后加空格），只认紧凑前缀会把合规的事件行拒之门外，
+# 且失败是静默的（退化成「等进程退出」）。本正则只放宽空白，
+# 事件值仍必须精确匹配，且随后仍要 json.loads 通过才认。
+FINISHED_EVENT_RE = re.compile(r'"event"\s*:\s*"attempt/finished"')
+# 凭据字段（可选）：事件行是**自报**的完成声明，任何打印出该行的输出都会被
+# 采信——包括 harness 把文档示例回显出来。spawn 时注入的 per-attempt
+# session_token 已在子进程环境里，因此鼓励 harness 在事件行里带上它：
+# 带且匹配 → completion_attested=True（凭据自报）；不带 → False（自报，仍
+# 按既有语义采信，不破坏存量 harness）；带了但不匹配 → 视同未自报，拒绝。
+# 这**不改**完成语义，只让「谁有能力声明完成」在审计里可区分。
+FINISHED_TOKEN_FIELD = "session_token"  # noqa: S105 — JSON 字段名，非密钥（真值是 spawn 时注入的 per-attempt 凭据）
 FINISHED_LINE_MAX = 8192  # 事件行长度上限：防御性，超长截断不匹配
 
 
@@ -123,7 +136,12 @@ class _MonitoredProcess:
     退出前最后一段输出由 _drain_final 兜底收全。
     """
 
-    def __init__(self, proc: subprocess.Popen[bytes], max_output_bytes: int | None = None) -> None:
+    def __init__(
+        self,
+        proc: subprocess.Popen[bytes],
+        max_output_bytes: int | None = None,
+        expected_session_token: str | None = None,
+    ) -> None:
         self._proc = proc
         self._output_limit = max(0, int(max_output_bytes or 0)) or None
         self._output_bytes = 0
@@ -131,6 +149,10 @@ class _MonitoredProcess:
         self.stdout_buf: list[bytes] = []
         self.stderr_buf: list[bytes] = []
         self.finished_event: dict[str, Any] | None = None
+        # 完成事件是自报声明；带凭据的声明与裸声明在审计上可区分（见
+        # FINISHED_TOKEN_FIELD 说明）。None = 本 attempt 未注入凭据。
+        self._expected_session_token = expected_session_token
+        self.completion_attested: bool | None = None
         self._stdout_bytes = 0
         self._t_out = _start_reader(proc.stdout, self.stdout_buf, self, "out")
         self._t_err = _start_reader(proc.stderr, self.stderr_buf, self, "err")
@@ -245,11 +267,18 @@ def _start_reader(
 
 
 def _scan_finished(line_bytes: bytes, monitored: _MonitoredProcess) -> bool:
-    """尝试把累积的行解析成 attempt/finished 事件；成功即回调。"""
-    if FINISHED_EVENT_PREFIX.encode() not in line_bytes:
-        return False
+    """尝试把累积的行解析成 attempt/finished 事件；成功即回调。
+
+    识别分两步且都不可省：先正则找事件（容忍键值间空白，见
+    FINISHED_EVENT_RE 的说明），再 json.loads 校验整行——正则命中的是
+    「形似」，只有能解析成 JSON 且 event 字段精确相等才算数。
+    """
     text = line_bytes.decode("utf-8", errors="replace").strip()
-    start = text.find(FINISHED_EVENT_PREFIX)
+    match = FINISHED_EVENT_RE.search(text)
+    if match is None:
+        return False
+    # 从最近的 '{' 起解析（事件行前缀可能被前一段输出污染）
+    start = text.rfind("{", 0, match.start() + 1)
     if start < 0:
         return False
     candidate = text[start:]
@@ -261,6 +290,16 @@ def _scan_finished(line_bytes: bytes, monitored: _MonitoredProcess) -> bool:
         return False
     if not isinstance(data, dict) or data.get("event") != "attempt/finished":
         return False
+    supplied = data.get(FINISHED_TOKEN_FIELD)
+    if supplied is not None:
+        # 用了凭据字段就必须对：错 token 视同未自报（拒绝该行）。这防的是
+        # 「别的 attempt 的回显」与拼错的 token 被当成完成声明。
+        expected = monitored._expected_session_token
+        if not isinstance(supplied, str) or not expected or supplied != expected:
+            return False
+        monitored.completion_attested = True
+    else:
+        monitored.completion_attested = False
     monitored._note_finished(data)
     return True
 
@@ -418,6 +457,7 @@ class SubprocessAdapter(ExecutorAdapter):
         monitored = _MonitoredProcess(
             proc,
             max_output_bytes=input_.budget_remaining.get("max_output_bytes"),
+            expected_session_token=input_.session_token,
         )
         self._procs[input_.attempt_id] = monitored
         # §11.3：spawn 后立刻取进程身份（pid + 启动时间）。取不到就如实留空，
@@ -524,6 +564,7 @@ class SubprocessAdapter(ExecutorAdapter):
                     "exit_code_known": returncode is not None,
                     "finished_by_event": True,
                     "event_outcome": outcome,
+                    "completion_attested": proc.completion_attested,
                 }
                 if conflict:
                     result["exit_code_conflict"] = True
@@ -638,6 +679,7 @@ class SubprocessAdapter(ExecutorAdapter):
                     "exit_code_known": False,
                     "finished_by_event": True,
                     "event_outcome": outcome,
+                    "completion_attested": proc.completion_attested,
                     "stdout": proc.stdout_text(),
                     "stderr": proc.stderr_text(),
                     "output_truncated": proc.output_truncated,

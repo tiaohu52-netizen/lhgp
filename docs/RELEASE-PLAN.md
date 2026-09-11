@@ -119,6 +119,13 @@ Alpha 仍须满足 ROADMAP §1.1 的独立门槛，不能用一次三阶段 dogf
 
 验证：在独立数据目录从头执行，验证产物内容及终态，不使用人工补写成功事件的 harness。
 
+**状态（2026-09-11）**：交付物已就位——`examples/local-no-model/`
+（`run_example.py` + `worker.py` + `checker.py` + 中英 README）与
+`tests/integration/test_local_no_model_example.py`（断言终态、交付物内容、
+executor+verifier 两条真实 attempt、以及 `attempt/*`/`verification/*` 事件里
+**不存在 `actor=user` 的成功记录**——成功不是被写进去的）。中英文入口链接已加进
+两个 README。R4b（模型侧说明清理）与 R3/R5/R6 仍未完成，本项不改变整体放行状态。
+
 ### R4b · 清理模型侧接入说明（S，首次使用）
 
 依赖：D0、R4a。涉及 `skills/long-horizon-goals/SKILL.md` 和 `skills/longtask-contract/SKILL.md`。

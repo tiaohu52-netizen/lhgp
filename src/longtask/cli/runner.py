@@ -22,7 +22,11 @@ from typing import Any
 
 from longtask.acceptance.checks import CheckSpec
 from longtask.acceptance.evaluator import evaluate_check
-from longtask.acceptance.verdict import merge_evidence, parse_verdict_block
+from longtask.acceptance.verdict import (
+    VerdictSourceLossError,
+    merge_evidence,
+    verdict_from_output,
+)
 from longtask.adapters.base import (
     AttemptInput,
     ExecutorAdapter,
@@ -628,12 +632,25 @@ class AttemptRunner:
             full_stdout = str(collected.get("stdout") or "")
             payload["stdout_tail"] = _tail_text(collected.get("stdout"))
             payload["stderr_tail"] = _tail_text(collected.get("stderr"))
+            # 完成声明是否携带了 per-attempt 凭据（§12.1）：事件行本质是自报，
+            # 裸声明与凭据声明的可信度不同，审计必须能区分（None=非事件行完成）。
+            if collected.get("finished_by_event"):
+                payload["completion_attested"] = collected.get("completion_attested")
             # SPEC §12.4 通道 2：一次性 CLI verifier 无法调 write-back RPC，
             # 约定在 stdout 末尾写 lhgp-verdict 判定块；无块/非法 → None
             # （不猜、不静默兜底）。
-            model_verdict = (
-                parse_verdict_block(full_stdout) if role == AttemptRole.VERIFIER.value else None
-            )
+            model_verdict = None
+            if role == AttemptRole.VERIFIER.value:
+                # 判定块在 stdout 末尾、预算保留的是头部：截断发生时块必已
+                # 丢失。此时「解析不到」不能记成「verifier 没写」——那是
+                # 部署侧的预算问题（调大重跑即恢复），与 verifier 行为问题
+                # 的修法和责任方都不同，必须作为独立事实落进事件可审计。
+                try:
+                    model_verdict = verdict_from_output(
+                        full_stdout, output_truncated=bool(collected.get("output_truncated"))
+                    )
+                except VerdictSourceLossError as exc:
+                    payload["verdict_source_loss"] = str(exc)
             payload["model_verdict"] = (
                 {"verdict": model_verdict.verdict, "checks": list(model_verdict.checks)}
                 if model_verdict is not None

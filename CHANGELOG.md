@@ -122,6 +122,354 @@ follow [SemVer](https://semver.org/spec/v2.0.0.html); dates in ISO 8601.
 可重建，不可超前」），`_atomic_write` 已给出单文件原子性。缺的是「重建」这一动作的
 触发，不是「回执」。不属于本轮范围，记在此处备查而非静默略过。
 
+## [Unreleased·十一] 档 4 并行加派诚实化：调度器不再在决策历史里说谎
+
+四层审查（第 2 层死代码）在轮二就发现了这个缺口，一直挂到本轮——因为它是
+唯一一条「**系统在说谎**」的问题，优先于其它一切。
+
+### 缺口（实证）
+
+`decide()` 在估算停滞且可加派时产出 `UrgencyTier.PARALLEL`，并把
+"parallel dispatch (§6.2/§7.1)" 写进决策理由落库；而 tick 里
+`case RESPAWN | PARALLEL` 共用同一分支，只派一个重试 attempt——**行为与档 3
+完全相同**。同时：
+
+- 分区租约机制（`Partition` / `check_partition_compatible` / `scope_paths` /
+  `scope_stages`）只有纯函数与单测，**没有任何生产调用点**；
+- `partition_id` 在所有派工调用点都取默认空值；
+- `lease/partition-conflict` 事件与 `PARTITION_CONFLICT` 错误码从未被写出；
+- 旧实现还为这"额外的并行"扣了一次 `max_escalations`。
+
+即：**档位名、决策历史、预算记账三处都在声称一件没发生的事。**
+
+### Changed
+
+- `decide()` 不再产出 PARALLEL：估算停滞一律如实返回 RESPAWN，理由自陈
+  「serial respawn (partitioned parallel dispatch is not implemented; 
+  partitions_requested=…, escalations_left=…)」——被请求的并行意图仍留在
+  审计里（不隐藏），但不再假装已执行。
+- 不再消耗 `max_escalations`（没做额外的事，就不收额外的预算）。
+- 四处代码注释标注「未接线」：`urgency.py`（枚举值保留的理由）、`lease.py`
+  （模块级接线状态）、`events.py`（两个预留事件类型）、`tick.py`（case 兼容
+  历史数据重放）。
+- 文档声称对齐实现：DESIGN §6.2 六档表、§6.3 阈值表、§7 租约条目、§7.1 标题
+  改为「设计已定，尚未接线」并明令「不得描述为已有能力」；§11.7 错误码、§16
+  非目标同步标注；SPEC 的 red 档建议去掉"分区并行"、`allow_parallel` 标注
+  可声明但不产生并行行为。
+
+### Tests
+
+- 改写 `TestParallel` → `TestStalledRespawnIsHonest`（档位/理由/预算三项如实）；
+- 新增 `TestParallelTierIsUnreachable`：**穷举决策输入空间**（tier × 租约 ×
+  停滞 × 可分区 × 两种预算 × 多个取值，>100 组）断言 PARALLEL 不可达——
+  比手挑用例更硬，也锁住「未来有人无意恢复那条分支」。
+- 行为不变性：停滞场景的**动作**与修前一致（仍是串行重派），改的只是记录与
+  记账；既有 1549 条测试仅 5 条 escalation 断言随契约更新。
+
+### 未做（等裁决）
+
+档 4 的**实现**（分区分配 + 工作区隔离）与工作区级的 `git worktree` 隔离是
+同一件事的两面，统一在 ADR-005 的 4 个待裁决问题里。
+## [Unreleased·十] 指令注入面的截断纪律（第七轮同款，补上漏掉的那一处）
+
+第七轮修了 handover 附言的截断，但注入面清单里还有一处同类裸切片：
+**用户指令**（`context.py` 的 directive 段落）用 `text[:240]` 截断后直接进
+active.md → 进提示词——截断后看起来仍是一条完整指令，模型会把半句话当全部
+执行，且看不出后面还有内容。
+
+### Changed
+
+- `truncate_at_line_boundary` 泛化：标记改为参数（默认「超出长度预算已截断」），
+  两个调用点各自传指向全文位置的标记（handover.md / 消息层）——不复用对方文案。
+- 指令注入改走该函数（行界 + 显式标记，标记计入 240 字符预算）。
+
+### Tests
+
+- 新增/改写 3 条：**驱动生产路径**（send_message → compile_context_snapshot，
+  断言快照正文含标记且长度受控）、短指令不动、两种标记文案不互相复用。
+- 反向验证记了一条教训：第一版用例只调助手函数，把生产调用点退回裸切片时
+  **照样全绿**——测试必须打在接线上，改驱动真实路径后才红。
+
+## [Unreleased·九] 完成事件行的凭据加固（自报与凭据自报可区分）
+
+第八轮的容错改动让我回头审视了一个既有薄弱面：`attempt/finished` 事件行
+本质是**自报**的完成声明——任何打印出该行的输出都会被采信，包括 harness
+把文档里的示例回显出来（而容错又略微放宽了触发面）。不能靠改窄识别来修
+（那会把合规 harness 一起误伤），要靠**让能力差异可观察**。
+
+### Added
+
+- 事件行 MAY 携带 `session_token`（spawn 时已注入子进程环境的 per-attempt
+  凭据）：匹配 → `completion_attested=True`；不携带 → `False`（仍采信，
+  存量 harness 零影响）；不匹配或本 attempt 未注入却携带 → **拒绝该行**。
+- 标记随 observe/collect 结果与 `attempt/succeeded` 事件 payload 一并落库，
+  审计可区分「谁有能力声明完成」。
+- 示例 `worker.py` 改为推荐形态（回带 token），集成测试断言全链路
+  `completion_attested=True`。
+
+### Tests
+
+- `tests/unit/test_finished_event_attestation.py` 7 条：裸事件采信且标记
+  未凭据 / 匹配 token 采信且标记 / 错 token 拒绝 / 未注入却带 token 拒绝 /
+  非字符串 token 拒绝 / Python 默认分隔符形态仍认（容错与凭据并存）/
+  别的事件与非 JSON 仍拒绝。
+- 反向验证：摘掉 token 校验后三条拒绝用例同时变红。
+
+## [Unreleased·八] R4a 可复制本地示例（无模型全链路）
+
+RELEASE-PLAN R4a 的交付物：`examples/local-no-model/` —— doctor → prepare →
+approve → execute → verify → satisfied 全链路，**无模型账号、无网络、无密钥**。
+此前仓库只有 `drafted → cancelled` 的控制面示例，从未有一条可复现的「真跑完」
+链路（问题 2 分析里指出的最大证据空洞）。
+
+### Added
+
+- `examples/local-no-model/{run_example.py,worker.py,checker.py,README.md}`：
+  - 执行者/核验者是两个普通 subprocess 程序，分别走两条 stdout 协议通道
+    （`attempt/finished` 事件行 / `lhgp-verdict` 判定块）；
+  - 派工、回收、交叉验收全部由**真实调度主循环** `run_daemon_loop` 产生，
+    不自己拼 tick、不伪造事件；失败时打印可执行排查出口；
+  - 中英文 README 入口链接已加进 README.md / README.zh-CN.md。
+- `tests/integration/test_local_no_model_example.py`：断言终态、交付物内容、
+  executor+verifier 两条真实 attempt 均 succeeded、且 `attempt/*` /
+  `verification/*` 事件中**不存在 actor=user 的记录**（成功非人工补写）。
+
+### Fixed
+
+- **事件行识别只认紧凑 JSON（第三方 harness 的静默陷阱）**：适配器按字面前缀
+  `{"event":"attempt/finished"` 扫描，而 Python `json.dumps` 默认在 `:` 后加空格
+  ——合规的事件行扫不到，且失败是静默的（退化成"等进程退出"，跨进程时直接
+  变成 §11.3 detached）。改为正则先认形态（容忍键值间空白）、仍须 `json.loads`
+  通过才采信；实测 4 种合法形态识别、2 种负例（别的事件/非 JSON）拒绝。
+
+### 开发中实测确认的两个既有语义（非缺陷，已写入示例排查出口）
+
+1. 每轮新建 runner ≈ 重启守护进程：在飞 attempt 被 reconcile 判为 detached
+   （退出码不可回收）→ failed（SPEC §11.3 的诚实边界）；
+2. 注入时钟只推动合同决策时间，子进程需要真实时间退出——两者都要给。
+
+## [Unreleased·七] 交接附言截断纪律：行界 + 显式标记
+
+四层审查（第 3 层边界）在注入面清单里剩下的最后一处裸切片：
+`handover_prompt_addendum` 用 `text[:1200]` 截交接摘要——切在半行中间时，
+下一个执行者读到一句无头无尾的话，且看不出后面还有内容。**「被截断」
+这个事实本身也是信息**（openpi bg_watch 的 `WATCH_LINE_MAX_CHARS` 同款
+纪律：报告行封顶并显式以 … 收尾）。
+
+### Changed
+
+- 新增 `truncate_at_line_boundary(text, max_chars)`（context.py，纯函数）：
+  多行文本截到**最后一个完整行** + 显式标记「已截断，完整内容读
+  handover.md」；标记字节计入预算（含标记总长不超上限，不偷偷突破）；
+  单行超预算的退化场景（行界与预算不可兼得）硬切 + 标记，诚实边界
+  写在 docstring。
+- `handover_prompt_addendum` 改走该函数。
+
+### Tests
+
+- 8 条单测：短文本不动 / 恰好预算不动 / 多行切点为完整行（判据：body
+  下一字符在原文是换行）/ 无半行残留 / 单行退化硬切 / 标记计预算 /
+  预算小于标记拒收（fail-closed）/ 端到端超长 next_action。
+- 反向验证：退回裸切片后 `test_addendum_uses_line_truncation` 红。
+
+## [Unreleased·六] 成本预算线 budget.max_cost（台账的强制面）
+
+第五轮回答「烧了多少」，本轮回答「最多烧多少」——预算第一次能按**钱**
+而不是按次数画线（SPEC §12.3.2，DESIGN v0.11）。
+
+### Added
+
+- **`Budget.max_cost`（可选，正数，默认缺席）**：货币单位由部署约定，
+  协议不解释。合同 wire schema 预算对象增可选键；草案解析对齐 JSON
+  schema 的严格口径（数字字符串不宽收——`_strict_float` 的宽口径对既有
+  字段成立，新字段若放行就是两套校验两个结论）；显式 `null` 拒收而非
+  当作缺席（缺席与 null 是两种声明）。
+- **decide() 成本分支**：成本耗尽 → `HAND_TO_USER`，且**先于**「无租约
+  STEER 转 RESPAWN」的换挡——转向重派同样要拉新会话花钱。租约活着时
+  维持 §7 封顶（成本线是派工侧的门，不改变提醒行为）。
+- **tick 接线**：仅在合同声明 max_cost 时才扫台账（其余合同零额外查询）；
+  口径 = 该合同全部 attempt 的 cost_estimate 合计（executor 与 verifier
+  都烧钱）。
+- **测试 20 条**：单测 18（解析 6 / raw 校验 2 / decide 分支 5 / JSON
+  schema 2 / 存取回环 2 / 加既有回归）+ tick 端到端 2（触线者 blocked
+  且零派工、对照组同轮正常派工、未触线正常派工）。
+
+### Fixed
+
+- **存取回环丢字段（本轮端到端测试首跑即抓到的真 bug）**：budget 的
+  序列化/读回是 store 里**三处手写字段清单**（save、revisions 快照、
+  `_row_to_contract_view`），Budget 数据类加了字段但三处都没跟——
+  能力在场，钱线消失在存取之间，强制面静默失效。三处补全，并新增
+  「写入即读回」回归测试钉死。教训与 real_entry 棘轮同款：**手写字段
+  清单是漂移温床**，新增预算字段时必须全点对账（本轮用 grep
+  `max_output_bytes` 找齐全部构造点）。
+
+### 语义边界
+
+- 未声明 max_cost 的合同行为与既往版本完全一致（既有 1506 条测试零改动
+  通过）；
+- 自报是下界（SPEC §12.3.1）：触线判断基于执行者自报的合计，压缩/缓存
+  刷新可能使真实消耗更高——线的位置由用户在知晓该语义的前提下设定；
+- 同一 attempt 重复写回按最后一次自报为准。
+
+## [Unreleased·五] 核心声明落地为运行时证据：无动作窗口零派工
+
+ROADMAP §六指标表里「无动作窗口 LLM 调用数」一直记为**未度量**——这是
+「调度核心不依赖 LLM」这条首要卖点的可验证形式。lhgp 的 LLM 调用只发生在
+executor/verifier attempt 内部，因此其运行时可观察面 = 安静窗口内零新
+attempt、零派工事件。
+
+### Added
+
+- `tests/integration/test_quiet_window_zero_dispatch.py`：三类安静合同
+  （ACTIVE+活租约在跑 / ACTIVE+紧迫度极低 / BLOCKED 等人）连跑 5 轮 60s tick，
+  断言 attempt 计数零增量、attempt/started 与 escalation/dispatch-deferred
+  零新增、三个合同状态逐字不变。任何让安静窗口产生派工的改动（QUEUED 误
+  升级、blocked 误唤醒、租约误判死）在此变红。
+- ROADMAP 指标表：起点列从「未度量」更新为「已度量」，指向该测试。
+- claims 登记为 `quiet-window-zero-dispatch-measured`。
+
+## [Unreleased·四] attempt 消耗台账（openpi 第四轮吸收：usage / 成本维度）
+
+openpi 有完整的消耗面：workflow `usage()` 返回 token/成本/上限、`/usage` 查
+服务配额、`usage-changed` 事件流。lhgp 把预算当硬边界，却只记「派几次」
+（max_dispatches），**没有任何账记「烧了多少」**——stats 只有墙钟和退出码。
+本轮补台账；预算强制（budget.max_cost）动合同冻结区 schema，明确留待单独审批。
+
+### Added
+
+- **`lhgp/persistence/usage.py`**：usage 自报的形状校验（纯函数）。
+  `input_tokens`/`output_tokens` 必填非负整数，`cache_read_tokens`/
+  `cache_write_tokens`/`cost_estimate` 可选；负数、错型（含 bool 伪装 int）、
+  未知键一律 `UsageInvalidError` 拒收。
+- **schema v5**：`attempts.usage_json` 列。新库 DDL 直接带列；旧库经
+  `_migrate_v4_to_v5` 幂等补列（`_add_column_if_missing` 同款，v4 库实测
+  升级后可重复执行 ensure_schema）。
+- **顺手拔掉一颗上轮迁移埋的雷**：`StoreConfig.schema_version` 是与
+  `STORE_SCHEMA_VERSION` 并存的手写死值，v3→v4 迁移时常量升了它没升，
+  靠「恰好相同」活到 v5——本次升 5 后立刻炸出：所有 runner 集成测试
+  集体 `StoreTamperedError`（配置期望 4 < 库 5 被只读拒收）。已修并加
+  漂移守护测试（两处值必须一致，不再靠巧合）。
+- **write-back 链路**：RPC `attempt/write-back` 与 MCP `lhgp_write_back`
+  接受可选 `usage`；拒收发生在任何落库之前（attempt 行无副作用、无终态
+  事件）；终态事件 payload 携带 usage 与 attempts 行并行供审计；不携带
+  usage 的存量写回零变化。
+- **stats 聚合**：`build_stats` 新增 `usage_totals`（跨 attempt 透明合计，
+  不换算不外推）；没记过台账不出现该键；存量脏数据（手改库）跳过不抛。
+
+### 语义（SPEC §12.3.1）
+
+- 自报是**下界**：上下文压缩、缓存刷新可能使真实消耗更高，消费方不得当精确值；
+- 同一 attempt 重复写回按最后一次自报为准（记终局累计，非逐次增量）。
+
+### Tests
+
+- `tests/unit/test_attempt_usage.py` 21 条：校验 9 边界（负数/bool/错型/
+  未知键/None/缺字段）、schema v5 新库与 v4 旧库幂等升级、写回落库+终态
+  事件并行、拒收无副作用、无 usage 向后兼容、stats 跨 attempt 合计/
+  空库无键/脏数据跳过。反向验证：摘掉 RPC 校验（负数落库）与摘掉 stats
+  聚合，各自命中预期测试名。
+
+## [Unreleased·三] 判定块截断丢失可区分（openpi 第三轮吸收：assertWatchableOutput 原则）
+
+openpi 的 `assertWatchableOutput` 原则：**派生观察依赖的缓冲被预算驱逐后，
+观察必须显式失效，不能静默降级成"没找到"**。这条原则在 lhgp 有一个已实证的
+缺口，本轮修复。
+
+### 实证（修复前）
+
+真子进程复现：同一个 verifier 脚本（1000 行噪声 + 末尾判定块）——
+无预算时 `parse_verdict_block` 正常解析（verdict=True）；预算 4KB 时
+verdict **静默变 False**，`output_truncated=True` 但**没有任何下游消费这个
+旗子**。verifier 跑成功了、证据也写了，却按协议退化为"无证据 → 人工仲裁"，
+用户白等一轮，且审计里看不出原因。
+
+### Fixed
+
+- **`verdict_from_output(stdout, *, output_truncated)`**（`lhgp/acceptance/verdict.py`）：
+  输出被截断**且**未解析出判定块 → 抛 `VerdictSourceLossError`；截断但块在
+  截断点之前 → 正常返回（块自足）；未截断 → 与 `parse_verdict_block` 一致。
+- **`runner._finish_attempt` 消费截断事实**：捕获该异常并写入事件 payload 的
+  `verdict_source_loss` 字段——下游同为 undetermined/人工仲裁，但「部署侧
+  预算问题（调大重跑即恢复）」与「verifier 未按约定输出」责任方不同，
+  必须可审计地分开。
+- SPEC §12.4 补截断语义条款（MUST 可区分）。
+
+### Added
+
+- conformance 3 条（真子进程：截断抛错 / 无预算正常 / 无块无截断仍 None），
+  载荷用临时脚本文件构造——`-c` 的多层转义会把字符串字面量撕开，本轮
+  复现脚本三次踩坑后改用文件传递，教训写进了测试 docstring。
+- unit 4 条（`verdict_from_output` 纯函数面），反向验证：守护条件改 `if False`
+  后 `test_truncated_absent_block_raises_source_loss` 变红。
+
+### 甄别后判定不吸收（openpi 同源机制已有 lhgp 结构等价物）
+
+- **Goal blockedAudit（连续 3 turn 才算真 blocked）**：lhgp 的 tick 主循环对
+  BLOCKED 合同直接 `continue`、`decide()` 只对 ACTIVE 合同运行，结构性避免了
+  "同一阻塞每轮重复升级"；风险通知有 revision 级幂等键
+  （`{cid}:risk-red:revision-{rev}`）。无缺口。
+- **Context Pivot（30K token 门槛的定向压缩）**：lhgp 的 auto-handover
+  （`check_handover_due` 60%/90% 双水位 + 60s 去抖 + HANDOVER_DUE 事件）已
+  覆盖同一问题面，且走的是"换下一个 attempt"而不是"压缩当前会话"——
+  与跨会话架构更一致。无缺口。
+- **result-budget（父上下文 headroom 按比例分配子结果预算）**：lhgp 的
+  `max_output_bytes` 是合同冻结区硬预算，语义不同（成本上限而非上下文
+  分配）。若未来做"多 attempt 结果聚合进单一提示词"再回来抄这个。
+
+## [Unreleased·二] 工具面 profile（基线 6e5f2f8 之后，分支 feature/tool-surface-profiles）
+
+依用户裁决实施：「相对严厉的改动」——51 个工具全量挂进宿主已影响正常使用。
+基线先行：main 已锚定在 6e5f2f8（7 门全绿存档），本段全部改动只在分支上。
+
+### Added
+
+- **`src/longtask/mcp_profiles.py`**：工具面六档 profile。`tools/list` 只返回
+  profile 内工具；**`tools/call` 对 profile 外工具一律拒调**（-32602
+  "outside this server's profile"）——隐藏必须是真的不可达，否则模型仍可凭
+  名字硬调，「看不见」只是装饰。`initialize` / `tools/list` 应答带 `profile` 字段。
+  - `executor`(11) / `verifier`(7) / `planner`(12) / `operator`(36) / `full`(35 正名)
+    / `legacy`(52 全量)；
+  - **未设置 `LHGP_MCP_PROFILE` = legacy**，既有安装一次也不变；
+  - 未知取值**启动即退出**并说明原因，不静默回落；角色清单引用不存在的工具名
+    同样启动即报错（宁可不启动，不静默少暴露）。
+- **`lhgp_user_confirm_spec_verdict` 正名**：此前 CANDIDATE→PASSED 的唯一 MCP
+  入口只有 `longtask_user_confirm_spec_verdict`（别名轨独有）——直接清别名
+  等于删掉签字能力本身。正名与别名同 handler、同 schema，分类 destructive。
+- **`tests/unit/test_tool_profiles.py`**（17 条）：声明一致性 / 行为 / 默认不变 /
+  尺寸守护（executor/verifier/planner ≤ 全量一半+6，operator = full 减别名轨）。
+
+### Changed
+
+- **`_dispatch` 双处接入 profile**：tools/list 过滤 + tools/call fail-closed；
+  绕过 `serve_stdio` 的未初始化 context 拒绝服务（防静默全量）。
+- **契约同步**：ARCHITECTURE marker 51→52（35 正名 + 17 别名）、
+  `LEGACY_ONLY_SUFFIXES` 4→3（user_confirm 移出）、annotations destructive
+  集合补正名、SKILL 场景决策表统一 `lhgp_*` 正名（原先三种轨道名混用）并加
+  profile 说明、DESIGN v0.9 新增 §11.8、SPEC §19.3 补「清别名前必须先补齐
+  正名缺口」条款。
+
+### 量化（改动动机）
+
+- 全量 schema 34,007 B（粗估 8.5K token），其中 37% 为兼容别名重复；
+- executor 面 4,662 B（**−86%**）、verifier 2,563 B（−92%）、planner −79%；
+- 执行者原本能看见 `lhgp_approve_goal` 等 Principal-only 入口——模型调用会被
+  AUTH_FAILED，但**能看见就会去试**，每次都是注定失败的往返。
+
+### 反向验证（四项变异全部命中预期测试名）
+
+1. 摘掉越界拒调 → `test_call_outside_profile_is_refused` 红；
+2. executor 塞入 approve → `test_executor_cannot_see_principal_gates` 红；
+3. operator 丢签字门 → `test_operator_can_reach_the_signature_gate` 红；
+4. 未知 profile 静默回落 legacy → `test_unknown_profile_is_rejected_not_silently_defaulted` 红。
+另做过真子进程端到端：executor 下 tools/list 恰 11 个、硬调 approve 被拒、界内 health 正常。
+
+### 未做（下一步，需再过审批）
+
+- 17 个 `longtask_*` 别名的删除（SPEC §19.3：保留至少一个次版本；正名缺口已补齐，
+  剩余三个别名-only 名字均有正名对应）。
+- PARALLEL 档行为与措辞（见「审查发现但未修」，属 R3b）。
+
 ## [0.1.0a13] - 2026-09-10
 
 绑定时机：第 9 轮外部审查指出，上一轮（a12）引入的内容指纹绑错了时间点——

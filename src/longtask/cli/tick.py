@@ -318,6 +318,17 @@ def run_daemon_tick(
             if isinstance(c.draft.execution, dict)
             else False
         )
+        # 成本预算线（§6.3）：仅在合同声明 max_cost 时才扫台账（其余合同
+        # 零额外查询）。口径 = 该合同全部 attempt 的 cost_estimate 自报合计
+        # （executor 与 verifier 都烧钱），与 SPEC §12.3.1 的下界语义一致。
+        budget_cost_left: float | None = None
+        if c.draft.budget.max_cost is not None:
+            from lhgp.persistence.usage import total_cost
+
+            rows = conn.execute(
+                "SELECT usage_json FROM attempts WHERE contract_id = ?", (cid,)
+            ).fetchall()
+            budget_cost_left = c.draft.budget.max_cost - total_cost([r[0] for r in rows])
         decision = decide(
             u_tier,
             lease_alive=lease_alive,
@@ -327,6 +338,7 @@ def run_daemon_tick(
             ),
             estimate_stalled=estimate_stalled_by_contract.get(cid, False),
             partitions_allowed=allow_parallel,
+            budget_cost_left=budget_cost_left,
         )
 
         # P4：真实决策点计算 + 落库（不递增 revision，纯调度簿记）
@@ -425,6 +437,8 @@ def run_daemon_tick(
             )
 
         match decision.tier:
+            # PARALLEL 已不再由 decide() 产出（档 4 未实现，见 promoter/
+            # escalation.py）；保留在同一 case 里是为了兼容历史决策数据的重放。
             case UrgencyTier.RESPAWN | UrgencyTier.PARALLEL:
                 # workspace 排他（共同维护风险）：同 workspace 有其他合同的
                 # 活租约 → 本轮延后。两个执行者并发写同一目录 = 未定义行为

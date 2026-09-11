@@ -187,6 +187,8 @@
         "max_attempt_minutes": { "type": "integer", "exclusiveMinimum": 0 },
         "max_output_bytes": { "type": "integer", "exclusiveMinimum": 0 }
         ,"verification_attempts_reserved": { "type": "integer", "minimum": 0 }
+        ,"max_cost": { "type": "number", "exclusiveMinimum": 0,
+                       "description": "可选：按钱画线的预算上限（货币单位由部署约定）；台账口径见 SPEC §12.3.1" }
       },
       "additionalProperties": false
     },

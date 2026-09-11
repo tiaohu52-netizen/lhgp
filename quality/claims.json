@@ -1180,6 +1180,249 @@
           "summary": "反向验证两种变异：摘掉 stdout_text 的清洗 → 清洗场景变红；把两个分支的 output_truncated 都写死 False → 截断场景变红（只改一个分支时测试照绿，说明必须改测试实际走的那条分支才算验证）。"
         }
       ]
+    },
+    {
+      "id": "mcp-tool-surface-profiles",
+      "statement": "MCP 工具面 profile（DESIGN §11.8）：工具面按调用方角色收窄，是服务端声明而非提示词约定——tools/list 只返回 profile 内工具；tools/call 对 profile 外工具一律拒调（fail-closed，隐藏必须是不可达）；initialize 与 tools/list 应答携带 profile 名。六档：executor(11)/verifier(7)/planner(12)/operator(36)/full(35 正名)/legacy(52 全量)。未设置环境变量 = legacy，既有安装零变化；未知取值启动即退出，不静默回落；角色清单引用不存在的工具名启动即报错。签字门补正名 lhgp_user_confirm_spec_verdict（此前 CANDIDATE→PASSED 的唯一 MCP 入口只有 longtask_* 别名轨）。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/longtask/mcp_profiles.py",
+        "src/longtask/mcp_server.py",
+        "tests/unit/test_tool_profiles.py"
+      ],
+      "evidence": [
+        {
+          "kind": "focused_test",
+          "path": "tests/unit/test_tool_profiles.py",
+          "recorded_at": "2026-09-10",
+          "summary": "17 条：声明一致性（每个 role 工具真实存在、只收正名、executor 无批准权、verifier 无变更面、operator 可达签字门）、行为（tools/list 过滤、越界拒调、未初始化 context 拒服务、initialize 报 profile）、默认不变（未设置/空白 = legacy 全量）、尺寸守护（executor/verifier/planner ≤ 全量一半+6；operator = full 减别名轨）。"
+        },
+        {
+          "kind": "manual_review",
+          "path": "src/longtask/mcp_server.py",
+          "recorded_at": "2026-09-10",
+          "summary": "反向验证四项变异全部命中预期测试名：摘掉越界拒调→test_call_outside_profile_is_refused 红；executor 塞入 approve→test_executor_cannot_see_principal_gates 红；operator 丢签字门→test_operator_can_reach_the_signature_gate 红；未知 profile 静默回落→test_unknown_profile_is_rejected_not_silently_defaulted 红。另做过真子进程端到端：executor profile 下 initialize 应答 profile=executor、tools/list 恰 11 个、硬调 lhgp_approve_goal 返回 -32602 outside profile、界内 lhgp_health 正常。"
+        }
+      ]
+    },
+    {
+      "id": "verdict-source-loss-distinguishable-from-absent",
+      "statement": "SPEC §12.4 通道 2 的截断语义：lhgp-verdict 判定块约定在 stdout 末尾，budget.max_output_bytes 保留头部，因此输出截断发生时判定块必然丢失。此时运行时必须把「判定块随预算截断丢失」记为独立事实（事件 payload 的 verdict_source_loss 字段），不得静默按「verifier 没写」处理——两者下游同为 undetermined/人工仲裁，但责任方与修法不同（部署侧调大预算重跑 vs verifier 未按约定输出）。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/lhgp/acceptance/verdict.py",
+        "src/longtask/cli/runner.py",
+        "tests/unit/test_verdict.py",
+        "tests/conformance/test_adapter_scenarios.py"
+      ],
+      "evidence": [
+        {
+          "kind": "integration_real_store",
+          "path": "tests/conformance/test_adapter_scenarios.py",
+          "recorded_at": "2026-09-10",
+          "summary": "真子进程 3 条：1000 行噪声 + 末尾判定块、预算 4KB → output_truncated=True 且 verdict_from_output 抛 VerdictSourceLossError；无预算 → 正常解析 succeeded；无块无截断 → None 保留原语义。载荷用临时脚本文件构造（-c 多层转义会把字符串字面量撕开，本测试因此踩过坑，改为文件传递）。"
+        },
+        {
+          "kind": "focused_test",
+          "path": "tests/unit/test_verdict.py",
+          "recorded_at": "2026-09-10",
+          "summary": "4 条纯函数面：未截断无块 → None；截断无块 → 抛错；截断但块在截断点前 → 正常返回（块自足）；未截断时与 parse_verdict_block 行为一致。"
+        },
+        {
+          "kind": "manual_review",
+          "path": "src/longtask/cli/runner.py",
+          "recorded_at": "2026-09-10",
+          "summary": "反向验证：把守护条件改为 if False（退回静默 None）后 test_truncated_absent_block_raises_source_loss 变红。修复前先实证了 bug：同一 verifier 脚本无预算时 verdict=True、预算 4KB 时 verdict=False 且 output_truncated=True 无任何下游消费——verifier 跑成功、证据写了、却按协议退化为人工仲裁，用户白等一轮。"
+        }
+      ]
+    },
+    {
+      "id": "attempt-usage-ledger-recorded-on-write-back",
+      "statement": "attempt 消耗台账（SPEC §12.3.1，存储 schema v5）：写回 MAY 携带 usage 自报（input/output tokens 必填非负整数、cache tokens/cost_estimate 可选），形状 fail-closed 校验（负数/错型含 bool/未知键拒收且发生在任何落库之前）；台账落 attempts.usage_json，终态事件 payload 并行携带；stats.usage_totals 跨 attempt 透明合计（无台账不出键，脏数据跳过）。自报是下界语义；同一 attempt 重复写回按最后一次为准；预算强制（budget.max_cost）不在本版本。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/lhgp/persistence/usage.py",
+        "src/longtask/persistence/schema.py",
+        "src/longtask/persistence/store.py",
+        "src/longtask/rpc/executor_api.py",
+        "src/lhgp/persistence/insights.py",
+        "tests/unit/test_attempt_usage.py"
+      ],
+      "evidence": [
+        {
+          "kind": "focused_test",
+          "path": "tests/unit/test_attempt_usage.py",
+          "recorded_at": "2026-09-11",
+          "summary": "21 条：normalize_usage 9 边界全部拒收（含 bool 伪装 int、None 显式语义）、v4 旧库幂等升级后 user_version=5 且可重复 ensure_schema、终态写回 usage 同时落 attempts 行与 attempt/succeeded payload、非法 usage 拒收后 attempt 行无副作用（usage_json 为 NULL 且 state 仍 running）、无 usage 写回向后兼容、stats 跨 attempt 合计与空库无键与脏数据跳过。"
+        },
+        {
+          "kind": "manual_review",
+          "path": "src/longtask/rpc/executor_api.py",
+          "recorded_at": "2026-09-11",
+          "summary": "反向验证两项变异命中预期测试名：RPC 校验替换为透传 dict → test_invalid_usage_is_refused_without_side_effects 红（负数会落库）；insights 聚合摘除 → test_stats_aggregates_usage_across_attempts 红。四层自查：L1 新代码仅边界处 Any（外部 JSON 入口，正当）；L2 normalize_usage/UsageInvalidError 均有生产调用点（executor_api）；L3 bool 伪装 int 显式排除、None 分两义处理（未携带 vs 字段 null）。"
+        }
+      ]
+    },
+    {
+      "id": "quiet-window-zero-dispatch-measured",
+      "statement": "无动作窗口零派工（ROADMAP §六指标的可观察面）：lhgp 的 LLM 调用只发生在 executor/verifier attempt 内部，调度核心是确定性代码。三类安静合同（ACTIVE+活租约、ACTIVE+紧迫度极低、BLOCKED need-user）连跑 5 轮 60s tick，零新 attempt、零派工/升级事件、状态纹丝不动。该指标此前在 ROADMAP 记为「未度量」，本测试把它钉进 CI——任何让安静窗口产生派工的改动（QUEUED 误升级、blocked 误唤醒、租约误判死）在此变红。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "tests/integration/test_quiet_window_zero_dispatch.py",
+        "src/longtask/cli/tick.py"
+      ],
+      "evidence": [
+        {
+          "kind": "integration_real_store",
+          "path": "tests/integration/test_quiet_window_zero_dispatch.py",
+          "recorded_at": "2026-09-11",
+          "summary": "真 SQLite + 真注册表 + run_daemon_tick 连跑 5 轮：attempt 计数零增量、attempt/started 与 escalation/dispatch-deferred 事件零新增、三个合同状态逐字不变（active/active/blocked）。"
+        }
+      ]
+    },
+    {
+      "id": "budget-max-cost-enforced-at-dispatch",
+      "statement": "成本预算线（SPEC §12.3.2，DESIGN v0.11）：合同 MAY 在 budget 声明 max_cost（正数，缺席=不设线）。强制点在 decide()——全部 attempt 的 cost_estimate 自报合计触线时返回 HAND_TO_USER，且先于「无租约 STEER 转 RESPAWN」换挡（转向重派同样花钱）；租约活着时维持 §7 封顶。解析对齐 JSON schema 严格口径（数字字符串/bool/null 拒收）；未声明合同行为与既往版本一致。budget 序列化/读回的三处手写字段清单（save、revisions 快照、_row_to_contract_view）必须包含该字段，由存取回环回归测试钉死。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/lhgp/contracts/budget.py",
+        "src/lhgp/contracts/contract_draft.py",
+        "src/lhgp/contracts/validation.py",
+        "src/lhgp/promoter/escalation.py",
+        "src/longtask/cli/tick.py",
+        "src/longtask/persistence/store.py",
+        "src/lhgp/persistence/usage.py",
+        "tests/unit/test_budget_max_cost.py",
+        "tests/integration/test_cost_budget_enforcement.py"
+      ],
+      "evidence": [
+        {
+          "kind": "integration_real_store",
+          "path": "tests/integration/test_cost_budget_enforcement.py",
+          "recorded_at": "2026-09-11",
+          "summary": "tick 端到端 2 条：成本触线合同（自报 2.0 ≥ max_cost 1.0、紧迫度 u=4 达 RESPAWN 区）→ blocked(need-user) 且 blocked 事件写明 cost budget exhausted、零新派工；同轮对照组（未声明 max_cost）正常派工（门不误伤）；未触线合同正常派工（线不提前收紧）。"
+        },
+        {
+          "kind": "focused_test",
+          "path": "tests/unit/test_budget_max_cost.py",
+          "recorded_at": "2026-09-11",
+          "summary": "18 条：缺席 None/显式 null 拒收/正数解析/负数零 bool 字符串串拒收、validate()、raw 校验、decide 五分支（耗尽先于 STEER 换挡、余量为正正常 RESPAWN、None 向后兼容、PARALLEL 档同样被拦、活租约仍封顶）、JSON schema 正例负例。"
+        },
+        {
+          "kind": "manual_review",
+          "path": "tests/unit/test_attempt_usage.py",
+          "recorded_at": "2026-09-11",
+          "summary": "反向验证两项变异命中预期测试名：decide 成本分支改 if False → 单测红；tick 成本合计改 if False → 端到端红。另存取回环 2 条（max_cost=9.75 写入即读回、缺席读回 None）——端到端首跑曾因 store 三处手写字段清单缺该字段而静默失效，此为真 bug 非测试错误。"
+        }
+      ]
+    },
+    {
+      "id": "local-no-model-end-to-end-example",
+      "statement": "R4a 可复制本地示例：doctor → prepare → approve → execute → verify → satisfied 全链路，无需模型账号/网络/密钥。执行者与核验者是两个普通 subprocess 程序，分别走两条 stdout 协议通道（attempt/finished 事件行 + lhgp-verdict 判定块）；派工/回收/交叉验收全部由真实调度主循环（run_daemon_loop）产生，不使用人工补写成功事件的 harness。失败时给出可执行排查出口。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "examples/local-no-model/run_example.py",
+        "examples/local-no-model/worker.py",
+        "examples/local-no-model/checker.py",
+        "examples/local-no-model/README.md",
+        "tests/integration/test_local_no_model_example.py"
+      ],
+      "evidence": [
+        {
+          "kind": "integration_real_store",
+          "path": "tests/integration/test_local_no_model_example.py",
+          "recorded_at": "2026-09-11",
+          "summary": "真子进程运行示例脚本并断言：退出码 0 且输出含『全链路通过』；交付物 result.txt 内容含标记；合同终态 ∈ {satisfied, complete} 且 acceptance_status=passed；attempts 表存在 executor(local-worker) 与 verifier(local-checker) 两条真实 attempt 且均 succeeded；events 里不存在 actor=user 的 attempt/* 或 verification/* 记录（成功非人工补写）；至少两次 attempt/started（执行+验收各一次）。"
+        },
+        {
+          "kind": "manual_review",
+          "path": "examples/local-no-model/README.md",
+          "recorded_at": "2026-09-11",
+          "summary": "开发中实测到的两个非缺陷行为已写进排查出口：① 每轮新建 runner 等价守护进程重启，在飞 attempt 会按 SPEC §11.3 判为 detached→failed（崩溃恢复的诚实边界）；② 注入时钟只推动合同决策时间，子进程需要真实时间退出，两者都要给。另记录了输出预算截断判定块的 verdict_source_loss 处置（调大预算重跑）。"
+        }
+      ]
+    },
+    {
+      "id": "completion-event-attestation-observable",
+      "statement": "完成事件行的凭据加固（SPEC §12.4）：attempt/finished 是自报的完成声明，事件行 MAY 携带 spawn 注入的 per-attempt session_token。匹配 → completion_attested=True 并落进 attempt 终态事件（审计可区分凭据自报与裸自报）；不携带 → False 且仍采信（存量 harness 零影响）；不匹配或本 attempt 未注入却携带 → 拒绝该行（防输出回显被当作完成声明）。识别形态容错键值间空白（FINISHED_EVENT_RE），但必须 json.loads 通过才采信。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/longtask/adapters/subprocess_adapter.py",
+        "src/longtask/cli/runner.py",
+        "tests/unit/test_finished_event_attestation.py",
+        "tests/integration/test_local_no_model_example.py"
+      ],
+      "evidence": [
+        {
+          "kind": "focused_test",
+          "path": "tests/unit/test_finished_event_attestation.py",
+          "recorded_at": "2026-09-11",
+          "summary": "7 条覆盖凭据矩阵：裸事件采信+标 False、匹配 token 采信+标 True、错 token 拒绝、未注入却携带拒绝、非字符串拒绝、容错空白与凭据并存、别的事件/非 JSON 仍拒绝。"
+        },
+        {
+          "kind": "integration_real_store",
+          "path": "tests/integration/test_local_no_model_example.py",
+          "recorded_at": "2026-09-11",
+          "summary": "示例 worker 以推荐形态回带 token，端到端断言 attempt/succeeded(executor) 事件 payload 里 completion_attested=True——凭据从子进程 env 到适配器再到事件流的全链贯通。"
+        },
+        {
+          "kind": "manual_review",
+          "path": "src/longtask/adapters/subprocess_adapter.py",
+          "recorded_at": "2026-09-11",
+          "summary": "反向验证：摘掉 token 校验后 test_mismatched_token_is_refused / test_token_when_none_injected_is_refused / test_non_string_token_is_refused 三条同时变红。"
+        }
+      ]
+    },
+    {
+      "id": "injection-surface-truncation-is-marked",
+      "statement": "注入面截断纪律（DESIGN §4.1）：凡进入提示词的文本被长度预算截断时，必须落在**行界**并带**显式标记**（说明去哪里看全文），不得静默拦腰切断。覆盖两处：handover 附言（1200 字符预算，标记指向 handover.md）与用户指令注入（240 字符预算，标记指向消息层）。标记字节计入预算（含标记总长不超上限）；首行本身超预算的退化场景硬切 + 标记，诚实边界成文。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/longtask/persistence/context.py",
+        "tests/unit/test_context.py"
+      ],
+      "evidence": [
+        {
+          "kind": "focused_test",
+          "path": "tests/unit/test_context.py",
+          "recorded_at": "2026-09-11",
+          "summary": "handover 端与 directive 端各驱动生产路径断言：超长 next_action 经 handover_prompt_addendum、超长 directive 经 send_message + compile_context_snapshot，输出必含对应标记且长度不超预算；另有 8 条助手级边界（短文本不动/恰好预算不动/多行切点完整/无半行残留/单行退化/标记计预算/预算小于标记拒收）。"
+        },
+        {
+          "kind": "manual_review",
+          "path": "src/longtask/persistence/context.py",
+          "recorded_at": "2026-09-11",
+          "summary": "反向验证两次：把 handover 调用点退回裸切片 → test_addendum_uses_line_truncation 红；把 directive 调用点退回裸切片 → **第一次没红**（原用例只测助手函数、锁不住接线），改为驱动 send_message + compile_context_snapshot 的生产路径后才红。这条「测试必须打在接线上」的教训与 real_entry 棘轮同源。"
+        }
+      ]
+    },
+    {
+      "id": "parallel-tier-not-claimed-until-implemented",
+      "statement": "档 4 并行加派诚实化（DESIGN §6.2/§6.3/§7.1）：分区租约机制未接线（无生产调用点、partition_id 恒默认空值、lease/partition-conflict 与 PARTITION_CONFLICT 从未写出），因此 decide() **不得**产出 UrgencyTier.PARALLEL。估算停滞一律如实返回 RESPAWN，理由自陈 parallel dispatch is not implemented 且记录被请求的并行意图，并且不消耗 max_escalations。文档与工具面不得把分区并行描述为已有能力（DESIGN §7.1 明令）。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/lhgp/promoter/escalation.py",
+        "src/lhgp/promoter/urgency.py",
+        "src/lhgp/promoter/lease.py",
+        "src/lhgp/persistence/events.py",
+        "src/longtask/cli/tick.py",
+        "DESIGN.md",
+        "tests/unit/test_escalation.py"
+      ],
+      "evidence": [
+        {
+          "kind": "focused_test",
+          "path": "tests/unit/test_escalation.py",
+          "recorded_at": "2026-09-11",
+          "summary": "TestStalledRespawnIsHonest 5 条（档位=RESPAWN、理由含 not implemented 与 partitions_requested、不消耗 escalations、escalations 取值不影响结果、不可分区同样串行）+ TestParallelTierIsUnreachable 2 条（穷举 >100 组输入断言 PARALLEL 不可达、停滞理由自陈未实现）。"
+        },
+        {
+          "kind": "source_static",
+          "path": "src/lhgp/promoter/lease.py",
+          "recorded_at": "2026-09-11",
+          "summary": "模块 docstring 显式声明接线状态：check_write_fence 是生产路径；Partition/check_partition_compatible 设计先行、未接线，保留待 ADR-005，且不得被描述为已有能力。events.py 两个预留事件类型、urgency.py 枚举保留理由、tick.py case 兼容历史数据重放均同步注释。"
+        }
+      ]
     }
   ]
 }
