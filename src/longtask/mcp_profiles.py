@@ -1,7 +1,8 @@
 """MCP 工具面 profile：按调用方角色收窄暴露的工具集（SPEC §19.3、DESIGN §11）。
 
-51 个工具全量挂进宿主的 tools/list 是实测过的负担（约 34 KB / 粗估 8.5K token，
-其中 37% 是兼容别名重复），而且执行者会话能看见 `approve` / `update_goal` 这类
+52 个工具全量挂进宿主的 tools/list 是实测过的负担（实测 35332 字节 ≈ 34.5 KB；
+按 chars÷4 粗估 ≈ 7.0K token；其中 35.3% 是 17 条 `longtask_*` 兼容别名的重复），
+而且执行者会话能看见 `approve` / `update_goal` 这类
 Principal-only 入口（模型调用会被 AUTH_FAILED，但**能看见就会去试**，每次尝试都是
 一次注定失败的往返和一段被浪费的上下文）。
 
@@ -10,7 +11,7 @@ profile 是**服务端声明**，不是提示词约定：
 - ``tools/list`` 只返回 profile 内的工具；
 - ``tools/call`` 对 profile 外的工具一律拒调（fail-closed）——隐藏必须是真的
   不可达，否则「看不见」只是装饰，模型仍可凭名字硬调；
-- 默认 profile = ``legacy``（全量 51 条）：不配置的既有安装**一次也不变**，
+- 默认 profile = ``legacy``（全量 52 条）：不配置的既有安装**一次也不变**，
   这是升级纪律（CONTRIBUTING：不破坏存量）。
 
 选择方式（先环境变量后默认）::
@@ -104,7 +105,6 @@ OPERATOR_TOOLS = (
     "lhgp_evolve_templates",
     "lhgp_send_message",
     "lhgp_propose_plan",
-    "lhgp_stats",
     # 人不在执行者会话里干活：write_back / attach_executor / resume_attempt
     # 是执行者的写回通道，operator 面不需要（要干预走 CLI）。
     "lhgp_write_back",

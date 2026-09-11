@@ -136,5 +136,17 @@ class TestProfileSizesStaySmall:
         )
 
     def test_operator_profile_drops_only_legacy_aliases(self) -> None:
-        """operator = full 减去别名轨；它必须仍能覆盖 full 的全部正名。"""
-        assert set(OPERATOR_TOOLS) == {t for t in TOOLS if t.startswith("lhgp_")}
+        """operator = full 减去别名轨；它必须仍能覆盖 full 的全部正名。
+
+        比较用 ``sorted`` 而不是 ``set``：set 会把重复条目抹平，
+        于是「清单里有重复」这个缺陷对断言完全不可见（``lhgp_stats``
+        就曾在 OPERATOR_TOOLS 里出现两次而这条测试一直是绿的）。
+        """
+        assert sorted(OPERATOR_TOOLS) == sorted(t for t in TOOLS if t.startswith("lhgp_"))
+
+    def test_no_profile_lists_a_tool_twice(self) -> None:
+        """重复条目是纯负担：tools/list 会返回两条同名工具，收窄也白算一次。"""
+        for name in ("executor", "verifier", "planner", "operator"):
+            _, tools = profile_for_environment({"LHGP_MCP_PROFILE": name})
+            dupes = sorted({t for t in tools if tools.count(t) > 1})
+            assert dupes == [], f"profile {name} 重复列出: {dupes}"
