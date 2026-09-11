@@ -270,7 +270,7 @@ P0 不阻塞任何阶段，可以立即做。P2 与 P3 在 P1 之后可并行。
 | claims 中 pinned 的实现声明 | 0 | 全部 |
 | 四轴状态落地 | 2 / 4 | 4 / 4 |
 | 存储最小实体（§13.1 共 11 个） | 3 | 11 |
-| 无动作窗口 LLM 调用数 | 未度量 | 0 |
+| 无动作窗口 LLM 调用数 | 未度量 → **已度量（2026-09-11）**：安静窗口（活租约/低紧迫/blocked 三类）5 轮 tick 零派工，见 tests/integration/test_quiet_window_zero_dispatch.py | 0 |
 
 覆盖率是辅助指标，不替代 conformance 场景。每个公开能力声明必须绑定一个可重复证据；`pinned_sha: unpinned` 的证据不能作为发布证明。
 

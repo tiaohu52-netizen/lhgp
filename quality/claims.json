@@ -1262,6 +1262,23 @@
           "summary": "反向验证两项变异命中预期测试名：RPC 校验替换为透传 dict → test_invalid_usage_is_refused_without_side_effects 红（负数会落库）；insights 聚合摘除 → test_stats_aggregates_usage_across_attempts 红。四层自查：L1 新代码仅边界处 Any（外部 JSON 入口，正当）；L2 normalize_usage/UsageInvalidError 均有生产调用点（executor_api）；L3 bool 伪装 int 显式排除、None 分两义处理（未携带 vs 字段 null）。"
         }
       ]
+    },
+    {
+      "id": "quiet-window-zero-dispatch-measured",
+      "statement": "无动作窗口零派工（ROADMAP §六指标的可观察面）：lhgp 的 LLM 调用只发生在 executor/verifier attempt 内部，调度核心是确定性代码。三类安静合同（ACTIVE+活租约、ACTIVE+紧迫度极低、BLOCKED need-user）连跑 5 轮 60s tick，零新 attempt、零派工/升级事件、状态纹丝不动。该指标此前在 ROADMAP 记为「未度量」，本测试把它钉进 CI——任何让安静窗口产生派工的改动（QUEUED 误升级、blocked 误唤醒、租约误判死）在此变红。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "tests/integration/test_quiet_window_zero_dispatch.py",
+        "src/longtask/cli/tick.py"
+      ],
+      "evidence": [
+        {
+          "kind": "integration_real_store",
+          "path": "tests/integration/test_quiet_window_zero_dispatch.py",
+          "recorded_at": "2026-09-11",
+          "summary": "真 SQLite + 真注册表 + run_daemon_tick 连跑 5 轮：attempt 计数零增量、attempt/started 与 escalation/dispatch-deferred 事件零新增、三个合同状态逐字不变（active/active/blocked）。"
+        }
+      ]
     }
   ]
 }

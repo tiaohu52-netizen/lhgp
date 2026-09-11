@@ -122,6 +122,23 @@ follow [SemVer](https://semver.org/spec/v2.0.0.html); dates in ISO 8601.
 可重建，不可超前」），`_atomic_write` 已给出单文件原子性。缺的是「重建」这一动作的
 触发，不是「回执」。不属于本轮范围，记在此处备查而非静默略过。
 
+## [Unreleased·五] 核心声明落地为运行时证据：无动作窗口零派工
+
+ROADMAP §六指标表里「无动作窗口 LLM 调用数」一直记为**未度量**——这是
+「调度核心不依赖 LLM」这条首要卖点的可验证形式。lhgp 的 LLM 调用只发生在
+executor/verifier attempt 内部，因此其运行时可观察面 = 安静窗口内零新
+attempt、零派工事件。
+
+### Added
+
+- `tests/integration/test_quiet_window_zero_dispatch.py`：三类安静合同
+  （ACTIVE+活租约在跑 / ACTIVE+紧迫度极低 / BLOCKED 等人）连跑 5 轮 60s tick，
+  断言 attempt 计数零增量、attempt/started 与 escalation/dispatch-deferred
+  零新增、三个合同状态逐字不变。任何让安静窗口产生派工的改动（QUEUED 误
+  升级、blocked 误唤醒、租约误判死）在此变红。
+- ROADMAP 指标表：起点列从「未度量」更新为「已度量」，指向该测试。
+- claims 登记为 `quiet-window-zero-dispatch-measured`。
+
 ## [Unreleased·四] attempt 消耗台账（openpi 第四轮吸收：usage / 成本维度）
 
 openpi 有完整的消耗面：workflow `usage()` 返回 token/成本/上限、`/usage` 查
