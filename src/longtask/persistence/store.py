@@ -200,6 +200,47 @@ def attempt_evidence_binding(
     return evidence_binding(acceptance) if acceptance is not None else {}
 
 
+def _tampered(contract_id: str, column: str, detail: str, exc: BaseException) -> StoreTamperedError:
+    """构造读路径的损坏行错误（审计 B5）。
+
+    存储被外部改动正是 ``StoreTamperedError`` 的定义（``errors.py``），而 RPC 层
+    早就为它准备了专属映射 ``except StoreTamperedError →
+    ErrorCode.STORE_TAMPERED``。读路径却直接 ``json.loads`` / 直取键，抛的是
+    ``json.JSONDecodeError`` / ``KeyError``——**不属于 StoreError 层级**，于是
+    绕过那道映射与任何 ``except StoreError``，最后以
+    「Expecting value: line 1 column 1 (char 0)」这种不含合同、不含列名的形式冒到
+    用户面前。这里把它换成自解释的类型化错误：仍是 fail-closed（不猜、不降级成
+    凭空的合同字段），但可被上层的 StoreError 处理面接住。
+    """
+    return StoreTamperedError(f"contract {contract_id}: column {column} {detail} ({exc})")
+
+
+def _parse_json_column(raw: Any, *, contract_id: str, column: str) -> Any:
+    """解析合同行里的 JSON 列；损坏时抛类型化错误而不是裸 ValueError。"""
+    try:
+        return json.loads(raw) if raw else {}
+    except (TypeError, ValueError) as exc:
+        raise _tampered(contract_id, column, f"holds invalid JSON {raw!r}", exc) from exc
+
+
+def _require_key(mapping: Any, key: str, *, contract_id: str, column: str) -> Any:
+    """取必填键；缺失时抛类型化错误而不是裸 KeyError。"""
+    try:
+        return mapping[key]
+    except (KeyError, TypeError) as exc:
+        raise _tampered(contract_id, column, f"is missing required key {key!r}", exc) from exc
+
+
+def _parse_required(
+    value: Any, parser: Callable[[Any], Any], *, contract_id: str, column: str
+) -> Any:
+    """对必填列做一次带上下文的解析（状态枚举、时间戳等）。"""
+    try:
+        return parser(value)
+    except (TypeError, ValueError) as exc:
+        raise _tampered(contract_id, column, f"is unreadable ({value!r})", exc) from exc
+
+
 def _row_to_contract_view(row: sqlite3.Row | tuple[Any, ...]) -> ContractView:
     """数据库记录转 ContractView（DESIGN §4、§11.6、§7 四轴）。
 
@@ -236,21 +277,42 @@ def _row_to_contract_view(row: sqlite3.Row | tuple[Any, ...]) -> ContractView:
         _schema_version,
     ) = row
 
-    acceptance_dict = json.loads(acceptance_json)
+    acceptance_dict = _parse_json_column(
+        acceptance_json, contract_id=contract_id, column="acceptance_json"
+    )
     acceptance = Acceptance(
-        standard=acceptance_dict["standard"],
-        checks=_parse_acceptance_checks(acceptance_dict["checks"]),
+        standard=_require_key(
+            acceptance_dict, "standard", contract_id=contract_id, column="acceptance_json"
+        ),
+        checks=_parse_required(
+            _require_key(
+                acceptance_dict, "checks", contract_id=contract_id, column="acceptance_json"
+            ),
+            _parse_acceptance_checks,
+            contract_id=contract_id,
+            column="acceptance_json.checks",
+        ),
         verifier=acceptance_dict.get("verifier", "cross_check"),
         spec=acceptance_dict.get("spec"),
         spec_hash=acceptance_dict.get("spec_hash"),
     )
-    budget_dict = json.loads(budget_json)
+    budget_dict = _parse_json_column(budget_json, contract_id=contract_id, column="budget_json")
     budget = Budget(
-        max_dispatches=budget_dict["max_dispatches"],
-        max_escalations=budget_dict["max_escalations"],
-        max_concurrent_attempts=budget_dict["max_concurrent_attempts"],
-        max_attempt_minutes=budget_dict["max_attempt_minutes"],
-        max_output_bytes=budget_dict["max_output_bytes"],
+        max_dispatches=_require_key(
+            budget_dict, "max_dispatches", contract_id=contract_id, column="budget_json"
+        ),
+        max_escalations=_require_key(
+            budget_dict, "max_escalations", contract_id=contract_id, column="budget_json"
+        ),
+        max_concurrent_attempts=_require_key(
+            budget_dict, "max_concurrent_attempts", contract_id=contract_id, column="budget_json"
+        ),
+        max_attempt_minutes=_require_key(
+            budget_dict, "max_attempt_minutes", contract_id=contract_id, column="budget_json"
+        ),
+        max_output_bytes=_require_key(
+            budget_dict, "max_output_bytes", contract_id=contract_id, column="budget_json"
+        ),
         # P5 验证预算：老库存 JSON 无此字段 → 兜底 2（允许失败后重验）
         verification_attempts_reserved=int(
             budget_dict.get("verification_attempts_reserved", DEFAULT_VERIFICATION_RESERVED)
@@ -261,19 +323,47 @@ def _row_to_contract_view(row: sqlite3.Row | tuple[Any, ...]) -> ContractView:
     draft = ContractDraft(
         title=title,
         objective=objective,
-        deadline_at=datetime.fromisoformat(deadline_at_str),
-        hard_constraints=json.loads(hard_constraints_json),
+        deadline_at=_parse_required(
+            deadline_at_str,
+            datetime.fromisoformat,
+            contract_id=contract_id,
+            column="deadline_at",
+        ),
+        hard_constraints=_parse_json_column(
+            hard_constraints_json, contract_id=contract_id, column="hard_constraints_json"
+        ),
         acceptance=acceptance,
-        workload_initial_hours=float(workload_initial_hours),
+        workload_initial_hours=_parse_required(
+            workload_initial_hours,
+            float,
+            contract_id=contract_id,
+            column="workload_initial_hours",
+        ),
         budget=budget,
-        soft_guidance=json.loads(soft_guidance_json),
-        context=json.loads(context_json),
-        execution=json.loads(execution_json),
-        client_meta=json.loads(client_meta_json),
-        authority=authority_from_dict(json.loads(authority_json)),
-        attention=attention_from_dict(json.loads(attention_json)),
-        continuity=continuity_from_dict(json.loads(continuity_json)),
-        auto_approve=auto_approve_from_dict(json.loads(auto_approve_json or "{}")),
+        soft_guidance=_parse_json_column(
+            soft_guidance_json, contract_id=contract_id, column="soft_guidance_json"
+        ),
+        context=_parse_json_column(context_json, contract_id=contract_id, column="context_json"),
+        execution=_parse_json_column(
+            execution_json, contract_id=contract_id, column="execution_json"
+        ),
+        client_meta=_parse_json_column(
+            client_meta_json, contract_id=contract_id, column="client_meta_json"
+        ),
+        authority=authority_from_dict(
+            _parse_json_column(authority_json, contract_id=contract_id, column="authority_json")
+        ),
+        attention=attention_from_dict(
+            _parse_json_column(attention_json, contract_id=contract_id, column="attention_json")
+        ),
+        continuity=continuity_from_dict(
+            _parse_json_column(continuity_json, contract_id=contract_id, column="continuity_json")
+        ),
+        auto_approve=auto_approve_from_dict(
+            _parse_json_column(
+                auto_approve_json or "{}", contract_id=contract_id, column="auto_approve_json"
+            )
+        ),
     )
 
     try:
@@ -286,17 +376,57 @@ def _row_to_contract_view(row: sqlite3.Row | tuple[Any, ...]) -> ContractView:
         draft=draft,
         contract_id=contract_id,
         goal_id=goal_id or contract_id,
-        revision=int(revision),
-        state=ContractState(state_str),
+        revision=_parse_required(revision, int, contract_id=contract_id, column="revision"),
+        state=_parse_required(state_str, ContractState, contract_id=contract_id, column="state"),
         deadline_status=deadline_status,
-        acceptance_status=AcceptanceStatus(acceptance_status_str),
-        created_at=datetime.fromisoformat(created_at_str),
-        updated_at=datetime.fromisoformat(updated_at_str),
-        next_wakeup_at=(datetime.fromisoformat(next_wakeup_at_str) if next_wakeup_at_str else None),
-        next_decision_at=(
-            datetime.fromisoformat(next_decision_at_str) if next_decision_at_str else None
+        acceptance_status=_parse_required(
+            acceptance_status_str,
+            AcceptanceStatus,
+            contract_id=contract_id,
+            column="acceptance_status",
         ),
-        blocked_reason=BlockReason(blocked_reason_str) if blocked_reason_str else None,
+        created_at=_parse_required(
+            created_at_str,
+            datetime.fromisoformat,
+            contract_id=contract_id,
+            column="created_at",
+        ),
+        updated_at=_parse_required(
+            updated_at_str,
+            datetime.fromisoformat,
+            contract_id=contract_id,
+            column="updated_at",
+        ),
+        next_wakeup_at=(
+            _parse_required(
+                next_wakeup_at_str,
+                datetime.fromisoformat,
+                contract_id=contract_id,
+                column="next_wakeup_at",
+            )
+            if next_wakeup_at_str
+            else None
+        ),
+        next_decision_at=(
+            _parse_required(
+                next_decision_at_str,
+                datetime.fromisoformat,
+                contract_id=contract_id,
+                column="next_decision_at",
+            )
+            if next_decision_at_str
+            else None
+        ),
+        blocked_reason=(
+            _parse_required(
+                blocked_reason_str,
+                BlockReason,
+                contract_id=contract_id,
+                column="blocked_reason",
+            )
+            if blocked_reason_str
+            else None
+        ),
     )
 
 

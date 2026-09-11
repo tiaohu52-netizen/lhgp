@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from lhgp import PROTOCOL_VERSION
+from lhgp.persistence.errors import StoreError, StoreTamperedError
 from lhgp.persistence.events_query import append_event
 from lhgp.persistence.paths import default_data_root
 from lhgp.persistence.store import StoreConfig, connect, ensure_schema
@@ -116,7 +117,29 @@ def route(
         finally:
             default_conn.close()
 
-    return _dispatch()
+    try:
+        return _dispatch()
+    except StoreTamperedError as exc:
+        # 存储被外部改动 / 行损坏（审计 B5）。此前读路径抛的是 ``json.JSONDecodeError``
+        # 或 ``KeyError`` 这类**不属于 StoreError 层级**的裸异常，会直接穿过 RPC 边界
+        # 冒到传输层；而映射是靠每个 handler 手写的（本包内就有三种写法），漏写即
+        # 漏报——实测 ``contract/get``、``goal/prepare``、``goal/admission-check``
+        # 三处就是漏的，其中 contract/get 正是模型读取合同的主要入口。
+        #
+        # 把映射收到边界：所有方法（含以后新增的）按构造即被覆盖，且
+        # ``ErrorCode.STORE_TAMPERED`` 早就带着 ``RETRYABLE=False`` 等着被用。
+        # handler 内部更具体的映射仍先命中，行为不变。
+        raise RpcError(
+            ErrorCode.STORE_TAMPERED,
+            str(exc),
+            {"request_id": envelope.request_id},
+        ) from exc
+    except StoreError as exc:
+        raise RpcError(
+            ErrorCode.INTERNAL,
+            str(exc),
+            {"request_id": envelope.request_id},
+        ) from exc
 
 
 __all__ = ["RequestEnvelope", "parse_envelope", "route"]
