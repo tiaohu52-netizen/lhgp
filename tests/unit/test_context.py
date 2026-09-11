@@ -377,11 +377,73 @@ class TestTruncateAtLineBoundary:
             encoding="utf-8",
         )
         out = handover_prompt_addendum(root, cid)
-        from longtask.persistence.context import _TRUNCATION_MARK, HANDOVER_IN_PROMPT_CHARS
+        from longtask.persistence.context import (
+            _HANDOVER_TRUNCATION_MARK,
+            HANDOVER_IN_PROMPT_CHARS,
+        )
 
         assert len(out) <= HANDOVER_IN_PROMPT_CHARS
-        assert _TRUNCATION_MARK in out
+        assert _HANDOVER_TRUNCATION_MARK in out
         # 裸切片回归判据：标记紧邻的正文以完整行结束（原文中该位置是换行）
-        body = out[: -len(_TRUNCATION_MARK)].rstrip()
+        body = out[: -len(_HANDOVER_TRUNCATION_MARK)].rstrip()
         assert not body or body.endswith(("修复", "。")) or True
         conn.close()
+
+
+class TestDirectiveTruncation:
+    """指令进 active.md → 进提示词：静默截断会让模型把半句当完整指令执行。"""
+
+    def test_long_directive_is_marked_in_the_snapshot(self, tmp_path: Path) -> None:
+        """驱动**生产路径**：超长 directive 经 send_message 进快照时必须带标记。
+
+        只测助手函数锁不住接线——把生产调用点退回裸切片时，纯助手用例照样
+        全绿（本轮反向验证踩到过）。
+        """
+        from lhgp.persistence.messages import send_message
+        from longtask.persistence.context import (
+            _DIRECTIVE_TEXT_CHARS,
+            _DIRECTIVE_TRUNCATION_MARK,
+        )
+        from longtask.persistence.store import get_contract
+
+        conn, root = make_store(tmp_path)
+        cid = "lt-ctx01"
+        send_message(
+            conn,
+            contract_id=cid,
+            from_actor="user",
+            kind="directive",
+            text="请" * 2000,
+            now=NOW,
+        )
+        contract = get_contract(conn, cid)
+        assert contract is not None
+        active_path, _scratch, _cursor, _ids = compile_context_snapshot(
+            root, conn, contract, "att-1", NOW
+        )
+        text = active_path.read_text(encoding="utf-8")
+        assert _DIRECTIVE_TRUNCATION_MARK in text, "指令截断未在快照里标记"
+        # 标记计入预算：指令正文不超过该上限（标记本身也算在里面）
+        body = text.split("**")[1]
+        assert len(body) <= _DIRECTIVE_TEXT_CHARS
+        conn.close()
+
+    def test_short_directive_untouched(self) -> None:
+        from longtask.persistence.context import (
+            _DIRECTIVE_TEXT_CHARS,
+            truncate_at_line_boundary,
+        )
+
+        text = "先修 A 再修 B"
+        assert truncate_at_line_boundary(text, _DIRECTIVE_TEXT_CHARS) == text
+
+    def test_directive_marker_differs_from_handover_marker(self) -> None:
+        """两种注入面各指自己的全文位置，不复用对方的标记文案。"""
+        from longtask.persistence.context import (
+            _DIRECTIVE_TRUNCATION_MARK,
+            _HANDOVER_TRUNCATION_MARK,
+        )
+
+        assert _DIRECTIVE_TRUNCATION_MARK != _HANDOVER_TRUNCATION_MARK
+        assert "消息层" in _DIRECTIVE_TRUNCATION_MARK
+        assert "handover.md" in _HANDOVER_TRUNCATION_MARK

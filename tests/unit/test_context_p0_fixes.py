@@ -299,7 +299,13 @@ class TestDirectiveCap:
         bold_end = inner.find("**")
         assert bold_end != -1
         text_body = inner[:bold_end]
-        assert len(text_body) == _DIRECTIVE_TEXT_CHARS
+        # 契约变更（2026-09-11 注入面截断纪律）：截断不再只切正文到 240，而是
+        # 「正文 + 显式标记 ≤ 240」——被截断这件事必须可见，标记占用字节从
+        # 同一预算里出（不偷偷突破上限）。旧断言「正好 240」对应静默截断。
+        from longtask.persistence.context import _DIRECTIVE_TRUNCATION_MARK
+
+        assert _DIRECTIVE_TRUNCATION_MARK in text_body
+        assert len(text_body) <= _DIRECTIVE_TEXT_CHARS
         conn.close()
 
 

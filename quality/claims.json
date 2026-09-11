@@ -1372,6 +1372,29 @@
           "summary": "反向验证：摘掉 token 校验后 test_mismatched_token_is_refused / test_token_when_none_injected_is_refused / test_non_string_token_is_refused 三条同时变红。"
         }
       ]
+    },
+    {
+      "id": "injection-surface-truncation-is-marked",
+      "statement": "注入面截断纪律（DESIGN §4.1）：凡进入提示词的文本被长度预算截断时，必须落在**行界**并带**显式标记**（说明去哪里看全文），不得静默拦腰切断。覆盖两处：handover 附言（1200 字符预算，标记指向 handover.md）与用户指令注入（240 字符预算，标记指向消息层）。标记字节计入预算（含标记总长不超上限）；首行本身超预算的退化场景硬切 + 标记，诚实边界成文。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/longtask/persistence/context.py",
+        "tests/unit/test_context.py"
+      ],
+      "evidence": [
+        {
+          "kind": "focused_test",
+          "path": "tests/unit/test_context.py",
+          "recorded_at": "2026-09-11",
+          "summary": "handover 端与 directive 端各驱动生产路径断言：超长 next_action 经 handover_prompt_addendum、超长 directive 经 send_message + compile_context_snapshot，输出必含对应标记且长度不超预算；另有 8 条助手级边界（短文本不动/恰好预算不动/多行切点完整/无半行残留/单行退化/标记计预算/预算小于标记拒收）。"
+        },
+        {
+          "kind": "manual_review",
+          "path": "src/longtask/persistence/context.py",
+          "recorded_at": "2026-09-11",
+          "summary": "反向验证两次：把 handover 调用点退回裸切片 → test_addendum_uses_line_truncation 红；把 directive 调用点退回裸切片 → **第一次没红**（原用例只测助手函数、锁不住接线），改为驱动 send_message + compile_context_snapshot 的生产路径后才红。这条「测试必须打在接线上」的教训与 real_entry 棘轮同源。"
+        }
+      ]
     }
   ]
 }
