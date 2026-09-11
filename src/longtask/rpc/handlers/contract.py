@@ -1369,6 +1369,7 @@ def _coerce_int(raw: Any, name: str) -> int | None:
 __all__ = [
     "handle_contract_approve",
     "handle_contract_arbitrate",
+    "handle_contract_auto_approve",
     "handle_contract_cancel",
     "handle_contract_get",
     "handle_contract_list",
@@ -1377,4 +1378,5 @@ __all__ = [
     "handle_contract_prepare",
     "handle_contract_request_verification",
     "handle_contract_resume",
+    "handle_contract_user_confirm",
 ]
