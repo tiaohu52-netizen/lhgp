@@ -226,7 +226,9 @@ def parse_contract_draft(
 
 # 合同 ID 的安全 slug（projections/contract_dir 直接以它拼目录：任何
 # 路径分隔符/盘符/../ 都会写出数据根之外——安全审查 RPC-C2）。
-# 与 canonical lhgp.rpc.handlers._common 保持一致。
+# 与 canonical lhgp.rpc.handlers._common 保持一致——该不变量由
+# tests/unit/test_handler_common_parity.py 强制，不靠注释维持（审计 B2：
+# idempotent_replay 的归属守卫就曾只长在本文件、canonical 侧缺失）。
 _CONTRACT_ID_RE = re.compile(r"^[0-9a-zA-Z][0-9a-zA-Z_.-]*\Z")
 
 
@@ -304,5 +306,6 @@ __all__ = [
     "idempotent_replay",
     "parse_contract_draft",
     "require_contract_id",
+    "require_principal",
     "resolve_actor",
 ]

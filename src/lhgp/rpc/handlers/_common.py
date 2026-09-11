@@ -213,9 +213,33 @@ def idempotent_replay(
     envelope: RequestEnvelope,
     contract_id: str,
 ) -> dict[str, Any] | None:
-    """检测 request_id 重放并返回已有合同快照，不重复执行副作用。"""
-    if not envelope.request_id or not get_events_by_request_id(conn, envelope.request_id):
+    """检测 request_id 重放并返回已有合同快照，不重复执行副作用。
+
+    归属校验（审计 B2）：已有事件的 contract_id 与本次操作的 contract_id
+    不一致时，说明客户端把同一个 request_id 复用到了另一份合同上。此时
+    **不能**静默早退——那会把本次写入吞掉却回报成功，还会把别的合同的事件
+    id 回给调用方（既是假成功也是信息泄漏）。抛 VALIDATION_FAILED。
+
+    这一守卫原本只长在 legacy 一侧（``longtask/rpc/handlers/_common.py``），
+    而 ARCHITECTURE「真身位置地图」把本文件记为真身、legacy 记为门面——
+    方向正好相反，于是文档认定的真身反而缺守卫。此处对齐两侧行为，
+    并由 ``tests/unit/test_handler_common_parity.py`` 钉住。
+    """
+    if not envelope.request_id:
         return None
+    existing_events = get_events_by_request_id(conn, envelope.request_id)
+    if not existing_events:
+        return None
+    event_contract_ids = {e.contract_id for e in existing_events if e.contract_id}
+    if event_contract_ids and contract_id not in event_contract_ids:
+        # 跨合同复用 request_id 是客户端错误，不能静默吞掉本次写入。
+        raise RpcError(
+            code=ErrorCode.VALIDATION_FAILED,
+            message=(
+                f"request_id {envelope.request_id!r} belongs to contract(s) "
+                f"{sorted(event_contract_ids)}, not {contract_id!r}"
+            ),
+        )
     existing = get_contract(conn, contract_id)
     return {"ok": True, "result": existing.to_dict()} if existing is not None else None
 
