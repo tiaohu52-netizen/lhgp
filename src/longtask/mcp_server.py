@@ -477,7 +477,10 @@ def tool_propose_plan(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, An
         "ok": True,
         "proposal_event_id": event.event_id,
         "status": "pending",
-        "hint": "user applies via: lhgp goal update <goal_id> --revision N (plan from proposal)",
+        "hint": (
+            f"user applies via: lhgp proposal-apply <goal_id> {event.event_id} "
+            "(list pending proposals with: lhgp proposals <goal_id>)"
+        ),
     }
 
 
@@ -899,7 +902,7 @@ def tool_plan_signoff(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, An
                 "lhgp_plan_signoff is Principal-only; the MCP runtime "
                 "does not carry a Principal envelope.  Ask the user "
                 "to run it via the CLI: lhgp plan signoff <contract_id> "
-                "<plan.json>"
+                "--from <plan.json>"
             ),
         )
     principal_actor = require_principal(envelope, args, action="lhgp_plan_signoff")
@@ -2511,7 +2514,7 @@ def serve_stdio(root: Path) -> None:
     """
     ctx = _make_context(root)
     # profile 在连接建立前解析（fail-closed）：配置错了直接退出并说明原因，
-    # 不静默回落到全量——那会让「以为收窄了」的部署实际暴露 51 个工具。
+    # 不静默回落到全量——那会让「以为收窄了」的部署实际暴露 52 个工具。
     from longtask.mcp_profiles import ProfileError, profile_for_environment
 
     try:

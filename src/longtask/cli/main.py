@@ -569,6 +569,23 @@ def build_parser() -> argparse.ArgumentParser:
     diff_p.add_argument("--to", dest="to_rev", type=int, required=True)
     prop_p = sub.add_parser("proposals", help="列出 Goal 的计划修订提案（只读）")
     prop_p.add_argument("goal_id", type=str)
+    apply_p = sub.add_parser(
+        "proposal-apply",
+        help="批准 pending 提案并落地到 Goal（Principal；E3）",
+    )
+    apply_p.add_argument("goal_id", type=str, help="提案所属 goal ID")
+    apply_p.add_argument("event_id", type=int, help="goal/proposed 事件 ID（见 proposals）")
+    # contract：Principal 专属的合同级动作。actor 由服务端从
+    # client_id="longtask-cli" 派生为 user（_common._TRUSTED_CLIENT_ACTORS），
+    # 命令行不传、也不能传 actor——传了也不会被采信。
+    contract_p = sub.add_parser("contract", help="合同级 Principal 动作")
+    contract_sub = contract_p.add_subparsers(dest="contract_cmd")
+    confirm_p = contract_sub.add_parser(
+        "user-confirm",
+        help="用户签字确认 CANDIDATE 验收（CANDIDATE → PASSED 的唯一路径）",
+    )
+    confirm_p.add_argument("contract_id", type=str, help="目标合同 ID")
+    confirm_p.add_argument("--note", type=str, default=None, help="可选审计备注")
     prune_p = sub.add_parser("prune-events", help="清理终态合同的过期事件")
     prune_p.add_argument("--keep-days", type=int, default=90)
     prune_p.add_argument("--execute", action="store_true", help="默认 dry-run，加此参数才真删")
@@ -1460,6 +1477,47 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
+    if args.command == "contract":
+        # Principal 专属：CANDIDATE → PASSED 的唯一路径（模型不得代行，
+        # 门禁在 handler 内按 client_id 派生 actor）。MCP 的
+        # lhgp_user_confirm_spec_verdict / longtask_user_confirm_spec_verdict
+        # 在 AUTH_FAILED 提示里指的就是这条命令。
+        if getattr(args, "contract_cmd", None) != "user-confirm":
+            print(
+                "usage: lhgp contract user-confirm <contract_id> [--note TEXT]",
+                file=sys.stderr,
+            )
+            return 2
+        from longtask.rpc.handlers.contract import handle_contract_user_confirm
+
+        root = Path(args.data_dir).expanduser().resolve() if args.data_dir else default_data_root()
+        conn = connect(StoreConfig(db_path=root / "state.db"))
+        ensure_schema(conn)
+        try:
+            confirm_params: dict[str, Any] = {"contract_id": args.contract_id}
+            if args.note:
+                confirm_params["note"] = args.note
+            confirm_result = handle_contract_user_confirm(
+                RequestEnvelope(
+                    method=Method.CONTRACT_USER_CONFIRM,
+                    # 固定 request_id：同一合同的重复调用走幂等重放，而不是
+                    # 第二次撞 VALIDATION_FAILED（与 proposal-apply 同法）。
+                    request_id=f"cli-user-confirm-{args.contract_id}",
+                    client_id="longtask-cli",
+                    protocol_version=PROTOCOL_VERSION,
+                    params=confirm_params,
+                ),
+                conn=conn,
+                now=datetime.now(UTC),
+            )
+        except RpcError as exc:
+            print(f"Error: {exc.message}", file=sys.stderr)
+            return 1
+        finally:
+            conn.close()
+        print(json.dumps(confirm_result, ensure_ascii=False, indent=2))
+        return 0
+
     if args.command == "proposal-apply":
         # E3：提案审批落地——用户读取 pending 提案后以此命令批准；
         # 实际的 CAS 更新由 goal/update（user 通道）执行，提案事件
@@ -1471,6 +1529,7 @@ def main(argv: list[str] | None = None) -> int:
 
         root = Path(args.data_dir).expanduser().resolve() if args.data_dir else default_data_root()
         conn = connect(StoreConfig(db_path=root / "state.db"))
+        ensure_schema(conn)
         try:
             matching = [
                 e
@@ -1508,7 +1567,7 @@ def main(argv: list[str] | None = None) -> int:
                     method=Method.GOAL_UPDATE,
                     request_id=f"proposal-apply-{args.event_id}",
                     client_id="longtask-cli",
-                    protocol_version=2,
+                    protocol_version=PROTOCOL_VERSION,
                     params={"goal_id": args.goal_id, "revision": revision, "plan": plan},
                 ),
                 conn=conn,
