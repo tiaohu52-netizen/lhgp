@@ -49,6 +49,12 @@ uv run python examples/local-no-model/run_example.py
 
 一次性 CLI 程序无法回调 RPC，因此协议为它们留了两条 stdout 通道：
 
+**两条通道都 MUST 为 UTF-8**（SPEC §12.4 通道编码）。宿主 locale 不是 UTF-8 时
+（中文 Windows 是 cp936），Python 默认按 locale 编码 stdout，非 ASCII 内容
+（核验说明、含中文的路径）会被运行时解码成替换符 U+FFFD——损坏不可逆且不报错。
+Python 执行者无需自己处理：适配器 spawn 时注入 `PYTHONIOENCODING=utf-8`；
+其他语言请自行确保按 UTF-8 写 stdout。
+
 1. **执行者的完成声明**——独占一行的 JSON：
 
    ```json

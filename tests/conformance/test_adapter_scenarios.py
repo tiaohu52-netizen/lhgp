@@ -557,3 +557,61 @@ class TestVerifierVerdictUnderBudget:
         adapter.spawn(attempt_input, launch)
         result = adapter.collect("att-1")
         assert verdict_from_output(str(result["stdout"]), output_truncated=False) is None
+
+
+@pytest.mark.integration
+class TestStdoutChannelEncoding:
+    """SPEC §12.4「通道编码」：stdout 协议通道 MUST 为 UTF-8。
+
+    回归（修复前必红）：适配器一直按 UTF-8 解码子进程 stdout，却从不保证
+    子进程按 UTF-8 输出。中文 Windows 上解释器默认 cp936，非 ASCII 证据
+    （verifier 的 details、含中文的路径）会被 errors="replace" 静默打成
+    U+FFFD——损坏不可逆且不报错，只在断言恰好漏过时表现为「跑通了但证据
+    是乱码」。断言「无替换符」而非只断言子串，是为了让任何一种编码错配
+    都会红，而不只是碰巧撞上的那一种。
+    """
+
+    DETAILS = "交付物存在且含标记"
+
+    def test_non_ascii_verdict_details_survive_the_pipe(self, tmp_path: Path) -> None:
+        from lhgp.acceptance.verdict import parse_verdict_block
+
+        check_id = "file-exists:result.txt"
+        # 与 examples/local-no-model/checker.py 同形：中文说明 + ensure_ascii=False
+        verdict = {
+            "verdict": "succeeded",
+            "checks": [
+                {
+                    "check_id": check_id,
+                    "outcome": "pass",
+                    "source": "ws/result.txt",
+                    "details": self.DETAILS,
+                }
+            ],
+        }
+        script = tmp_path / "checker.py"
+        script.write_text(
+            "import json\n"
+            "print('核验完成。')\n"
+            "print('```lhgp-verdict')\n"
+            f"print(json.dumps({verdict!r}, ensure_ascii=False))\n"
+            "print('```')\n",
+            encoding="utf-8",
+        )
+        adapter = SubprocessAdapter(
+            make_manifest(),
+            launch=LaunchSpec(
+                argv=(sys.executable, str(script)), env_allowlist=_child_env_allowlist()
+            ),
+        )
+        attempt_input = make_input(str(tmp_path))
+        launch = adapter.prepare(attempt_input)
+        adapter.spawn(attempt_input, launch)
+        result = adapter.collect("att-1")
+        assert result["returncode"] == 0
+        stdout = str(result["stdout"])
+        assert "\ufffd" not in stdout, f"stdout 出现替换符，编码错配未被拦下：{stdout!r}"
+        assert self.DETAILS in stdout
+        parsed = parse_verdict_block(stdout)
+        assert parsed is not None
+        assert parsed.checks[check_id]["details"] == self.DETAILS

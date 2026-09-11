@@ -1,8 +1,8 @@
 # 远期任务协议（Long-Term Task Protocol）设计文档
 
-> 文档修订：v0.12（档 4 并行加派诚实化：decide() 不再产出未实现的 PARALLEL 档，声称与实现对齐）
+> 文档修订：v0.13（stdout 通道编码入规范：§12.1 声明完成事件行与 lhgp-verdict 判定块 MUST 为 UTF-8，适配器 spawn 时注入 PYTHONIOENCODING=utf-8）
 > 协议版本：v0.1（草案；线协议与 schema 版本独立于本文档修订号）
-> 日期：2026-09-10
+> 日期：2026-09-11
 > 状态：设计阶段；v0.8 把 §14.1 里两条原本只是「宣称」的威胁处置——提示词注入污染交接、注入 shell 命令——升级为可验证的结构（围栏 token 由正文摘要派生，正文无法提前闭合），并补上取消时的进程树终止。线协议、schema、错误码均不变。
 > 定性：**agent 外协议**。不随会话存在而存在，不因会话消失而消失。会话是燃料，不是容器。
 
@@ -864,6 +864,8 @@ interface ExecutorAdapter {
 
 `spawn` 只能接收结构化 argv、cwd、环境白名单和已物化的上下文快照，不接收可拼接的 shell 字符串。适配器将 stdout/stderr、退出码、结构化进度文件和最终 artifact 写回协议；模型输出仍是不可信数据，不能直接变成下一条命令。
 
+**stdout 通道编码（MUST）**：适配器回读的 stdout 上跑着两条协议通道——完成事件行（`attempt/finished`，见 SPEC §12.4）与验收判定块（`lhgp-verdict`）。两条通道 MUST 为 UTF-8：适配器按 UTF-8 解码，并在 spawn 时注入 `PYTHONIOENCODING=utf-8`，让 Python 执行者满足该约定。这不是可选的健壮性修饰：宿主 locale 不是 UTF-8 时（中文 Windows 为 cp936），缺失该约定会让一切非 ASCII 证据（verifier 的 `details`、含中文的路径）被静默替换成 U+FFFD——损坏不可逆且不报错，排查时只表现为「跑通了但证据是乱码」。非 Python 执行者的同一义务由 task_prompt 声明。
+
 ### 12.2 Agent 内插件/Bridge
 
 适合 agent-cli 这类有公开 Agent handle 的应用。插件加载时只做接线，不复制合同状态：
@@ -1078,6 +1080,7 @@ Skill 是说明书，不是裁判。验收标准每一条都出自立约时模�
 | 2026-09-10 | attempt 消耗台账（SPEC §12.3.1：usage 自报字段、schema v5、stats 聚合；预算强制明确不在本版本） | v0.10 草案，依用户「继续进行」的指示实施；纯新增字段，存量写回（不带 usage）零变化 |
 | 2026-09-11 | 成本预算线（SPEC §12.3.2：budget.max_cost 可选字段、decide 强制分支、tick 台账合计） | v0.11 草案，承接 v0.10 台账；可选字段未声明零变化，合同 wire schema 预算对象增可选键（附加属性，非破坏） |
 | 2026-09-11 | 档 4 并行加派诚实化（§6.2/§6.3 表、§7 租约、§7.1 标题、§11.7 错误码、§16 非目标统一标注「未实现」；decide() 停止产出 PARALLEL） | v0.12 草案，依用户「按你的建议做」的指示实施；行为不变（停滞本来就是串行重派），改的是决策历史不再写不实的「parallel dispatch」，且不再消耗 max_escalations |
+| 2026-09-11 | stdout 协议通道编码入规范（§12.1：完成事件行与 `lhgp-verdict` 判定块 MUST 为 UTF-8；SPEC §12.4 同步声明；适配器 spawn 注入 `PYTHONIOENCODING=utf-8`） | v0.13 草案，依用户「以完善所有缺口为目标持续进行完善」的指示实施；线协议、schema、错误码均不变，解码宽容度也不变（非法字节仍以 U+FFFD 替换而非中断 attempt）——补的是「实现已假设 UTF-8，却从不保证、规范也没写」这一缺口 |
 
 ## 附录 A 术语表
 

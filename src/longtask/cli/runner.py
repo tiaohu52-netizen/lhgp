@@ -179,6 +179,15 @@ def _executor_prompt(contract: ContractView) -> str:
     if draft.hard_constraints:
         constraints = json.dumps(draft.hard_constraints, ensure_ascii=False, indent=2)
         sections += ["", "## hard_constraints（写权限边界，冻结区，只读）", constraints]
+    # SPEC §12.4 通道编码：执行者可能经 stdout 宣告完成（attempt/finished
+    # 事件行）。Python 执行者由适配器注入 PYTHONIOENCODING=utf-8 保证；这里
+    # 把同一义务讲给非 Python 执行者听——它们的 stdout 编码没人能替它钉住。
+    sections += [
+        "",
+        "## stdout 通道编码（SPEC §12.4）",
+        "如经 stdout 宣告完成，attempt/finished 事件行 MUST 为 UTF-8；"
+        "非 UTF-8 字节会被运行时解码成替换符。",
+    ]
     return "\n".join(sections)
 
 
@@ -1264,7 +1273,9 @@ class AttemptRunner:
             "]}\n"
             "```\n"
             "全部 mandatory checks 都 pass 时 verdict 才是 succeeded，否则 "
-            "failed。你的核对结论以该判定块为准——没有判定块视为无证据。\n\n"
+            "failed。你的核对结论以该判定块为准——没有判定块视为无证据。"
+            "判定块及其中的所有文本 MUST 以 UTF-8 输出（SPEC §12.4 通道编码）："
+            "非 UTF-8 字节会被运行时解码成替换符，证据即失效。\n\n"
             f"## acceptance.checks\n{checks_text}\n\n"
             f"## 标准\n{contract.draft.acceptance.standard}"
         )

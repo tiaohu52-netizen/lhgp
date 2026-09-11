@@ -420,6 +420,17 @@ class SubprocessAdapter(ExecutorAdapter):
         # Per-attempt session token：执行者进程通过此环境变量获取写回凭据
         if input_.session_token:
             env["LHGP_SESSION_TOKEN"] = input_.session_token
+        # SPEC §12.4「通道编码」：stdout 的两条协议通道（完成事件行与
+        # lhgp-verdict 判定块）约定 UTF-8，适配器按 UTF-8 解码子进程输出
+        # （stdout_text / _scan_finished）。但派生的解释器默认跟随宿主 locale
+        # ——中文 Windows 是 cp936——于是任何非 ASCII 证据（验收者 details、
+        # 含中文的路径）会被 errors="replace" 静默打成 U+FFFD：损坏不可逆、
+        # 不报错，只在断言恰好漏过时表现为「跑通了但证据是乱码」。
+        # 这里为 Python 执行者钉住 stdio 编码，让实现兑现它已经假设的契约。
+        # 与 LHGP_SESSION_TOKEN 同理，属协议注入而非宿主透传：放行宿主传入的
+        # 其他取值只会保证解码出错。非 Python 执行者不受该变量影响，其义务由
+        # task_prompt 与 SPEC §12.4 声明。
+        env["PYTHONIOENCODING"] = "utf-8"
         # P1 review fix (2026-09-08): pass the context snapshot path to the
         # subprocess. The default executor must be able to read the freshly
         # built active.md (including the user's directive queue, handover
