@@ -35,6 +35,13 @@
 
 - **不依靠模型**：合同状态、Deadline、租约、预算、事件溯源全部由独立守护进程持久化，没有模型也能跑（能拒接、能记账、能裁决）。会话死了，合同还活着——这正是「外置」的意义。
 - **一定暴露给模型**：协议主动把一组工具和能力（`context/refresh`、`context/promote`、`attempt/status`、结构化进度文件、交接文件写入、升级请求）注入当前执行者的上下文，让模型能读取合同、更新进度、请求刷新上下文、提出验收。模型不需要知道守护进程怎么实现，但必须能用它。
+  <br/>**状态（2026-09-11 审计 C4）**：其中 `context/refresh` 与 `context/promote` **未实现**
+  ——两者在 `Method` 枚举与 `IDEMPOTENT_METHODS` 里声明，但两侧 `HANDLERS` 表都没有
+  handler，调用返回 `STATE_FORBIDDEN: method not implemented`（缺口清单钉在
+  `tests/unit/test_rpc_dispatch_tables.py::KNOWN_UNIMPLEMENTED`）。已交付的是
+  `attempt/status`、结构化进度文件与交接文件写入。另外：模型侧真正暴露的工具在
+  `longtask/mcp_server.py` 的 `tool_*` 一族，与本清单不是同一套名字，「注入上下文」
+  这件事目前由适配器的入场提示词与工作区文件承担。
 - **插件挂载**：每个 harness 一个薄适配器，负责把合同翻译成自己的入场提示词、沙箱参数和控制面。适配器不复制合同状态，只做接线。
 
 #### 与自动化任务的根本区别
@@ -133,6 +140,10 @@
 
 - 用户改了 `contract.yaml` → 守护进程检测到投影与库内版本不一致，标为 `dirty`，该合同暂停分发，直到用户通过 `contract/patch`（带 `expected_revision`）把改动正式提交，或 `contract/revert` 丢弃草稿以库为准重建投影。
 - 用户改了 `handover.md` / `progress.md` → 提交路径是显式的「人工提升」：客户端调用 `context/promote` 并声明 `actor: user`，经原子校验后才进入权威历史。
+  <br/>**状态（2026-09-11 审计 C4）**：`context/promote` **未实现**（枚举里有名字，
+  两侧分发表都没有 handler），所以这条人工提升路径目前不存在——手工改过的
+  `handover.md`/`progress.md` 没有协议入口可提交。已实现的是 `contract.yaml`
+  那条（`contract/patch` 带 `expected_revision` 提交、`contract/revert` 丢弃草稿）。
 - 直接改 `state.db` 永远不被承认；守护进程启动时校验库完整性，发现外部写入痕迹即拒绝启动并记录 `store/tampered`。
 - 规则一句话：**文件是人机共读的界面，提交只有协议一个入口**。投影可以落后（可重建），绝不能超前。
 
@@ -653,6 +664,14 @@ v0.1 只保证**本机单用户**场景：
 
 v0.1 的方法不是模型工具，而是客户端控制面：
 
+**实现状态（2026-09-11 审计 C4）**：下面 7 个方法**只有名字**——它们在 `Method`
+枚举与 `IDEMPOTENT_METHODS` 里声明，但两侧 `HANDLERS` 表都没有 handler，调用返回
+`STATE_FORBIDDEN: method not implemented`：`context/refresh`、`context/promote`、
+`control/notify`、`control/followup`、`control/steer`、`control/spawn`、
+`lease/release`。清单钉在 `tests/unit/test_rpc_dispatch_tables.py::KNOWN_UNIMPLEMENTED`
+（新增缺口会红，补一个也要来改清单）。运行时说的是真话，本清单以前不是——现按
+「预留未实现」如实标注，实现后再去掉标记。
+
 ```text
 protocol/hello
 contract/prepare       # 将模型与用户的谈判结果保存为 drafted 合同
@@ -666,19 +685,19 @@ contract/cancel
 contract/arbitrate     # Deadline/blocked/expired 的人工裁决
 attempt/status
 attempt/logs
-context/refresh
-context/promote
+context/refresh         # 未实现（无 handler，审计 C4）
+context/promote         # 未实现（无 handler，审计 C4）
 executor/list
 executor/enable
 executor/disable
 executor/health
-control/notify
-control/followup
-control/steer
+control/notify          # 未实现（无 handler，审计 C4）
+control/followup        # 未实现（无 handler，审计 C4）
+control/steer           # 未实现（无 handler，审计 C4）
 control/interrupt
-control/spawn
+control/spawn           # 未实现（无 handler，审计 C4）
 lease/renew
-lease/release
+lease/release           # 未实现（无 handler，审计 C4）
 protocol/events         # 按 cursor 读取事件，支持断线续读
 ```
 
@@ -743,6 +762,11 @@ protocol/events         # 按 cursor 读取事件，支持断线续读
      │                      │◄── 证据集全 pass                         │
      │◄── contract/get: complete（事件带 verifier attempt_id）        │
 ```
+
+**状态（2026-09-11 审计 C4）**：本图中 `control/spawn` 与实际不符——它没有 handler，
+派工不是由客户端控制面方法驱动的，而是守护进程 tick 内部直接调用适配器的 `prepare()`
+（`src/longtask/cli/tick.py` 的派发路径）。图中画成 RPC 方法是为了表达职责边界，
+但读者会以为存在这个方法；按「预留未实现」标注。
 
 **时序 B：租约回收后换人续跑**
 
@@ -879,6 +903,10 @@ interface ExecutorAdapter {
 1. 通过本机 JSON-RPC 向 `longtaskd` 注册 `agent_id`、`session_ref`、能力和授权范围。
 2. 监听应用提供的 Agent 生命周期和状态事件，将健康/空闲/运行状态上报。
 3. 当推动者发来 `control/followup` 或 `control/steer`，在**已授权且仍在线的确切 Agent handle**上调用对应方法，并显式使用插件/调度器 source；不得借用用户 source。
+   <br/>**状态（2026-09-11 审计 C4）**：`control/followup` 与 `control/steer` **未实现**
+   （两侧分发表都没有 handler），所以本步骤目前不可达——适配器收不到这两种干预，
+   已实现的只有 `control/interrupt`（`tool_interrupt_attempt` 走这条路）。这是能力
+   缺口而非接线细节：要落地先补两个 handler，再让 bridge 声明。
 4. `control/interrupt` 只能作用于用户框定且适配器声明可中断的目标；结果回传 accepted/rejected/unsupported，不把“消息入队”伪装成任务完成。
 5. Agent 退出或插件卸载时释放 bridge 注册和本地控制句柄，不删除合同或 attempt 状态。
 

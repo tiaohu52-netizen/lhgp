@@ -928,10 +928,14 @@ attempt/submit_candidate
 attempt/report_failure
 attempt/status
 lease/renew
-lease/release
+lease/release          # 未实现：Method 枚举里有名字，两侧 HANDLERS 表都无 handler（审计 C4）
 artifact/register
 evidence/register
 ```
+
+> 上表其余方法均有 handler。未实现的名字保留在枚举里作为预留，调用会得到
+> `STATE_FORBIDDEN: method not implemented`；缺口清单钉在
+> `tests/unit/test_rpc_dispatch_tables.py::KNOWN_UNIMPLEMENTED`。
 
 Attempt 凭证必须限定到单个 `goal_id + attempt_id + lease_generation + role`，不得调用 Principal-only 的授权、预算或 Deadline 修订。
 

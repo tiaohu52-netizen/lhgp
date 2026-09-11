@@ -13,6 +13,15 @@ follow [SemVer](https://semver.org/spec/v2.0.0.html); dates in ISO 8601.
 
 ### 更正
 
+- **7 个 RPC 方法只有名字（2026-09-11 审计 C4）**：`context/refresh`、
+  `context/promote`、`control/notify`、`control/followup`、`control/steer`、
+  `control/spawn`、`lease/release` 在 `Method` 枚举与 `IDEMPOTENT_METHODS` 里声明，
+  但两侧 `HANDLERS` 表都没有 handler——调用 fail-closed 返回
+  `STATE_FORBIDDEN: method not implemented`（运行时说的是真话）。文档此前把它们与
+  已实现方法并列，现逐处标注「预留未实现」：DESIGN §3/§7/§11.2/时序 A/§15 与
+  SPEC §14.2。缺口清单钉在
+  `tests/unit/test_rpc_dispatch_tables.py::KNOWN_UNIMPLEMENTED`，claims 记
+  `rpc-advertised-but-unimplemented-methods`（accepted_debt）。
 - **E2 饥饿保护未交付（2026-09-11 审计）**：`v0.1.0a6` 的 CHANGELOG 宣称「饥饿检测
   （连续 5 tick 未派工自动提前）」，实测该规则**从未在生产中触发**——tick 传给
   `apply_fairness_order` 的 `fairness_states` 恒为空 dict，`observe_tick` 只在测试里

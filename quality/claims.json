@@ -383,6 +383,41 @@
       "notes": "attempt/context/control/executor/lease 族方法未在本声明范围（分别待 promoter、context、daemon、registry 模块）。"
     },
     {
+      "id": "rpc-advertised-but-unimplemented-methods",
+      "statement": "7 个方法在 Method 枚举与 IDEMPOTENT_METHODS 里声明，但两侧 HANDLERS 表都没有 handler：context/refresh、context/promote、control/notify、control/followup、control/steer、control/spawn、lease/release。调用 fail-closed 返回 STATE_FORBIDDEN「method not implemented」（运行时说的是真话）；文档此前把它们与已实现方法并列（DESIGN §3「一定暴露给模型」、§7 文件提交路径、§11.2 方法集合、时序 A 图、§15 bridge 步骤、SPEC §14.2），现按「预留未实现」逐处标注",
+      "lifecycle": "accepted_debt",
+      "scope_paths": [
+        "src/lhgp/rpc/methods.py",
+        "src/lhgp/rpc/handlers/__init__.py",
+        "src/longtask/rpc/handlers/__init__.py",
+        "tests/unit/test_rpc_dispatch_tables.py",
+        "DESIGN.md",
+        "docs/LHGP-SPEC.md"
+      ],
+      "evidence": [
+        {
+          "kind": "focused_test",
+          "path": "tests/unit/test_rpc_dispatch_tables.py",
+          "recorded_at": "2026-09-11",
+          "summary": "两张手工装配的 Method→handler 表必须相等（曾漏 CONTRACT_USER_CONFIRM），且 KNOWN_UNIMPLEMENTED 精确列出上述 7 个「枚举里有、两边都无 handler」的方法：新增缺口会红，补上一个也要来改清单并同步文档。"
+        },
+        {
+          "kind": "manual_review",
+          "path": "DESIGN.md",
+          "recorded_at": "2026-09-11",
+          "summary": "审计 C4 逐处标注：§3 的模型能力承诺、§7 handover 人工提升路径（context/promote）、§11.2 方法集合（7 个名字内联标注）、时序 A 图（control/spawn 与实际派工路径不符的说明）、§15 agent-cli bridge（followup/steer 不可达）。"
+        }
+      ],
+      "notes": "去广告而非实现：这 7 个方法各自是新能力开发（handler + SPEC 语义 + 测试），不是接线缺口。DESIGN 的原始文字一律保留并追加状态说明，便于读者看到「曾如此承诺」与「实际如何」。模型侧 MCP 工具（longtask/mcp_server.py 的 tool_* 一族）从未暴露这些名字，因此受影响的只有按文档写代码的客户端作者。",
+      "debt_policy": {
+        "reason": "实现任一方法都要先定语义（context/refresh 的刷新边界、context/promote 的原子校验、control/* 的授权模型、lease/release 与 reclaim 的关系），属于产品决策而非修缺陷。",
+        "owner": "protocol-maintainer",
+        "review_by": "2026-12-01",
+        "reentry_trigger": "用户要求实现其中任一方法，或第三方客户端按文档接入受阻时重审",
+        "non_blocking": true
+      }
+    },
+    {
       "id": "executor-registry-matching",
       "statement": "执行器注册表与能力/预算/成本分发决策符合 DESIGN §8/§12.4：用户显式框定开关（默认全部 false）、能力门槛与沙箱兼容匹配、并发余额检查、按 cost_hint 升序优先级分发、executor/* 控制面方法完整",
       "lifecycle": "verified",
