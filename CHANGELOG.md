@@ -4,7 +4,101 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version numbers
 follow [SemVer](https://semver.org/spec/v2.0.0.html); dates in ISO 8601.
 
+## [0.1.0a14] - 2026-09-11
+
+本版把 a13 之后积累的十一轮增量（即下方 `[Unreleased·二]`…`[Unreleased·十一]` 各节）
+与**一轮完整外部审计的整改**合并交付。审计覆盖五个面——CLI 与守护进程、持久化
+存储、RPC 双命名空间、文档承诺与制品——逐条按「先实测、再分类、然后修复或去广告」
+处置：凡修复都先做反向验证（测试先红后绿），凡结论都以可复现的测量为据。
+
+两个数字：七道门 7/7 全绿，`1644 passed, 11 skipped`，覆盖率 79.9%（下限 78%）。
+公开交付此前停在 a6（Releases 页），本版把它接回源码当前状态。
+
+### Fixed
+
+- **合同状态机在唯一写入口强制（B1）**：`LEGAL_TRANSITIONS` 一直存在，RPC handler
+  也一直在守它（approve/pause/resume/cancel/arbitrate 五处），但
+  `update_contract_state` 自己不校验——同一个非法转移「走 RPC 被拒、走守护进程或直调
+  却能落库」，审计记录与实际状态可以互相矛盾。现在非法写入抛
+  `IllegalStateTransitionError`（写库之前，state/revision 都不动），RPC 边界映射为
+  `STATE_FORBIDDEN`。**自反写入（X→X）放行**：tick 的 `_judge_verifier_outcomes` 在
+  验收失败时写 `new_state=ACTIVE` 而合同本就是 active，它要做的是把
+  `acceptance_status` 置 FAILED。实测依据：全量测试埋点记录了 src 侧 13 种真实转移
+  （全部合法或自反），而 15 次非法转移全部来自测试绕过 handler 走捷径，已逐个改为
+  合法路径。
+- **损坏行在读路径上自解释地失败（B5）**：`contract/get`、`goal/prepare`、
+  `goal/admission-check` 三个 handler 完全没有 store 异常映射，损坏行会以
+  `json.JSONDecodeError`/`KeyError` 这类**不属于 `StoreError` 层级**的裸异常穿过 RPC
+  边界；且每个 handler 各写一份映射（本包内三种写法），漏写即漏报。改为类型化
+  （`StoreTamperedError`）+ 边界统一映射（`STORE_TAMPERED`，`RETRYABLE=False`）。
+- **`patch_contract` 的修订快照不再丢字段（B6）**：它用手写枚举重建 `ContractDraft`，
+  15 个字段漏了 1 个带 `default_factory` 的 `auto_approve`——不报错、不为空，而是
+  静默填入安全基线，于是每个被 patch 的修订都把「已授予自动批准」记成「未授予」，
+  而活行仍是真实授权（审计记录里一次静默的授权降级）。改用
+  `dataclasses.replace`，此类漂移结构上不可能再发生。
+- **attempt 生命周期事件必须带真实角色（B9/B9b）**：`_fail_attempt`/`_mark_stale`/
+  取消路径与 SPEC §12.4 **通道 1**（会话型 harness 的 `attempt/write-back`）写入的
+  事件 `role` 列曾是 `None`/`'model'`，而 `events.role` 的值域是
+  executor/verifier/daemon/user/promoter/scheduler/system。后果：核验器成功的事件
+  在 tick 裁决里**一条都看不到**（实测修复前 0 条、修复后 1 条），合同因此无法完成。
+- **执行器并发额度不再被终态 attempt 永久占用（B4）**：容量记账手写
+  `('admitted','running','orphaned')`——把终态 `orphaned` 算成在跑（一条失联 attempt
+  永久占死额度），又漏掉 `starting`/`waiting`（额度被超额放行）。改为从
+  `AttemptState` 推导在飞集合。
+- **消除 CAPACITY_FULL 热转（B3）**：容量饱和时把 `next_decision_at` 置 `now`，与
+  「blocked 的过期决策点原样返回」相乘 → 守护进程每轮算出 `until=0` → 不睡 → CPU
+  空转。改为置 NULL，重试节奏交回心跳。
+- **`request_id` 跨合同归属守卫补齐到 canonical 侧**、**分发表漂移与 canonical 门面
+  缺导出**、**wheel 补齐 flowgen skill**、**operator profile 的重复/过期工具条目**、
+  **拒接的验收请求不再被误标为已兑现**、**stdout 协议通道与子进程编码入规范并钉住**。
+
+### Added
+
+- **`evidence` 验收证据独立表（SPEC §13.1，schema v6）**、**attempt 消耗台账
+  （usage 自报 + schema v5 + `stats` 聚合）**、**成本预算线 `budget.max_cost`**、
+  **`budget`/`deadline` 轴的强制面**、**MCP 工具面 profile（按角色收窄 + 越界拒调）**、
+  **R4a 可复制的无模型本地示例**（`examples/local-no-model/`，doctor→…→satisfied 全链路）、
+  **ADR-005**（协议层不做专门的工作区隔离设计）。
+- **回归测试**（本版净增 90 条，`1554 → 1644 passed`）：状态机 9×9 全枚举乘积上断言
+  「守卫判定 == 表 + 自反规则」而不是手写字面清单；损坏行 9 种形态的读路径与边界映射；
+  修订快照与活合同逐字段一致（覆盖 `dataclasses.fields` 全部字段）；`events.role`
+  值域与两条判定通道；门面覆盖与真身方向；行尾策略。
+
+### Documentation
+
+- **去广告两处未交付能力**（原条目保留 + 追加状态，不静默删除）：
+  - **E2 饥饿保护（B8）**：`fairness_states` 恒为空、`observe_tick` 只在测试里被调用，
+    「连续 5 tick 未派工自动提前」在生产里从不触发；DESIGN §8.3 承诺的是另一套语义
+    （额度不足 + u ≥ 1.0 → `blocked(need-user)`，默认 10 轮），阈值与动作都不一致。
+    a6 的 CHANGELOG 曾宣称已交付，就地更正。
+  - **7 个只有名字的 RPC 方法（C4）**：`context/refresh`、`context/promote`、
+    `control/notify`、`control/followup`、`control/steer`、`control/spawn`、
+    `lease/release` 在枚举里有名字但两侧分发表都没有 handler（调用返回
+    `STATE_FORBIDDEN: method not implemented`）。DESIGN §3/§7/§11.2/时序 A/§15 与
+    SPEC §14.2 逐处标注「预留未实现」，claims 记 `accepted_debt`。
+- **修正三份方向性文档**：ARCHITECTURE 的「真身位置地图」`rpc/handlers` 方向按实测
+  重写（B2 的根因就是地图记反，导致安全守卫只加在一侧）、canonical 命名空间与入口
+  shim 的方向表述、CONTRIBUTING 与地图对齐。
+- **更正安全加固证据里已被实测推翻的判断**（两个 `RpcError` 类曾被记为不同类，实测
+  是同一个类对象），并更新其 deferred 清单状态。
+- **`.gitattributes` 声明行尾策略**：仓库内存 LF、任何平台检出 LF（此前由各机器
+  `core.autocrlf` 决定，每次 `git add` 都刷警告）；工作树 346 个 CRLF 文件按字节
+  归一（与索引 blob 逐字节相同，renormalize 暂存内容改动为 0）。
+
+### Notes
+
+- 本版**不含**任何线协议、schema 语义或错误码的破坏性变更（`PROTOCOL_VERSION` 仍为 1）；
+  schema 迁移 v5/v6 由 `ensure_schema` 幂等补齐。
+- 审计整改的分类原则：A 类（真缺陷）修，B 类（设计如此/不适用）不修并说明，
+  C 类（可能有副作用）不动。被实测推翻的审计假设（源码编码「损坏」、README 快速上手
+  「不可用」、插件版本「不一致」、两个 `RpcError`「不同类」）逐条记录为**不成立**，
+  而不是照单修改代码。
+
 ## [Unreleased]
+
+> **当前没有未发布变更。** 本节与下方 `[Unreleased·二]`…`[Unreleased·十一]` 各节的
+> 内容已随 **0.1.0a14**（2026-09-11）交付；逐轮记录按原样保留以便追溯，不再作为
+> 未发布项。`[Unreleased·N]` 是分轮工作日志，`[0.1.0aN]` 才是发布记录。
 
 吸收外部同行的几处工程做法，落点都在**已有保证**上——不新增协议语义，
 线协议、schema、错误码不变（DESIGN v0.8，把 §14.1 两条威胁从「宣称」升级为
