@@ -26,6 +26,7 @@ from zoneinfo import ZoneInfo
 from lhgp.contracts.auto_approve import AutoApprove
 from lhgp.contracts.auto_approve import from_dict as auto_approve_from_dict
 from lhgp.contracts.budget import DEFAULT_VERIFICATION_RESERVED
+from lhgp.contracts.state_machine import is_valid_transition
 from longtask.acceptance.checks import parse_check
 from longtask.contracts.acceptance import evidence_binding
 from longtask.contracts.attention import from_dict as attention_from_dict
@@ -46,6 +47,7 @@ from longtask.contracts.schema import (
 )
 from longtask.persistence.errors import (
     IdempotencyMismatchError,
+    IllegalStateTransitionError,
     LeaseCASError,
     LeaseFencedError,
     RevisionConflictError,
@@ -1484,6 +1486,34 @@ _STATE_TO_EVENT: dict[ContractState, EventType] = {
 }
 
 
+def assert_legal_contract_transition(
+    current: ContractState, new_state: ContractState, *, contract_id: str
+) -> None:
+    """合同状态写入必须落在 LEGAL_TRANSITIONS 上（审计 B1）。
+
+    RPC handler 早就在守这张表——approve（contract.py:135）、pause（:1120）、
+    resume（:1175）、cancel（:1227）、arbitrate（:1316）五处都调
+    ``is_valid_transition``。但 store 与三处 CAS 直写绕过了它们：**同一个非法转移，
+    走 RPC 被拒，走守护进程或直调却能落库**，于是审计记录里的状态链可以自相矛盾。
+    策略收到唯一写入口上，作为兜底；handler 的守卫仍然先命中，给出更精确的提示。
+
+    **自反转移（X→X）放行**：这不是放水，而是实测出来的真实依赖——tick 的
+    ``_judge_verifier_outcomes`` 在验收失败时写 ``new_state=ACTIVE`` 而合同本就是
+    ACTIVE，它要做的是把 ``acceptance_status`` 置 FAILED（SPEC §12.4 修复闭环，
+    实测全量测试里 src 侧 13 次自反写入）。「状态没变」不构成一次转移。
+
+    实测依据（全量 1630 测试埋点）：src 侧真实转移 13 种，全部合法或自反；
+    其余 15 次非法转移全部来自测试直接调用 store 绕过 handler（fixture 走捷径），
+    已改为走合法路径。
+    """
+    if current == new_state:
+        return
+    if not is_valid_transition(current, new_state):
+        raise IllegalStateTransitionError(
+            f"contract {contract_id}: illegal state transition {current.value} -> {new_state.value}"
+        )
+
+
 def update_contract_state(
     conn: sqlite3.Connection,
     *,
@@ -1525,6 +1555,9 @@ def update_contract_state(
                 f"revision conflict on contract {contract_id}: "
                 f"expected {expected_revision}, got {current.revision}"
             )
+
+        # 审计 B1：状态机兜底（revision CAS 之后、写库之前）
+        assert_legal_contract_transition(current.state, new_state, contract_id=contract_id)
 
         new_revision = current.revision + 1
         new_deadline_status = (

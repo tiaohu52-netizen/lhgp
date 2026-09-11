@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 
-from lhgp.contracts.schema import Acceptance, Budget, ContractDraft
+from lhgp.contracts.schema import Acceptance, Budget, ContractDraft, ContractState
 from lhgp.persistence.schema import connect, ensure_schema
 from lhgp.persistence.store import (
     acquire_lease,
@@ -52,6 +52,10 @@ def store(tmp_path: Path) -> Any:
         ),
         contract_id=CID,
         now=NOW,
+        # 状态机（审计 B1）：写回通道带 `contract_state` 时目标态必须是合同当前状态
+        # 的合法后继。本用例要写成 paused，而 DRAFTED 没有到 paused 的边——按真实
+        # 生命周期把合同建为 active（只有已派工的合同才有 attempt 写回）。
+        state=ContractState.ACTIVE,
     )
     acquire_lease(
         conn,

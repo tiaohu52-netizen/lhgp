@@ -93,13 +93,18 @@ def _setup(
         goal_id=goal_id,
     )
     if state is not None:
-        update_contract_state(
-            conn,
-            contract_id=cid,
-            new_state=state,
-            now=NOW,
-            blocked_reason=BlockReason.NEED_USER if state == ContractState.BLOCKED else None,
-        )
+        # 状态机（审计 B1）：DRAFTED 的出边只有 active/cancelled，所以经 active 落到
+        # 目标态。本 fixture 以前直接写目标态（drafted→blocked/complete），走的是
+        # handler 早就拒绝、生产不可达的转移——测试不该依赖非法状态。
+        update_contract_state(conn, contract_id=cid, new_state=ContractState.ACTIVE, now=NOW)
+        if state is not ContractState.ACTIVE:
+            update_contract_state(
+                conn,
+                contract_id=cid,
+                new_state=state,
+                now=NOW,
+                blocked_reason=(BlockReason.NEED_USER if state == ContractState.BLOCKED else None),
+            )
     reg = ExecutorRegistry()
     for exec_id in ("exec-a", "exec-b"):
         reg.register(

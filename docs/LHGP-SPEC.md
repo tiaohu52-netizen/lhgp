@@ -334,6 +334,12 @@ draft → active ↔ paused
 - `blocked` 必须携带稳定 reason code、解释、所需权限和可选动作。
 - Deadline miss 默认使 lifecycle 进入 `blocked(deadline-missed)`，但不等于清空成果。
 - `satisfied` 只能由 acceptance axis 的 `passed` 推导。
+- 上图在**唯一写入口**强制：`LEGAL_TRANSITIONS` 之外的状态写入抛
+  `IllegalStateTransitionError`，RPC 边界映射为 `STATE_FORBIDDEN`（`RETRYABLE=False`）。
+  此前只有 RPC handler 在守图，`update_contract_state` 与几处簿记直写不校验，于是
+  同一个非法转移「走 RPC 被拒、走守护进程能落库」，审计记录里的状态链可以自相矛盾
+  （审计 B1）。**自反写入（`X → X`）放行**：它不是一次转移，而是其它三轴的更新
+  ——例如验收失败只改 `acceptance_status`，lifecycle 保持 `active`。
 
 ### 7.2 Deadline status
 

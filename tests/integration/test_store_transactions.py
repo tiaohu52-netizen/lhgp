@@ -540,7 +540,16 @@ class TestFencedWriteBack:
         conn = connect(config)
         try:
             contract_id = "lt-20260831-030"
-            save_contract(conn, make_draft(), contract_id=contract_id, now=NOW)
+            # 状态机（审计 B1）：本用例最后一步把合同写成 complete，而 DRAFTED 没有
+            # 到 complete 的边；写回通道在生产里也只出现在已派工的合同上（租约、
+            # attempt 都要求合同已激活）。按真实生命周期建为 active。
+            save_contract(
+                conn,
+                make_draft(),
+                contract_id=contract_id,
+                now=NOW,
+                state=ContractState.ACTIVE,
+            )
             # attempt-001 获得 gen=1 租约
             acquire_lease(
                 conn,
@@ -597,7 +606,7 @@ class TestFencedWriteBack:
             # 验证合同状态未被篡改
             contract = get_contract(conn, contract_id)
             assert contract is not None
-            assert contract.state == ContractState.DRAFTED
+            assert contract.state == ContractState.ACTIVE
 
             # 4. 冒充者 attempt-999 用代次 2 写回：因 attempt 不符被拒
             with pytest.raises(LeaseFencedError, match="not lease holder"):

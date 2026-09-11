@@ -149,6 +149,11 @@ class TestEarliestDecisionPoint:
         conn = _conn(tmp_path)
         try:
             _contract(conn)
+            # 状态机（审计 B1）：DRAFTED 不能直达 blocked（生产里由 handler 拒绝），
+            # 经 active 落下——本用例只关心 blocked 合同的决策点语义。
+            update_contract_state(
+                conn, contract_id="lt-dguard01", new_state=ContractState.ACTIVE, now=NOW
+            )
             update_contract_state(
                 conn,
                 contract_id="lt-dguard01",
@@ -169,6 +174,10 @@ class TestEarliestDecisionPoint:
         conn = _conn(tmp_path)
         try:
             _contract(conn)
+            # 状态机（审计 B1）：同上，经 active 落到 blocked。
+            update_contract_state(
+                conn, contract_id="lt-dguard01", new_state=ContractState.ACTIVE, now=NOW
+            )
             update_contract_state(
                 conn,
                 contract_id="lt-dguard01",

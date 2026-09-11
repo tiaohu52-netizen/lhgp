@@ -62,7 +62,12 @@ def _make_contract(
     if state:
         from lhgp.contracts.schema import ContractState
 
-        update_contract_state(conn, contract_id=cid, new_state=ContractState(state), now=NOW)
+        # 状态机（审计 B1）：DRAFTED 的出边只有 active/cancelled，所以经 active 落到
+        # 目标态。本 fixture 以前直接写目标态（drafted→blocked/complete），走的是
+        # handler 早就拒绝、生产不可达的转移。
+        update_contract_state(conn, contract_id=cid, new_state=ContractState.ACTIVE, now=NOW)
+        if state != ContractState.ACTIVE.value:
+            update_contract_state(conn, contract_id=cid, new_state=ContractState(state), now=NOW)
 
 
 def _add_attempt(

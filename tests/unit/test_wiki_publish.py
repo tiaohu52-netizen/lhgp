@@ -220,6 +220,12 @@ class TestTerminalContracts:
         state: ContractState,
     ) -> None:
         save_contract(conn, _draft(), contract_id=contract_id, now=NOW, state=ContractState.ACTIVE)
+        if state == ContractState.ARCHIVED:
+            # 状态机（审计 B1）：ACTIVE 没有到 archived 的边（表里只允许
+            # blocked/expired→archived），fixture 补上真实中间态，而不是直写非法边。
+            update_contract_state(
+                conn, contract_id=contract_id, new_state=ContractState.BLOCKED, now=NOW
+            )
         update_contract_state(conn, contract_id=contract_id, new_state=state, now=NOW)
 
     def test_stale_terminal_page_is_rerendered_with_banner(self, tmp_path: Path) -> None:

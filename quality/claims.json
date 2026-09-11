@@ -348,12 +348,14 @@
     },
     {
       "id": "rpc-contract-lifecycle",
-      "statement": "JSON-RPC 合同生命周期方法与 DESIGN §5/§11 一致：非法迁移 STATE_FORBIDDEN、冻结区字段拦截 VALIDATION_FAILED、预算与工作量数值拒绝布尔/非有限值、控制面 limit/cursor/revision 拒绝布尔伪整数、patch CAS 冲突 REVISION_CONFLICT、request_id 重放返回原结果不产生第二个事件、list/events cursor 分页续读",
+      "statement": "JSON-RPC 合同生命周期方法与 DESIGN §5/§11 一致：非法迁移 STATE_FORBIDDEN（含唯一写入口的 store 层兜底，自反写入除外）、冻结区字段拦截 VALIDATION_FAILED、预算与工作量数值拒绝布尔/非有限值、控制面 limit/cursor/revision 拒绝布尔伪整数、patch CAS 冲突 REVISION_CONFLICT、request_id 重放返回原结果不产生第二个事件、list/events cursor 分页续读",
       "lifecycle": "verified",
       "scope_paths": [
         "src/longtask/rpc/",
+        "src/lhgp/rpc/server.py",
         "src/lhgp/contracts/contract_draft.py",
         "src/lhgp/contracts/validation.py",
+        "src/lhgp/persistence/errors.py",
         "src/lhgp/rpc/handlers/_common.py",
         "src/longtask/contracts/state_machine.py",
         "tests/integration/test_rpc_lifecycle.py"
@@ -370,6 +372,12 @@
           "path": "tests/unit/test_state_machine.py",
           "recorded_at": "2026-09-01",
           "summary": "状态机纯函数全出边覆盖：合法迁移、非法迁移、终态无出边（DESIGN §5 状态机图逐边核对）。"
+        },
+        {
+          "kind": "focused_test",
+          "path": "tests/unit/test_contract_state_machine_enforcement.py",
+          "recorded_at": "2026-09-11",
+          "summary": "唯一写入口强制（审计 B1）：9x9 全枚举乘积上守卫判定 == 表+自反规则；store 拒绝非法转移且不留半个写入（state/revision 不变）；自反写入放行（验收失败只改 acceptance_status）；簿记直写的三条边仍在表内；RPC 边界把 IllegalStateTransitionError 映射为 STATE_FORBIDDEN(RETRYABLE=False)。"
         }
       ],
       "notes": "attempt/context/control/executor/lease 族方法未在本声明范围（分别待 promoter、context、daemon、registry 模块）。"

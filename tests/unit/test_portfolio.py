@@ -87,6 +87,10 @@ def _save(
     conn: sqlite3.Connection, cid: str, *, state: ContractState = ContractState.ACTIVE
 ) -> None:
     save_contract(conn, _draft(), contract_id=cid, now=NOW)
+    if state is not ContractState.ACTIVE:
+        # 状态机（审计 B1）：DRAFTED 的出边只有 active/cancelled，经 active 落到
+        # 目标态（本 fixture 用到 PAUSED），而不是直写生产不可达的转移。
+        update_contract_state(conn, contract_id=cid, new_state=ContractState.ACTIVE, now=NOW)
     update_contract_state(conn, contract_id=cid, new_state=state, now=NOW)
 
 

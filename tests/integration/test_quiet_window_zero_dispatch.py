@@ -79,6 +79,11 @@ def _contract(conn: sqlite3.Connection, contract_id: str) -> None:
     from longtask.persistence.store import update_contract_state
 
     if contract_id == CID_BLOCKED:
+        # 状态机（审计 B1）：DRAFTED 不能直达 blocked（生产里由 handler 拒绝），
+        # 经 active 落下。
+        update_contract_state(
+            conn, contract_id=contract_id, new_state=ContractState.ACTIVE, now=NOW, actor="user"
+        )
         update_contract_state(
             conn,
             contract_id=contract_id,

@@ -9,7 +9,11 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from lhgp import PROTOCOL_VERSION
-from lhgp.persistence.errors import StoreError, StoreTamperedError
+from lhgp.persistence.errors import (
+    IllegalStateTransitionError,
+    StoreError,
+    StoreTamperedError,
+)
 from lhgp.persistence.events_query import append_event
 from lhgp.persistence.paths import default_data_root
 from lhgp.persistence.store import StoreConfig, connect, ensure_schema
@@ -131,6 +135,16 @@ def route(
         # handler 内部更具体的映射仍先命中，行为不变。
         raise RpcError(
             ErrorCode.STORE_TAMPERED,
+            str(exc),
+            {"request_id": envelope.request_id},
+        ) from exc
+    except IllegalStateTransitionError as exc:
+        # 状态机兜底（审计 B1）。handler 的守卫（approve/pause/resume/cancel/
+        # arbitrate）先命中，给出更精确的提示；走到这里说明有代码路径绕过了
+        # handler——把合同推进了非法状态。语义上这是「该状态下不允许」，不是
+        # 内部错误，因此映射为 STATE_FORBIDDEN（RETRYABLE=False）。
+        raise RpcError(
+            ErrorCode.STATE_FORBIDDEN,
             str(exc),
             {"request_id": envelope.request_id},
         ) from exc
