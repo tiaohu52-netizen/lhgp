@@ -14,6 +14,7 @@ spawn 只收结构化 argv（列表参数、shell=False），模型输出是不�
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -109,6 +110,11 @@ class _DetachedProcess:
 #    判定，比裸退出码诚实（退出码仍如实并报，两者矛盾时以事件为准
 #    并标注 exit_code_conflict）。
 FINISHED_EVENT_PREFIX = '{"event":"attempt/finished"'
+# 容错扫描：JSON 序列化器对键值间空白的处理各不相同（Python 的
+# json.dumps 默认在 ':' 后加空格），只认紧凑前缀会把合规的事件行拒之门外，
+# 且失败是静默的（退化成「等进程退出」）。本正则只放宽空白，
+# 事件值仍必须精确匹配，且随后仍要 json.loads 通过才认。
+FINISHED_EVENT_RE = re.compile(r'"event"\s*:\s*"attempt/finished"')
 FINISHED_LINE_MAX = 8192  # 事件行长度上限：防御性，超长截断不匹配
 
 
@@ -245,11 +251,18 @@ def _start_reader(
 
 
 def _scan_finished(line_bytes: bytes, monitored: _MonitoredProcess) -> bool:
-    """尝试把累积的行解析成 attempt/finished 事件；成功即回调。"""
-    if FINISHED_EVENT_PREFIX.encode() not in line_bytes:
-        return False
+    """尝试把累积的行解析成 attempt/finished 事件；成功即回调。
+
+    识别分两步且都不可省：先正则找事件（容忍键值间空白，见
+    FINISHED_EVENT_RE 的说明），再 json.loads 校验整行——正则命中的是
+    「形似」，只有能解析成 JSON 且 event 字段精确相等才算数。
+    """
     text = line_bytes.decode("utf-8", errors="replace").strip()
-    start = text.find(FINISHED_EVENT_PREFIX)
+    match = FINISHED_EVENT_RE.search(text)
+    if match is None:
+        return False
+    # 从最近的 '{' 起解析（事件行前缀可能被前一段输出污染）
+    start = text.rfind("{", 0, match.start() + 1)
     if start < 0:
         return False
     candidate = text[start:]

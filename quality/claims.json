@@ -1315,6 +1315,32 @@
           "summary": "反向验证两项变异命中预期测试名：decide 成本分支改 if False → 单测红；tick 成本合计改 if False → 端到端红。另存取回环 2 条（max_cost=9.75 写入即读回、缺席读回 None）——端到端首跑曾因 store 三处手写字段清单缺该字段而静默失效，此为真 bug 非测试错误。"
         }
       ]
+    },
+    {
+      "id": "local-no-model-end-to-end-example",
+      "statement": "R4a 可复制本地示例：doctor → prepare → approve → execute → verify → satisfied 全链路，无需模型账号/网络/密钥。执行者与核验者是两个普通 subprocess 程序，分别走两条 stdout 协议通道（attempt/finished 事件行 + lhgp-verdict 判定块）；派工/回收/交叉验收全部由真实调度主循环（run_daemon_loop）产生，不使用人工补写成功事件的 harness。失败时给出可执行排查出口。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "examples/local-no-model/run_example.py",
+        "examples/local-no-model/worker.py",
+        "examples/local-no-model/checker.py",
+        "examples/local-no-model/README.md",
+        "tests/integration/test_local_no_model_example.py"
+      ],
+      "evidence": [
+        {
+          "kind": "integration_real_store",
+          "path": "tests/integration/test_local_no_model_example.py",
+          "recorded_at": "2026-09-11",
+          "summary": "真子进程运行示例脚本并断言：退出码 0 且输出含『全链路通过』；交付物 result.txt 内容含标记；合同终态 ∈ {satisfied, complete} 且 acceptance_status=passed；attempts 表存在 executor(local-worker) 与 verifier(local-checker) 两条真实 attempt 且均 succeeded；events 里不存在 actor=user 的 attempt/* 或 verification/* 记录（成功非人工补写）；至少两次 attempt/started（执行+验收各一次）。"
+        },
+        {
+          "kind": "manual_review",
+          "path": "examples/local-no-model/README.md",
+          "recorded_at": "2026-09-11",
+          "summary": "开发中实测到的两个非缺陷行为已写进排查出口：① 每轮新建 runner 等价守护进程重启，在飞 attempt 会按 SPEC §11.3 判为 detached→failed（崩溃恢复的诚实边界）；② 注入时钟只推动合同决策时间，子进程需要真实时间退出，两者都要给。另记录了输出预算截断判定块的 verdict_source_loss 处置（调大预算重跑）。"
+        }
+      ]
     }
   ]
 }

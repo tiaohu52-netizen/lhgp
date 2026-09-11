@@ -68,3 +68,6 @@ quality/gate-run*.log
 quality/last-gate.log
 quality/pytest-run.log
 quality/qg_test.log
+
+# R4a 示例的默认数据目录（本地产物，不入库）
+examples/local-no-model/example-data/

@@ -122,6 +122,39 @@ follow [SemVer](https://semver.org/spec/v2.0.0.html); dates in ISO 8601.
 可重建，不可超前」），`_atomic_write` 已给出单文件原子性。缺的是「重建」这一动作的
 触发，不是「回执」。不属于本轮范围，记在此处备查而非静默略过。
 
+## [Unreleased·八] R4a 可复制本地示例（无模型全链路）
+
+RELEASE-PLAN R4a 的交付物：`examples/local-no-model/` —— doctor → prepare →
+approve → execute → verify → satisfied 全链路，**无模型账号、无网络、无密钥**。
+此前仓库只有 `drafted → cancelled` 的控制面示例，从未有一条可复现的「真跑完」
+链路（问题 2 分析里指出的最大证据空洞）。
+
+### Added
+
+- `examples/local-no-model/{run_example.py,worker.py,checker.py,README.md}`：
+  - 执行者/核验者是两个普通 subprocess 程序，分别走两条 stdout 协议通道
+    （`attempt/finished` 事件行 / `lhgp-verdict` 判定块）；
+  - 派工、回收、交叉验收全部由**真实调度主循环** `run_daemon_loop` 产生，
+    不自己拼 tick、不伪造事件；失败时打印可执行排查出口；
+  - 中英文 README 入口链接已加进 README.md / README.zh-CN.md。
+- `tests/integration/test_local_no_model_example.py`：断言终态、交付物内容、
+  executor+verifier 两条真实 attempt 均 succeeded、且 `attempt/*` /
+  `verification/*` 事件中**不存在 actor=user 的记录**（成功非人工补写）。
+
+### Fixed
+
+- **事件行识别只认紧凑 JSON（第三方 harness 的静默陷阱）**：适配器按字面前缀
+  `{"event":"attempt/finished"` 扫描，而 Python `json.dumps` 默认在 `:` 后加空格
+  ——合规的事件行扫不到，且失败是静默的（退化成"等进程退出"，跨进程时直接
+  变成 §11.3 detached）。改为正则先认形态（容忍键值间空白）、仍须 `json.loads`
+  通过才采信；实测 4 种合法形态识别、2 种负例（别的事件/非 JSON）拒绝。
+
+### 开发中实测确认的两个既有语义（非缺陷，已写入示例排查出口）
+
+1. 每轮新建 runner ≈ 重启守护进程：在飞 attempt 被 reconcile 判为 detached
+   （退出码不可回收）→ failed（SPEC §11.3 的诚实边界）；
+2. 注入时钟只推动合同决策时间，子进程需要真实时间退出——两者都要给。
+
 ## [Unreleased·七] 交接附言截断纪律：行界 + 显式标记
 
 四层审查（第 3 层边界）在注入面清单里剩下的最后一处裸切片：
