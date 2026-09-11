@@ -7,6 +7,7 @@ verifier（RPC handler 无进程表，与 control/interrupt 相同分工）。
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -40,6 +41,7 @@ from longtask.persistence.store import (
     save_contract,
     update_contract_state,
 )
+from longtask.promoter.killswitch import KILL_SWITCH_FILE
 from longtask.rpc.errors import ErrorCode, RpcError
 from longtask.rpc.handlers.contract import handle_contract_get, handle_contract_request_verification
 from longtask.rpc.server import RequestEnvelope
@@ -126,6 +128,15 @@ def _request(conn: Any, cid: str, request_id: str = "req-ver-1") -> dict:
         params={"contract_id": cid},
     )
     return handle_contract_request_verification(envelope, conn=conn, now=NOW)
+
+
+def _consumed_events(conn: Any, cid: str) -> list[Any]:
+    """该合同的「请求已被兑现」凭据事件。"""
+    return [
+        event
+        for event in get_events(conn, contract_id=cid)
+        if event.event_type == EventType.VERIFICATION_CONSUMED
+    ]
 
 
 def test_request_on_blocked_contract_resumes_and_records(tmp_path: Path) -> None:
@@ -371,6 +382,49 @@ def test_daemon_does_not_reconsume_same_request_after_verifier_terminal(
             if event.event_type == EventType.VERIFICATION_CONSUMED
         ]
         assert len(consumed) == 1
+    finally:
+        conn.close()
+
+
+def test_refused_dispatch_does_not_consume_the_request(tmp_path: Path) -> None:
+    """审计 B7：拒接（没有派发任何 verifier）不得写「已兑现」凭据。
+
+    ``verification/consumed`` 的语义是「请求已被兑现」——``contract/request-
+    verification`` 正是靠它判断是否还有待兑现请求，并据此告诉用户
+    「wait for daemon consumption before requesting another」。旧代码对拒接也
+    写 consumed（payload 里 outcome=refused），于是杀开关期间提出的验收请求被
+    永久丢弃（再也不会重试），同时用户看到「无待兑现请求」的假象。
+    """
+    root, conn, cid, reg = _setup(tmp_path, state=ContractState.BLOCKED)
+    try:
+        _request(conn, cid)  # blocked → active，并落 verification/requested
+        (root / KILL_SWITCH_FILE).write_text("stop\n", encoding="utf-8")
+        runner = AttemptRunner(root, conn, reg)
+
+        _consume_verification_requests(root, conn, runner, NOW + timedelta(seconds=1))
+
+        verifiers = conn.execute("SELECT COUNT(*) FROM attempts WHERE role='verifier'").fetchone()[
+            0
+        ]
+        assert verifiers == 0, "杀开关生效时不该派出 verifier"
+        assert _consumed_events(conn, cid) == [], "没有派发 verifier 却写了消费凭据：请求被永久丢弃"
+
+        # 用户侧仍如实告知「有待兑现请求」，而不是谎称已兑现
+        with pytest.raises(RpcError) as excinfo:
+            _request(conn, cid, request_id="req-ver-again")
+        assert excinfo.value.code == ErrorCode.STATE_FORBIDDEN
+        assert "already pending" in str(excinfo.value)
+
+        # 杀开关解除后，同一个请求被兑现——这正是旧代码丢掉的那一次
+        (root / KILL_SWITCH_FILE).unlink()
+        _consume_verification_requests(root, conn, runner, NOW + timedelta(seconds=2))
+        verifiers = conn.execute("SELECT COUNT(*) FROM attempts WHERE role='verifier'").fetchone()[
+            0
+        ]
+        assert verifiers == 1, "解除阻塞后待兑现的请求必须被兑现"
+        consumed = _consumed_events(conn, cid)
+        assert len(consumed) == 1
+        assert json.loads(consumed[0].payload_json or "{}")["outcome"] == "dispatched"
     finally:
         conn.close()
 

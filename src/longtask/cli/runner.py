@@ -42,6 +42,7 @@ from longtask.contracts.schema import (
     ContractState,
     ContractView,
 )
+from longtask.contracts.state_machine import ATTEMPT_TERMINAL_STATES
 from longtask.persistence.attempts import (
     list_reconcilable_attempts,
     mark_attempt_orphaned,
@@ -55,6 +56,7 @@ from longtask.persistence.context import (
 )
 from longtask.persistence.errors import StoreError
 from longtask.persistence.events import EventType
+from longtask.persistence.events_query import get_recent_events
 from longtask.persistence.projections import (
     HANDOVER_FILE,
     contract_dir,
@@ -981,6 +983,28 @@ class AttemptRunner:
         self._emit(f"runner/attempt-cancelled:{contract_id}:{attempt_id}")
         return True
 
+    def _deferral_already_recorded(self, contract_id: str, lease_generation: int) -> bool:
+        """同一租约代际的 verifier 派发延后是否已经记过（审计 B7 配套）。
+
+        修复 B7 后，被拒接的 verification 请求不再被误标为已消费，因此 daemon
+        每轮 tick 都会重试派发；这里必须保证「同一原因只记一次」，否则一次外部
+        执行期间（默认 30 分钟、tick 数十轮）会堆出几十条同义 dispatch/deferred
+        事件——等于在已知的「事件无界增长」问题上再加一份。
+        """
+        recent = get_recent_events(
+            self._conn,
+            contract_id=contract_id,
+            event_types=(EventType.DISPATCH_DEFERRED.value,),
+            limit=1,
+        )
+        if not recent:
+            return False
+        try:
+            payload = json.loads(recent[0].payload_json or "{}")
+        except (TypeError, ValueError):
+            return False
+        return bool(payload.get("lease_generation") == lease_generation)
+
     def _dispatch_verifier(self, now: datetime, *, contract_id: str, executor_id: str) -> bool:
         """执行者 succeeded 后派生 verifier（DESIGN §5.2 交叉核对）。
 
@@ -1008,28 +1032,29 @@ class AttemptRunner:
                 "SELECT state FROM attempts WHERE attempt_id = ? LIMIT 1",
                 (active_lease.holder_attempt_id,),
             ).fetchone()
-            holder_terminal = holder_state is not None and holder_state[0] in (
-                "succeeded",
-                "failed",
-                "cancelled",
-                "stale",
-                "orphaned",
+            # 终态集合从枚举推导（审计 B4 同源：容量记账曾手写状态列表，两头都错）。
+            holder_terminal = (
+                holder_state is not None and holder_state[0] in ATTEMPT_TERMINAL_STATES
             )
             if not holder_terminal:
-                append_event(
-                    self._conn,
-                    contract_id=contract_id,
-                    event_type=EventType.DISPATCH_DEFERRED,
-                    payload={
-                        "reason": (
-                            "verifier dispatch deferred: live lease held by "
-                            f"running attempt {active_lease.holder_attempt_id}"
-                        ),
-                        "lease_generation": active_lease.generation,
-                    },
-                    now=now,
-                    actor="daemon",
-                )
+                # 同一租约代际的延后只记一次：调用方（daemon 消费 verification
+                # 请求）在拒接后保持请求待兑现并每轮重试，若每次都写事件，一次
+                # 执行期间就会堆出几十条同义记录。代际变化说明情况确实变了。
+                if not self._deferral_already_recorded(contract_id, active_lease.generation):
+                    append_event(
+                        self._conn,
+                        contract_id=contract_id,
+                        event_type=EventType.DISPATCH_DEFERRED,
+                        payload={
+                            "reason": (
+                                "verifier dispatch deferred: live lease held by "
+                                f"running attempt {active_lease.holder_attempt_id}"
+                            ),
+                            "lease_generation": active_lease.generation,
+                        },
+                        now=now,
+                        actor="daemon",
+                    )
                 return False
         # C1 修复（P1）：用 attempts 实体表的 role='verifier' 判定已派生，
         # 不再用 payload_json 字符串匹配（会误判子串）。

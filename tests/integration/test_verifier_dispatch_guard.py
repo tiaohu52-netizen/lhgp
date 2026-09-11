@@ -114,6 +114,57 @@ def _running_executor(conn: Any, cid: str) -> str:
     return attempt_id
 
 
+def _deferred_count(conn: Any, cid: str) -> int:
+    return len(
+        [
+            event
+            for event in get_events(conn, contract_id=cid)
+            if event.event_type == EventType.DISPATCH_DEFERRED
+        ]
+    )
+
+
+def test_same_lease_generation_defers_are_logged_once(tmp_path: Path) -> None:
+    """审计 B7 配套：同一租约代际的派发延后只记一次事件。
+
+    修复 B7 后，被拒接的 verification 请求保持待兑现，daemon 每轮 tick 都会
+    重试派发。若每次都写 dispatch/deferred，一次外部执行（默认 30 分钟、
+    tick 数十轮）就会堆出几十条同义事件——在已知的「事件无界增长」问题上
+    再加一份。代际变化说明情况确实变了，必须再记一次（对照组）。
+    """
+    root, conn, cid, reg = _setup(tmp_path)
+    runner = AttemptRunner(root, conn, reg)
+    _running_executor(conn, cid)
+    try:
+        for _ in range(3):
+            assert runner._dispatch_verifier(NOW, contract_id=cid, executor_id="exec-a") is False
+        assert _deferred_count(conn, cid) == 1, "同一代际重复写了延后事件"
+
+        # 对照组：换一个持活租约的非终态 attempt（代际 +1）→ 必须再记一次
+        from longtask.persistence.store import acquire_lease
+
+        conn.execute(
+            "INSERT INTO attempts (attempt_id, contract_id, goal_id, role, executor_id, state,"
+            " admitted_at, contract_revision, updated_at, session_token_hash)"
+            " VALUES (?, ?, ?, 'executor', 'exec-b', 'running', ?, 1, ?, 'test-session-hash')",
+            ("att-running-2", cid, cid, NOW.isoformat(), NOW.isoformat()),
+        )
+        acquire_lease(
+            conn,
+            contract_id=cid,
+            holder_attempt_id="att-running-2",
+            expected_generation=1,
+            heartbeat_at=NOW,
+            timeout=timedelta(minutes=30),
+        )
+        conn.commit()
+        assert runner._dispatch_verifier(NOW, contract_id=cid, executor_id="exec-b") is False
+        assert runner._dispatch_verifier(NOW, contract_id=cid, executor_id="exec-b") is False
+        assert _deferred_count(conn, cid) == 2, "新租约代际的延后必须重新记录"
+    finally:
+        conn.close()
+
+
 def test_verifier_defers_when_executor_holds_live_lease(tmp_path: Path) -> None:
     root, conn, cid, reg = _setup(tmp_path)
     runner = AttemptRunner(root, conn, reg)

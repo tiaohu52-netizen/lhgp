@@ -556,9 +556,27 @@ def _consume_verification_requests(
             (contract.goal_id,),
         ).fetchone()
         executor_id = str(last_executor[0]) if last_executor else ""
-        ok = runner._dispatch_verifier(
+        if not runner._dispatch_verifier(
             now, contract_id=contract.contract_id, executor_id=executor_id
-        )
+        ):
+            # 审计 B7：拒接 ≠ 兑现，不能写 VERIFICATION_CONSUMED。
+            #
+            # 该事件的语义是「请求已被兑现」——contract/request-verification
+            # 正是靠它判断是否还有待兑现请求，并据此告诉用户「wait for daemon
+            # consumption before requesting another」。旧代码对拒接也写 consumed
+            # （payload 里 outcome=refused），于是**没有派发任何 verifier 却让系统
+            # 声称请求已兑现**：用户在杀开关期间提出的验收请求被永久丢弃（再也
+            # 不会重试），同时用户看到「无待兑现请求」的假象，进而以为验收发生过。
+            #
+            # 本调用点可达的拒接原因（合同态 ACTIVE 与在途 verifier 已在上面过滤）：
+            #   1. 杀开关激活——暂时；
+            #   2. 活租约持有者非终态（执行者仍在跑）——_dispatch_verifier 自记
+            #      dispatch/deferred，其注释明写「下轮重试」，与「立刻消费掉」矛盾；
+            #   3. 窗口内验证预算耗尽——用户提高预算后该请求应当仍能兑现。
+            # 三者都不该吞掉请求：保持未消费 → 下轮重试，且用户侧仍如实显示待兑现。
+            # 不会把用户锁死：真正永久的情形（合同终态、预算耗尽）在
+            # contract/request-verification 里本就会拒绝新请求。
+            continue
         append_event(
             conn,
             contract_id=contract.contract_id,
@@ -566,28 +584,27 @@ def _consume_verification_requests(
             event_type=EventType.VERIFICATION_CONSUMED,
             payload={
                 "request_event_id": pending.event_id,
-                "outcome": "dispatched" if ok else "refused",
+                "outcome": "dispatched",
             },
             now=now,
             actor="daemon",
             contract_revision=contract.revision,
             role="verifier",
         )
-        if ok:
-            append_event(
-                conn,
-                contract_id=contract.contract_id,
-                goal_id=contract.goal_id,
-                event_type=EventType.VERIFICATION_STARTED,
-                payload={
-                    "requested_by": "user",
-                    "executor_of_record": executor_id,
-                    "request_event_id": pending.event_id,
-                },
-                now=now,
-                actor="daemon",
-            )
-            rebuild_projection(root, contract.contract_id, conn)
+        append_event(
+            conn,
+            contract_id=contract.contract_id,
+            goal_id=contract.goal_id,
+            event_type=EventType.VERIFICATION_STARTED,
+            payload={
+                "requested_by": "user",
+                "executor_of_record": executor_id,
+                "request_event_id": pending.event_id,
+            },
+            now=now,
+            actor="daemon",
+        )
+        rebuild_projection(root, contract.contract_id, conn)
 
 
 def _cancel_terminal_contract_attempts(
