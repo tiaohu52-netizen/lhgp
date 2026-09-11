@@ -691,3 +691,105 @@ class TestWakeBlockedCapacityFull:
             assert after.state == ContractState.CANCELLED
         finally:
             conn.close()
+
+    def test_capacity_still_full_leaves_the_contract_blocked(self, tmp_path: Path) -> None:
+        """审计 B3：唤醒必须真的检查额度，不能无条件翻 ACTIVE。
+
+        这条负向断言要能失败在正确的地方——如果 registry 因为 capability
+        或 authority 不匹配本来就选不出候选，本测试同样会看到 False。所以
+        先断言「额度空闲时同一 registry 选得出候选」，把后面的 False 钉死
+        在容量这一个原因上。
+        """
+
+        from lhgp.contracts.contract_view import BlockReason
+        from longtask.adapters.registry import ExecutorRegistry
+        from longtask.persistence.attempts import count_running_by_executor
+        from longtask.promoter.records import _record_attempt
+
+        conn = _open_store(tmp_path)
+        try:
+            view = _save_active(conn, "lt-cap-busy", root=tmp_path)
+            _save_active(conn, "lt-cap-other", root=tmp_path)
+            registry = ExecutorRegistry([_candidate()])
+            assert registry.match_candidates(view.draft, running_attempts={}), (
+                "registry 选不出候选，本测试无法证明拦下唤醒的是容量"
+            )
+
+            # 占满唯一执行器的额度（admitted/running/orphaned 都算在跑）
+            _record_attempt(
+                conn,
+                goal_id=view.goal_id,
+                contract_id="lt-cap-other",
+                attempt_id="att-busy-1",
+                contract_revision=1,
+                role="executor",
+                executor_id="exec-1",
+                state="running",
+                admitted_at=NOW,
+                updated_at=NOW,
+            )
+            assert count_running_by_executor(conn).get("exec-1") == 1
+
+            update_contract_state(
+                conn,
+                contract_id="lt-cap-busy",
+                new_state=ContractState.BLOCKED,
+                now=NOW,
+                blocked_reason=BlockReason.CAPACITY_FULL,
+            )
+            assert wake_blocked_capacity_full(conn, "lt-cap-busy", NOW, registry=registry) is False
+            after = get_contract(conn, "lt-cap-busy")
+            assert after is not None
+            assert after.state == ContractState.BLOCKED
+            assert after.blocked_reason == BlockReason.CAPACITY_FULL
+
+            # 额度释放后必须还唤得醒——gate 不能把合同永久卡住。
+            _record_attempt(
+                conn,
+                goal_id=view.goal_id,
+                contract_id="lt-cap-other",
+                attempt_id="att-busy-1",
+                contract_revision=1,
+                role="executor",
+                executor_id="exec-1",
+                state="succeeded",
+                admitted_at=NOW,
+                terminal_at=NOW,
+                updated_at=NOW,
+            )
+            assert count_running_by_executor(conn).get("exec-1") is None
+            assert wake_blocked_capacity_full(conn, "lt-cap-busy", NOW, registry=registry) is True
+            woken = get_contract(conn, "lt-cap-busy")
+            assert woken is not None
+            assert woken.state == ContractState.ACTIVE
+        finally:
+            conn.close()
+
+    def test_blocked_on_capacity_leaves_no_due_decision_point(self, tmp_path: Path) -> None:
+        """审计 B3：阻塞在容量上不得钉一个「立刻到期」的决策点。
+
+        ``earliest_next_decision_at`` 的 states 含 ``blocked``，且对已过期
+        的决策点原样返回（R1 审查的有意设计，理由是不能让 deadline 决策
+        被拖到下个周期）。于是「阻塞时写 next_decision_at = now」会让
+        daemon 的 ``sleep_seconds = min(interval, max(0, until))`` 恒为 0：
+        每轮唤醒 → 重新阻塞 → 休眠 0，CPU 空转。
+        """
+
+        from lhgp.contracts.contract_view import BlockReason
+        from lhgp.persistence.decisions import earliest_next_decision_at
+        from longtask.cli.dispatch import mark_blocked_capacity_full
+
+        conn = _open_store(tmp_path)
+        try:
+            _save_active(conn, "lt-cap-spin", root=tmp_path)
+            assert mark_blocked_capacity_full(conn, "lt-cap-spin", NOW) is True
+            after = get_contract(conn, "lt-cap-spin")
+            assert after is not None
+            assert after.blocked_reason == BlockReason.CAPACITY_FULL
+            assert after.next_decision_at is None, (
+                "容量饱和没有确定的未来决策点：重试是事件驱动的，写 now 会让守护进程每轮休眠 0 秒"
+            )
+            # 系统级可观察量：无到期决策点时 daemon 回落到心跳间隔休眠。
+            assert earliest_next_decision_at(conn, now=NOW) is None
+        finally:
+            conn.close()

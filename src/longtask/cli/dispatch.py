@@ -28,7 +28,7 @@ from pathlib import Path
 from lhgp.contracts.contract_view import ContractState
 from lhgp.contracts.plan import _extract_check_identifiers
 from longtask.adapters.base import ExecutorAdapter, PrepareRefusedError
-from longtask.adapters.registry import RegistryEntry
+from longtask.adapters.registry import ExecutorRegistry, RegistryEntry
 from longtask.cli.runner import build_attempt_input
 from longtask.contracts.schema import ContractView
 from longtask.persistence.events import EventType
@@ -175,14 +175,21 @@ def mark_blocked_capacity_full(
         return False
 
     with transaction(conn):
+        # next_decision_at 置 NULL，而不是置 now。容量饱和没有「到某个
+        # 时刻就有额度」这回事——重试是事件驱动的（额度释放、心跳）。
+        # 置 now 会踩到 earliest_next_decision_at：它的 states 含
+        # 'blocked'，且对已过期的决策点**原样返回**（R1 审查的有意设计，
+        # 见 decisions.py 注释：不能让 deadline 决策被拖到下个周期）。
+        # 两者相乘 → 守护进程每轮算出 until=0 → sleep_seconds=0 →
+        # 完全不睡，一边唤醒一边重新阻塞，CPU 空转（审计 B3）。
+        # NULL 让 daemon 回落到心跳间隔，重试节奏由心跳给出。
         cur = conn.execute(
             "UPDATE contracts SET state = ?, blocked_reason = ?, "
-            "next_decision_at = ?, updated_at = ? "
+            "next_decision_at = NULL, updated_at = ? "
             "WHERE contract_id = ? AND state = ? AND revision = ?",
             (
                 ContractState.BLOCKED.value,
                 BlockReason.CAPACITY_FULL.value,
-                now.isoformat(),
                 now.isoformat(),
                 contract_id,
                 view.state.value,
@@ -217,6 +224,8 @@ def wake_blocked_capacity_full(
     conn: sqlite3.Connection,
     contract_id: str,
     now: datetime,
+    *,
+    registry: ExecutorRegistry | None = None,
 ) -> bool:
     """Re-activate a contract that was blocked only because every
     eligible executor was busy.
@@ -228,13 +237,26 @@ def wake_blocked_capacity_full(
     - its ``blocked_reason`` is :data:`BlockReason.CAPACITY_FULL`
       (set by the dispatch path when match_candidates saw at least
       one eligible candidate but every one was cap-saturated).
-    - the executor pool actually has free capacity right now
-      (``count_running_by_executor`` reports no in-flight attempts
-      for any of the candidates that were busy at block time, or
-      simply: the total running count dropped to zero since the
-      contract was blocked). The last clause is the conservative
-      one — the tick's main loop will re-evaluate, and if the cap
-      is still full we'll just block again with the same reason.
+    - the executor pool actually has free capacity right now. Two
+      granularities, chosen by whether the caller can supply the
+      registry:
+
+      * ``registry`` given (production path, ``tick.py``): precise —
+        ``match_candidates`` is re-run against the live per-executor
+        running counts, so the contract is woken exactly when a
+        dispatch would now succeed. A non-empty candidate list means
+        a previously saturated executor has a free slot.
+      * ``registry`` omitted: conservative — the total running count
+        must have dropped to zero. Sound (no in-flight attempt implies
+        free capacity) but can wait longer than necessary when the
+        busy executor is not one of this contract's candidates.
+
+      Auditor note (B3): the "free capacity right now" clause was
+      documented here from the start, but the implementation only
+      checked state+reason — so every tick woke every CAPACITY_FULL
+      contract even when nothing had changed. Combined with the
+      ``next_decision_at = now`` written by
+      :func:`mark_blocked_capacity_full`, that made the daemon spin.
 
     Same direct-UPDATE pattern as
     :func:`wake_blocked_after_plan_approval`: skip the revision bump
@@ -249,6 +271,16 @@ def wake_blocked_capacity_full(
     if view.state != ContractState.BLOCKED:
         return False
     if view.blocked_reason != BlockReason.CAPACITY_FULL:
+        return False
+
+    # 容量前置条件（docstring 第 3 条）：额度没释放就不要唤醒。
+    from longtask.persistence.attempts import count_running_by_executor
+
+    running_attempts = count_running_by_executor(conn)
+    if registry is not None:
+        if not registry.match_candidates(view.draft, running_attempts=running_attempts):
+            return False
+    elif any(running_attempts.values()):
         return False
 
     from lhgp.persistence.schema import transaction

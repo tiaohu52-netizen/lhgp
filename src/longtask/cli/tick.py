@@ -192,16 +192,22 @@ def run_daemon_tick(
     # P1 review (2026-09-08, second round): auto-recover contracts
     # blocked purely on CAPACITY_FULL. These went BLOCKED because
     # every eligible executor was at its cap; as soon as any lease
-    # is released, the next tick should retry them. Doing it here at
-    # the start of every tick is O(blocked_set) and self-throttling
-    # — if the cap is still full, the contract re-blocks immediately
-    # and stops showing up here.
+    # is released, a later tick should retry them.
+    #
+    # Auditor note (B3): this loop used to claim it was
+    # "self-throttling — if the cap is still full, the contract
+    # re-blocks immediately and stops showing up here". That was
+    # wrong: re-blocking happens *within* the same tick, so the
+    # contract shows up again on the very next one. The throttle is
+    # the capacity precondition inside wake_blocked_capacity_full
+    # (registry passed below) — no capacity released, no wake, no
+    # state churn.
     woken_capacity: set[str] = set()
     for c in all_contracts:
         if c.state == ContractState.BLOCKED and c.blocked_reason == BlockReason.CAPACITY_FULL:
             from longtask.cli.dispatch import wake_blocked_capacity_full
 
-            if wake_blocked_capacity_full(conn, c.contract_id, now):
+            if wake_blocked_capacity_full(conn, c.contract_id, now, registry=registry):
                 woken_capacity.add(c.contract_id)
     # Refresh the in-memory views for woken contracts so the main
     # loop sees them as ACTIVE this tick (the snapshot at the top
