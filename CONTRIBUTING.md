@@ -109,7 +109,11 @@ cli → rpc → promoter / scheduler → adapters → persistence → contracts
 - `scheduler` 不做执行：不得 import `adapters`。
 - `promoter` 调度执行器只经 `adapters` 的公开接口，不得 import 具体实现。
 - 任何 `src/` 层（包括 `src/longtask` 与 canonical `src/lhgp` facade）不得 import `tests`。
-- `src/lhgp` 当前是迁移 facade：只能转发到唯一的 `longtask` 实现，禁止复制状态或业务逻辑。
+- `src/lhgp` 与 `src/longtask` 是同一实现的两个命名空间，**互指门面**：
+  同名文件里一侧是真身（>5 行的实现），另一侧是 ≤5 行的 re-export。真身在哪
+  一侧由历史决定，**权威地图是 [ARCHITECTURE.md](ARCHITECTURE.md) 的「真身
+  位置地图」表**（协议概念多在 `lhgp`，运行时机械多在 `longtask`）。门面里
+  禁止写逻辑，禁止复制状态或业务逻辑。
 - 新增跨层依赖：arch 门会红；确认是设计演进就先改 DESIGN 与本节。
 
 ## 测试纪律
