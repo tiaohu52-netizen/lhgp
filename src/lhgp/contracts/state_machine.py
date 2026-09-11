@@ -82,6 +82,12 @@ ATTEMPT_TERMINAL_STATES = frozenset(
         AttemptState.ORPHANED,
     }
 )
+# 「在飞」attempt 状态 = 枚举里非终态的全部（admitted/starting/running/waiting）。
+# 并发额度只应由这些状态占用。审计 B4：容量记账曾手写
+# ('admitted','running','orphaned')，两头都错——把终态 orphaned 算成在跑
+# （一条失联 attempt 永久占死额度），又漏掉 starting/waiting（额度被超额放行）。
+# 从枚举推导后，这类漂移结构上不可能再发生。
+ATTEMPT_NON_TERMINAL_STATES = frozenset(AttemptState) - ATTEMPT_TERMINAL_STATES
 ATTEMPT_LEGAL_TRANSITIONS = {
     AttemptState.ADMITTED: frozenset(
         {
@@ -183,6 +189,7 @@ def is_valid_acceptance_transition(
 
 __all__ = [
     "ATTEMPT_LEGAL_TRANSITIONS",
+    "ATTEMPT_NON_TERMINAL_STATES",
     "ATTEMPT_TERMINAL_STATES",
     "LEGAL_TRANSITIONS",
     "NON_TERMINAL_STATES",

@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from longtask.contracts.state_machine import ATTEMPT_TERMINAL_STATES
+from longtask.contracts.state_machine import ATTEMPT_NON_TERMINAL_STATES, ATTEMPT_TERMINAL_STATES
 
 # 需要 reconcile 关注的 attempt 状态：终态之外全部（orphaned 也在内——
 # 它要在宽限期后 fence 并让位给新 attempt）。
@@ -166,15 +166,33 @@ def list_contract_attempts(
 
 
 def count_running_by_executor(conn: sqlite3.Connection) -> dict[str, int]:
-    """按执行器统计未终态 attempt 数（并发限额准入，DESIGN §8.2 条件 4）。
+    """按执行器统计在飞 attempt 数（并发限额准入，DESIGN §8.2 条件 4）。
+
+    在飞集合由状态机推导（``ATTEMPT_NON_TERMINAL_STATES``），不再手写状态列表。
+    审计 B4：原实现写死 ``('admitted', 'running', 'orphaned')``，与状态机两头
+    不一致——
+
+    - ``orphaned`` 是**终态**（SPEC §7 把它列在迁移目标位，状态机里
+      ``ATTEMPT_TERMINAL_STATES`` 含它、且无出边）。终态 attempt 已经结束，
+      占用额度意味着 ``max_concurrent_attempts=1``（默认值）的执行器被一条
+      失联记录**永久**占死：reconcile 宽限到期只 fence 并释放租约，从不移出
+      ``orphaned``，于是该执行器再也不接活，所有依赖它的合同永远
+      BLOCKED(CAPACITY_FULL)。宽限期内「不得重复 spawn」由**代持租约**保证
+      （SPEC §11.3 第 3 条、reconcile 的 _renew），不由额度计数保证。
+    - ``starting`` / ``waiting`` 是非终态却被漏掉，这两个状态下额度被**超额
+      放行**，``max_concurrent_attempts`` 形同虚设。
 
     审计调度-R3：match_candidates 的 running_attempts 入参在两条生产派发
     路径上都未注入，合同/执行器的 max_concurrent_attempts 从未真正生效。
     """
+    in_flight = sorted(s.value for s in ATTEMPT_NON_TERMINAL_STATES)
+    placeholders = ", ".join("?" for _ in in_flight)
+    # 只插占位符个数，状态值一律走参数绑定。
     rows = conn.execute(
         "SELECT executor_id, COUNT(*) FROM attempts"
-        " WHERE state IN ('admitted', 'running', 'orphaned')"
-        " AND executor_id IS NOT NULL GROUP BY executor_id"
+        f" WHERE state IN ({placeholders})"
+        " AND executor_id IS NOT NULL GROUP BY executor_id",
+        tuple(in_flight),
     ).fetchall()
     return {str(r[0]): int(r[1]) for r in rows}
 
