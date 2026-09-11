@@ -11,6 +11,16 @@ follow [SemVer](https://semver.org/spec/v2.0.0.html); dates in ISO 8601.
 「可验证的结构」）。来源：`openpi-dev/openpi`（Pi 编辑器的社区扩展包）的终端输出
 清洗、不可信数据的显式边界、进程树终止、漂移守护测试四条做法。
 
+### 更正
+
+- **E2 饥饿保护未交付（2026-09-11 审计）**：`v0.1.0a6` 的 CHANGELOG 宣称「饥饿检测
+  （连续 5 tick 未派工自动提前）」，实测该规则**从未在生产中触发**——tick 传给
+  `apply_fairness_order` 的 `fairness_states` 恒为空 dict，`observe_tick` 只在测试里
+  被调用。公平性只有容量记账半是接线的（且 soft cap 默认 0 = 不限，需运营显式配置
+  才有约束力）。原条目已就地更正，`fairness.py`/`tick.py` 加接线状态说明，
+  `docs/RELEASE-PLAN.md` §5 标注 E2 待独立 SPEC 与测试，DESIGN §8.3 的饥饿保护
+  同样标注未实现。
+
 ### Added
 
 - **`lhgp.untrusted`（新包，零第三方依赖）**：`sanitize.py` 做结构性清洗，
@@ -929,8 +939,13 @@ memory-and-wiki Phase 1：协议内 wiki 合并发布版。
 
 - **E1 Deadline 校准**：按合同内主导执行器的成功样本（≥2）校准
   forecast p50/p90；低样本降级链保留。
-- **E2 多合同公平调度**：紧迫档位降序派工 + 饥饿检测（连续 5 tick
-  未派工自动提前）+ per-tick 容量记账（可选上限）。
+- **E2 多合同公平调度**：紧迫档位降序派工 + per-tick 容量记账（可选上限）。
+  <br/>**更正（2026-09-11 审计）**：本条原写「+ 饥饿检测（连续 5 tick 未派工自动
+  提前）」，实测**未交付**——`apply_fairness_order` 收到的 `fairness_states` 恒为空
+  dict，`ContractFairnessState.observe_tick`（唯一推进状态的方法）在生产代码里没有
+  调用点，`starved` 列表恒为空，规则从不触发；DESIGN §8.3 承诺的
+  「连续 N 轮额度不足 + u ≥ 1.0 → 升级 blocked(need-user)」是另一套语义，同样未实现。
+  饥饿保护待 E2 独立 SPEC 与测试后再接线。
 - **E3 提案审批闭环**：`lhgp proposal-apply` 命令 + 提案结构校验
   （stages/id/contract_id/≤20）+ 冻结区强制（executor/model/budget/
   authority 字段一律拒绝——计划提案不得走私执行权限）。

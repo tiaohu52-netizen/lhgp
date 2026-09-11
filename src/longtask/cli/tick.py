@@ -148,8 +148,15 @@ def run_daemon_tick(
     dispatched_count = 0
     expired_count = 0
     attempts_started: list[dict[str, str]] = []
-    # E2 公平性：per-tick 容量记账 + 饥饿检测
+    # E2 公平性：per-tick 容量记账（已接线）+ 饥饿检测（**未接线**）。
     capacity_ledger = TickCapacityLedger()
+    # 饥饿半未接线的证据（审计 B8，2026-09-11）：本 dict 恒为空，而
+    # apply_fairness_order 只依据 dict 里的 ContractFairnessState 判断饥饿——
+    # 唯一推进该状态的 observe_tick 在生产代码里没有调用点（只在测试里），
+    # 于是它内部的 starved 列表恒为空，规则从不触发。DESIGN §8.3 的饥饿保护
+    # 又是另一套语义（额度不足 N 轮 + u≥1.0 → 升级 blocked(need-user)），本
+    # 模块同样没实现。接线前先要 E2 的独立 SPEC 与测试
+    # （docs/RELEASE-PLAN.md §5 E2）；在那之前 CHANGELOG 不宣称已交付。
     fairness_states: dict[str, ContractFairnessState] = {}
     dispatched_this_tick: set[str] = set()
 

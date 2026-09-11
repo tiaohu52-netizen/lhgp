@@ -10,6 +10,24 @@
    派工（避免一 tick 内把预算全部烧给排序靠前的合同）。
 
 两者都是确定性规则，不依赖时钟以外的外部状态。
+
+**接线状态（审计 B8，2026-09-11 实测）**：
+
+- 规则 2 已接线：``tick.py`` 的 ``run_daemon_tick`` 持有 ``TickCapacityLedger``，
+  每次派工前查 ``can_dispatch``。注意 soft cap 默认 0（不限），所以它只在运营
+  显式配置 ``max_dispatches_per_tick`` 后才有约束力。
+- 规则 1 **未接线**：``apply_fairness_order`` 需要每合同的跨 tick 状态，而 tick
+  传给它的 ``fairness_states`` 恒为空 dict——``ContractFairnessState.observe_tick``
+  （唯一推进状态的方法）在生产代码里没有任何调用点，只在测试里被调用。因此
+  「连续 N tick 未派工自动提前」这条分支在生产里从不触发（``apply_fairness_order``
+  里的 ``starved`` 恒为空列表）。
+- DESIGN §8.3「多合同公平性」描述的饥饿保护是**另一套语义**（连续 N 轮因**额度
+  不足**未获分发且 u ≥ 1.0 → 升级 ``blocked(need-user)``，让用户决定加执行器还是
+  砍任务），本模块没有实现它。
+
+结论：饥饿保护属于**未交付**能力，不是「已实现但没测到」。要接线先得有 E2 的独立
+SPEC 与测试（``docs/RELEASE-PLAN.md`` §5 E2 的依赖列就是这么写的）。在那之前
+CHANGELOG 不再宣称它已交付。
 """
 
 from __future__ import annotations
@@ -21,7 +39,9 @@ from dataclasses import dataclass, field
 class FairnessConfig:
     """公平性参数（E2 SPEC 落地值）。"""
 
-    # 同一合同在同一紧迫档位连续等这么多个 tick 仍未派工 → 视为饥饿
+    # 同一合同在同一紧迫档位连续等这么多个 tick 仍未派工 → 视为饥饿。
+    # 注意：这条阈值目前只在单元测试里起作用（饥饿规则未接线，见模块 docstring），
+    # 而 DESIGN §8.3 的饥饿保护写的是「默认 10 轮」——数字与语义都待 E2 SPEC 统一。
     starvation_ticks: int = 5
     # 单个 tick 内最多派工多少个合同（0 = 不限制）
     max_dispatches_per_tick: int = 0
