@@ -11,7 +11,10 @@ from typing import Any
 @dataclass(slots=True)
 class StoreConfig:
     db_path: Path
-    schema_version: int = 4
+    # 必须与 persistence.schema.STORE_SCHEMA_VERSION 一致——两处手写是
+    # v3→v4 迁移留下的陷阱（当时常量升了这里没升，靠"恰好相同"活到 v5）。
+    # 一致性由 test_attempt_usage.py::TestSchemaV5 的漂移守护钉住。
+    schema_version: int = 5
 
 
 @dataclass(frozen=True, slots=True)

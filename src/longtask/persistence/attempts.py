@@ -44,6 +44,7 @@ _ATTEMPT_COLS = (
     "capability_snapshot_json",
     "handle_registered_at",
     "orphaned_at",
+    "usage_json",
 )
 _COLS_SQL = ", ".join(_ATTEMPT_COLS)
 
@@ -73,6 +74,7 @@ class StoredAttempt:
     capability_snapshot: dict[str, Any]
     handle_registered_at: datetime | None
     orphaned_at: datetime | None
+    usage: dict[str, Any]
     contract_id: str | None = None
 
     def is_terminal(self) -> bool:
@@ -117,6 +119,7 @@ def _row_to_attempt(data: dict[str, Any]) -> StoredAttempt:
         capability_snapshot=_json_obj("capability_snapshot_json"),
         handle_registered_at=_ts("handle_registered_at"),
         orphaned_at=_ts("orphaned_at"),
+        usage=_json_obj("usage_json"),
         contract_id=str(data["contract_id"]) if data.get("contract_id") else None,
     )
 

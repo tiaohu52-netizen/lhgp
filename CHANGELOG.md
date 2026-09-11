@@ -122,6 +122,47 @@ follow [SemVer](https://semver.org/spec/v2.0.0.html); dates in ISO 8601.
 可重建，不可超前」），`_atomic_write` 已给出单文件原子性。缺的是「重建」这一动作的
 触发，不是「回执」。不属于本轮范围，记在此处备查而非静默略过。
 
+## [Unreleased·四] attempt 消耗台账（openpi 第四轮吸收：usage / 成本维度）
+
+openpi 有完整的消耗面：workflow `usage()` 返回 token/成本/上限、`/usage` 查
+服务配额、`usage-changed` 事件流。lhgp 把预算当硬边界，却只记「派几次」
+（max_dispatches），**没有任何账记「烧了多少」**——stats 只有墙钟和退出码。
+本轮补台账；预算强制（budget.max_cost）动合同冻结区 schema，明确留待单独审批。
+
+### Added
+
+- **`lhgp/persistence/usage.py`**：usage 自报的形状校验（纯函数）。
+  `input_tokens`/`output_tokens` 必填非负整数，`cache_read_tokens`/
+  `cache_write_tokens`/`cost_estimate` 可选；负数、错型（含 bool 伪装 int）、
+  未知键一律 `UsageInvalidError` 拒收。
+- **schema v5**：`attempts.usage_json` 列。新库 DDL 直接带列；旧库经
+  `_migrate_v4_to_v5` 幂等补列（`_add_column_if_missing` 同款，v4 库实测
+  升级后可重复执行 ensure_schema）。
+- **顺手拔掉一颗上轮迁移埋的雷**：`StoreConfig.schema_version` 是与
+  `STORE_SCHEMA_VERSION` 并存的手写死值，v3→v4 迁移时常量升了它没升，
+  靠「恰好相同」活到 v5——本次升 5 后立刻炸出：所有 runner 集成测试
+  集体 `StoreTamperedError`（配置期望 4 < 库 5 被只读拒收）。已修并加
+  漂移守护测试（两处值必须一致，不再靠巧合）。
+- **write-back 链路**：RPC `attempt/write-back` 与 MCP `lhgp_write_back`
+  接受可选 `usage`；拒收发生在任何落库之前（attempt 行无副作用、无终态
+  事件）；终态事件 payload 携带 usage 与 attempts 行并行供审计；不携带
+  usage 的存量写回零变化。
+- **stats 聚合**：`build_stats` 新增 `usage_totals`（跨 attempt 透明合计，
+  不换算不外推）；没记过台账不出现该键；存量脏数据（手改库）跳过不抛。
+
+### 语义（SPEC §12.3.1）
+
+- 自报是**下界**：上下文压缩、缓存刷新可能使真实消耗更高，消费方不得当精确值；
+- 同一 attempt 重复写回按最后一次自报为准（记终局累计，非逐次增量）。
+
+### Tests
+
+- `tests/unit/test_attempt_usage.py` 21 条：校验 9 边界（负数/bool/错型/
+  未知键/None/缺字段）、schema v5 新库与 v4 旧库幂等升级、写回落库+终态
+  事件并行、拒收无副作用、无 usage 向后兼容、stats 跨 attempt 合计/
+  空库无键/脏数据跳过。反向验证：摘掉 RPC 校验（负数落库）与摘掉 stats
+  聚合，各自命中预期测试名。
+
 ## [Unreleased·三] 判定块截断丢失可区分（openpi 第三轮吸收：assertWatchableOutput 原则）
 
 openpi 的 `assertWatchableOutput` 原则：**派生观察依赖的缓冲被预算驱逐后，

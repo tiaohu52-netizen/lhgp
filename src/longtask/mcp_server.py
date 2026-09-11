@@ -2241,6 +2241,24 @@ TOOLS.update(
                         "model_id": {"type": "string"},
                         "evidence": {"type": "array", "items": {"type": "object"}},
                         "request_id": {"type": "string", "description": "幂等重试键；重试时复用"},
+                        "usage": {
+                            "type": "object",
+                            "description": (
+                                "可选：本 attempt 消耗台账（执行者自报，下界语义——"
+                                "压缩/缓存刷新可能使真实消耗更高）。字段："
+                                "input_tokens/output_tokens（必填非负整数）、"
+                                "cache_read_tokens/cache_write_tokens（可选）、"
+                                "cost_estimate（可选非负数，货币单位由部署约定）。"
+                                "负数、错型、未知键一律拒收（台账是预算强制的地基）。"
+                            ),
+                            "properties": {
+                                "input_tokens": {"type": "integer", "minimum": 0},
+                                "output_tokens": {"type": "integer", "minimum": 0},
+                                "cache_read_tokens": {"type": "integer", "minimum": 0},
+                                "cache_write_tokens": {"type": "integer", "minimum": 0},
+                                "cost_estimate": {"type": "number", "minimum": 0},
+                            },
+                        },
                     },
                 },
             },

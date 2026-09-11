@@ -320,6 +320,17 @@ def handle_attempt_write_back(
 
     events: list[EventInput] = []
     actual_model = str(params.get("model_id", "")).strip()
+    # 消耗台账（§11.3）：执行者自报 token/成本，形状 fail-closed 校验后
+    # 随写回落库。自报是下界——压缩/缓存刷新可能让真实消耗更高。
+    raw_usage = params.get("usage")
+    usage: dict[str, Any] | None = None
+    if raw_usage is not None:
+        from lhgp.persistence.usage import UsageInvalidError, normalize_usage
+
+        try:
+            usage = normalize_usage(raw_usage)
+        except UsageInvalidError as exc:
+            raise RpcError(code=ErrorCode.VALIDATION_FAILED, message=str(exc)) from None
     note = params.get("progress_note")
     if note is not None and str(note).strip():
         events.append(
@@ -380,6 +391,7 @@ def handle_attempt_write_back(
                             "reported_by": "model",
                             "role": attempt_role,
                             "evidence": evidence,
+                            **({"usage": usage} if usage else {}),
                             # 8th/9th-round: the runtime, not the model, writes
                             # the content identity of what was checked, and it
                             # writes the identity of the revision THIS attempt
@@ -407,6 +419,7 @@ def handle_attempt_write_back(
                             "role": attempt_role,
                             "reason": str(note or ""),
                             "evidence": evidence,
+                            **({"usage": usage} if usage else {}),
                             **({"model_id": actual_model} if actual_model else {}),
                         },
                         attempt_id=attempt_id,
@@ -430,6 +443,7 @@ def handle_attempt_write_back(
             actor="model",
             events=events,
             model_id=actual_model or None,
+            usage=usage,
         )
     except LeaseFencedError as exc:
         raise RpcError(code=ErrorCode.LEASE_FENCED, message=str(exc)) from exc

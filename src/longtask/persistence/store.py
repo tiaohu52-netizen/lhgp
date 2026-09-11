@@ -1768,6 +1768,7 @@ def write_back(
     contract_revision: int | None = None,  # P1
     goal_id: str | None = None,  # P1
     model_id: str | None = None,
+    usage: dict[str, Any] | None = None,
 ) -> WriteBackResult:
     """带 generation fencing 的执行结果写回（DESIGN §7、§11.3、§14.1）。
 
@@ -1814,6 +1815,18 @@ def write_back(
             conn.execute(
                 "UPDATE attempts SET model_id = ?, updated_at = ? WHERE attempt_id = ?",
                 (str(model_id).strip(), now.isoformat(), attempt_id),
+            )
+        # 消耗台账（§11.3）：执行者自报，形状已由调用方经 normalize_usage
+        # fail-closed 校验；这里只落库。同一 attempt 的重复写回按「最后
+        # 一次为准」——台账记的是该 attempt 终局的累计自报，不是逐次增量。
+        if usage:
+            conn.execute(
+                "UPDATE attempts SET usage_json = ?, updated_at = ? WHERE attempt_id = ?",
+                (
+                    json.dumps(usage, ensure_ascii=False, sort_keys=True),
+                    now.isoformat(),
+                    attempt_id,
+                ),
             )
 
         new_revision: int | None = None

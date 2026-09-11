@@ -688,6 +688,23 @@ executor candidate
 
 `Goal satisfied` 的唯一合法推导是：当前 contract revision 的所有 mandatory checks 已有未过期 evidence，并由允许的验收路径产生 `acceptance.passed` 事件。
 
+### 12.3.1 attempt 消耗台账（usage）
+
+执行者写回（`attempt/write-back`）MAY 携带 `usage` 对象，自报本 attempt 的
+资源消耗：`input_tokens` / `output_tokens`（必填，非负整数）、
+`cache_read_tokens` / `cache_write_tokens`（可选，非负整数）、
+`cost_estimate`（可选，非负数；货币单位由部署约定，协议不解释）。
+
+- 形状校验 fail-closed：负数、错型、未知键 MUST 拒收（`VALIDATION_FAILED`），
+  不得静默截断——台账是预算强制的地基，脏数据进账等于预算线画在沙子上。
+- 台账落 `attempts.usage_json`（存储 schema v5）；终态写回的事件 payload
+  同时携带 `usage` 供审计。
+- 自报值是**下界**：上下文压缩、缓存刷新可能使真实消耗更高。消费方
+  （stats 聚合、未来预算强制）MUST 不得把它当精确值。
+- 同一 attempt 的重复写回按最后一次自报为准（台账记终局累计，非逐次增量）。
+- 预算强制（如 `budget.max_cost`）不在本版本：需要动合同冻结区 schema，
+  单独走设计审批。
+
 ### 12.4 验收证据通道与裁决合成
 
 verifier 报告验收结果的通道有两条，按 harness 能力选择：

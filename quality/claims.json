@@ -1235,6 +1235,33 @@
           "summary": "反向验证：把守护条件改为 if False（退回静默 None）后 test_truncated_absent_block_raises_source_loss 变红。修复前先实证了 bug：同一 verifier 脚本无预算时 verdict=True、预算 4KB 时 verdict=False 且 output_truncated=True 无任何下游消费——verifier 跑成功、证据写了、却按协议退化为人工仲裁，用户白等一轮。"
         }
       ]
+    },
+    {
+      "id": "attempt-usage-ledger-recorded-on-write-back",
+      "statement": "attempt 消耗台账（SPEC §12.3.1，存储 schema v5）：写回 MAY 携带 usage 自报（input/output tokens 必填非负整数、cache tokens/cost_estimate 可选），形状 fail-closed 校验（负数/错型含 bool/未知键拒收且发生在任何落库之前）；台账落 attempts.usage_json，终态事件 payload 并行携带；stats.usage_totals 跨 attempt 透明合计（无台账不出键，脏数据跳过）。自报是下界语义；同一 attempt 重复写回按最后一次为准；预算强制（budget.max_cost）不在本版本。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/lhgp/persistence/usage.py",
+        "src/longtask/persistence/schema.py",
+        "src/longtask/persistence/store.py",
+        "src/longtask/rpc/executor_api.py",
+        "src/lhgp/persistence/insights.py",
+        "tests/unit/test_attempt_usage.py"
+      ],
+      "evidence": [
+        {
+          "kind": "focused_test",
+          "path": "tests/unit/test_attempt_usage.py",
+          "recorded_at": "2026-09-11",
+          "summary": "21 条：normalize_usage 9 边界全部拒收（含 bool 伪装 int、None 显式语义）、v4 旧库幂等升级后 user_version=5 且可重复 ensure_schema、终态写回 usage 同时落 attempts 行与 attempt/succeeded payload、非法 usage 拒收后 attempt 行无副作用（usage_json 为 NULL 且 state 仍 running）、无 usage 写回向后兼容、stats 跨 attempt 合计与空库无键与脏数据跳过。"
+        },
+        {
+          "kind": "manual_review",
+          "path": "src/longtask/rpc/executor_api.py",
+          "recorded_at": "2026-09-11",
+          "summary": "反向验证两项变异命中预期测试名：RPC 校验替换为透传 dict → test_invalid_usage_is_refused_without_side_effects 红（负数会落库）；insights 聚合摘除 → test_stats_aggregates_usage_across_attempts 红。四层自查：L1 新代码仅边界处 Any（外部 JSON 入口，正当）；L2 normalize_usage/UsageInvalidError 均有生产调用点（executor_api）；L3 bool 伪装 int 显式排除、None 分两义处理（未携带 vs 字段 null）。"
+        }
+      ]
     }
   ]
 }

@@ -191,20 +191,30 @@ def build_stats(
     if contract_id:
         rows = conn.execute(
             "SELECT role, executor_id, model_id, state, admitted_at, terminal_at,"
-            " return_code FROM attempts WHERE contract_id = ?",
+            " return_code, usage_json FROM attempts WHERE contract_id = ?",
             (contract_id,),
         ).fetchall()
     else:
         rows = conn.execute(
             "SELECT role, executor_id, model_id, state, admitted_at, terminal_at,"
-            " return_code FROM attempts"
+            " return_code, usage_json FROM attempts"
         ).fetchall()
     by_role: dict[str, int] = {}
     by_executor: dict[str, int] = {}
     by_state: dict[str, int] = {}
     wall_seconds: list[float] = []
     return_codes: dict[str, int] = {}
-    for role, executor_id, model_id, state, admitted_at, terminal_at, return_code in rows:
+    usage_totals: dict[str, float] = {}
+    for (
+        role,
+        executor_id,
+        model_id,
+        state,
+        admitted_at,
+        terminal_at,
+        return_code,
+        usage_json,
+    ) in rows:
         by_role[role] = by_role.get(role, 0) + 1
         exec_key = executor_id or (model_id or "unknown")
         by_executor[exec_key] = by_executor.get(exec_key, 0) + 1
@@ -221,6 +231,8 @@ def build_stats(
         if return_code is not None:
             key = "zero" if return_code == 0 else "nonzero"
             return_codes[key] = return_codes.get(key, 0) + 1
+        if usage_json:
+            _accumulate_usage(usage_totals, usage_json)
     wall_seconds.sort()
     stats: dict[str, Any] = {
         "scope": contract_id or "all",
@@ -234,7 +246,27 @@ def build_stats(
         # 下中位：小样本确定性优先（p50 语义由调用方解释）
         stats["wall_seconds_p50"] = wall_seconds[(len(wall_seconds) - 1) // 2]
         stats["wall_seconds_max"] = wall_seconds[-1]
+    if usage_totals:
+        # 消耗台账（§11.3）：执行者自报值的合计。自报是**下界**（压缩/缓存
+        # 刷新可能使真实消耗更高），此处只做透明合计，不做任何换算或外推。
+        stats["usage_totals"] = usage_totals
     return stats
+
+
+def _accumulate_usage(totals: dict[str, float], usage_json: str) -> None:
+    """把一行 usage_json 累进台账；形状不合规的存量数据跳过（不抛、不猜）。"""
+    import json
+
+    try:
+        parsed = json.loads(usage_json)
+    except ValueError:
+        return
+    if not isinstance(parsed, dict):
+        return
+    for key, value in parsed.items():
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+            continue
+        totals[key] = totals.get(key, 0) + float(value)
 
 
 def contract_is_terminal(conn: sqlite3.Connection, contract_id: str) -> bool:
