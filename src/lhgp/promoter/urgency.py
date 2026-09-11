@@ -7,6 +7,13 @@ from enum import IntEnum
 
 
 class UrgencyTier(IntEnum):
+    """紧迫度档位（DESIGN §6.2）。
+
+    ``PARALLEL``（档 4）**当前不会被 decide() 产出**：它对应的分区租约机制
+    尚未接线（见 promoter/escalation.py 的说明与 ADR-005）。枚举值保留是因为
+    档位序（``min(tier, REMIND)`` 等比较）与历史数据都依赖连续编号。
+    """
+
     QUEUED = 0
     REMIND = 1
     STEER = 2

@@ -1395,6 +1395,34 @@
           "summary": "反向验证两次：把 handover 调用点退回裸切片 → test_addendum_uses_line_truncation 红；把 directive 调用点退回裸切片 → **第一次没红**（原用例只测助手函数、锁不住接线），改为驱动 send_message + compile_context_snapshot 的生产路径后才红。这条「测试必须打在接线上」的教训与 real_entry 棘轮同源。"
         }
       ]
+    },
+    {
+      "id": "parallel-tier-not-claimed-until-implemented",
+      "statement": "档 4 并行加派诚实化（DESIGN §6.2/§6.3/§7.1）：分区租约机制未接线（无生产调用点、partition_id 恒默认空值、lease/partition-conflict 与 PARTITION_CONFLICT 从未写出），因此 decide() **不得**产出 UrgencyTier.PARALLEL。估算停滞一律如实返回 RESPAWN，理由自陈 parallel dispatch is not implemented 且记录被请求的并行意图，并且不消耗 max_escalations。文档与工具面不得把分区并行描述为已有能力（DESIGN §7.1 明令）。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/lhgp/promoter/escalation.py",
+        "src/lhgp/promoter/urgency.py",
+        "src/lhgp/promoter/lease.py",
+        "src/lhgp/persistence/events.py",
+        "src/longtask/cli/tick.py",
+        "DESIGN.md",
+        "tests/unit/test_escalation.py"
+      ],
+      "evidence": [
+        {
+          "kind": "focused_test",
+          "path": "tests/unit/test_escalation.py",
+          "recorded_at": "2026-09-11",
+          "summary": "TestStalledRespawnIsHonest 5 条（档位=RESPAWN、理由含 not implemented 与 partitions_requested、不消耗 escalations、escalations 取值不影响结果、不可分区同样串行）+ TestParallelTierIsUnreachable 2 条（穷举 >100 组输入断言 PARALLEL 不可达、停滞理由自陈未实现）。"
+        },
+        {
+          "kind": "source_static",
+          "path": "src/lhgp/promoter/lease.py",
+          "recorded_at": "2026-09-11",
+          "summary": "模块 docstring 显式声明接线状态：check_write_fence 是生产路径；Partition/check_partition_compatible 设计先行、未接线，保留待 ADR-005，且不得被描述为已有能力。events.py 两个预留事件类型、urgency.py 枚举保留理由、tick.py case 兼容历史数据重放均同步注释。"
+        }
+      ]
     }
   ]
 }

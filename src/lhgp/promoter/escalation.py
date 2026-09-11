@@ -71,19 +71,21 @@ def decide(
         return EscalationDecision(
             UrgencyTier.HAND_TO_USER, "dispatch budget exhausted: hand to user (§6.3)", False, False
         )
-    if estimate_stalled and partitions_allowed and budget_escalations_left >= 1:
-        return EscalationDecision(
-            UrgencyTier.PARALLEL,
-            "estimate stalled after tier 3 and partitionable: parallel dispatch (§6.2/§7.1)",
-            True,
-            True,
-        )
     if estimate_stalled:
+        # 档 4「并行加派」**未实现**：分区租约机制（Partition / scope_paths /
+        # check_partition_compatible）只有纯函数与单测，没有生产入口——
+        # partition_id 在所有派工调用点都取默认值。旧实现在这里产出
+        # UrgencyTier.PARALLEL 并写下 "parallel dispatch" 的决策理由，而实际
+        # 执行的是与档 3 完全相同的串行重派：**调度器在决策历史里说谎**。
+        #
+        # 诚实做法（本轮）：如实记为串行重派，把「并行被请求但未实现」写进
+        # reason 供审计，并且**不消耗 escalations**——没有做额外的事，就不该
+        # 收额外的预算。真正的并行落地（或正式取消该档）见 ADR-005 后续决定。
         return EscalationDecision(
             UrgencyTier.RESPAWN,
-            "estimate stalled but tier 4 unavailable "
-            f"(partitions_allowed={partitions_allowed}, "
-            f"escalations_left={budget_escalations_left}): serial respawn (§7.1)",
+            "estimate stalled: serial respawn (partitioned parallel dispatch is "
+            f"not implemented; partitions_requested={partitions_allowed}, "
+            f"escalations_left={budget_escalations_left})",
             True,
             False,
         )

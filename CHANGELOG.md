@@ -122,6 +122,54 @@ follow [SemVer](https://semver.org/spec/v2.0.0.html); dates in ISO 8601.
 可重建，不可超前」），`_atomic_write` 已给出单文件原子性。缺的是「重建」这一动作的
 触发，不是「回执」。不属于本轮范围，记在此处备查而非静默略过。
 
+## [Unreleased·十一] 档 4 并行加派诚实化：调度器不再在决策历史里说谎
+
+四层审查（第 2 层死代码）在轮二就发现了这个缺口，一直挂到本轮——因为它是
+唯一一条「**系统在说谎**」的问题，优先于其它一切。
+
+### 缺口（实证）
+
+`decide()` 在估算停滞且可加派时产出 `UrgencyTier.PARALLEL`，并把
+"parallel dispatch (§6.2/§7.1)" 写进决策理由落库；而 tick 里
+`case RESPAWN | PARALLEL` 共用同一分支，只派一个重试 attempt——**行为与档 3
+完全相同**。同时：
+
+- 分区租约机制（`Partition` / `check_partition_compatible` / `scope_paths` /
+  `scope_stages`）只有纯函数与单测，**没有任何生产调用点**；
+- `partition_id` 在所有派工调用点都取默认空值；
+- `lease/partition-conflict` 事件与 `PARTITION_CONFLICT` 错误码从未被写出；
+- 旧实现还为这"额外的并行"扣了一次 `max_escalations`。
+
+即：**档位名、决策历史、预算记账三处都在声称一件没发生的事。**
+
+### Changed
+
+- `decide()` 不再产出 PARALLEL：估算停滞一律如实返回 RESPAWN，理由自陈
+  「serial respawn (partitioned parallel dispatch is not implemented; 
+  partitions_requested=…, escalations_left=…)」——被请求的并行意图仍留在
+  审计里（不隐藏），但不再假装已执行。
+- 不再消耗 `max_escalations`（没做额外的事，就不收额外的预算）。
+- 四处代码注释标注「未接线」：`urgency.py`（枚举值保留的理由）、`lease.py`
+  （模块级接线状态）、`events.py`（两个预留事件类型）、`tick.py`（case 兼容
+  历史数据重放）。
+- 文档声称对齐实现：DESIGN §6.2 六档表、§6.3 阈值表、§7 租约条目、§7.1 标题
+  改为「设计已定，尚未接线」并明令「不得描述为已有能力」；§11.7 错误码、§16
+  非目标同步标注；SPEC 的 red 档建议去掉"分区并行"、`allow_parallel` 标注
+  可声明但不产生并行行为。
+
+### Tests
+
+- 改写 `TestParallel` → `TestStalledRespawnIsHonest`（档位/理由/预算三项如实）；
+- 新增 `TestParallelTierIsUnreachable`：**穷举决策输入空间**（tier × 租约 ×
+  停滞 × 可分区 × 两种预算 × 多个取值，>100 组）断言 PARALLEL 不可达——
+  比手挑用例更硬，也锁住「未来有人无意恢复那条分支」。
+- 行为不变性：停滞场景的**动作**与修前一致（仍是串行重派），改的只是记录与
+  记账；既有 1549 条测试仅 5 条 escalation 断言随契约更新。
+
+### 未做（等裁决）
+
+档 4 的**实现**（分区分配 + 工作区隔离）与工作区级的 `git worktree` 隔离是
+同一件事的两面，统一在 ADR-005 的 4 个待裁决问题里。
 ## [Unreleased·十] 指令注入面的截断纪律（第七轮同款，补上漏掉的那一处）
 
 第七轮修了 handover 附言的截断，但注入面清单里还有一处同类裸切片：

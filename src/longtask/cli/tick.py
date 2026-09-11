@@ -437,6 +437,8 @@ def run_daemon_tick(
             )
 
         match decision.tier:
+            # PARALLEL 已不再由 decide() 产出（档 4 未实现，见 promoter/
+            # escalation.py）；保留在同一 case 里是为了兼容历史决策数据的重放。
             case UrgencyTier.RESPAWN | UrgencyTier.PARALLEL:
                 # workspace 排他（共同维护风险）：同 workspace 有其他合同的
                 # 活租约 → 本轮延后。两个执行者并发写同一目录 = 未定义行为

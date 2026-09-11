@@ -250,7 +250,7 @@ authority:
       roles: [executor, verifier]
   required_capabilities: [spawn, observe, checkpoint, recover]
   allowed_controls: [notify, followup, steer, spawn]
-  allow_parallel: false
+  allow_parallel: false  # 可声明但当前不产生并行行为（档 4 未实现，见 DESIGN §6.3/§7.1）
 
 constraints:
   workspace_root: D:/workspace/project
@@ -488,7 +488,7 @@ probability evidence without guessing from the numeric value alone.
 | green | `P_finish ≥ 0.85` 且 `slack_p90 ≥ 0` | 安静等待下一有意义事件 |
 | yellow | `0.65 ≤ P_finish < 0.85` | 提醒当前 attempt 更新估计；预留 verifier 容量 |
 | orange | `0.40 ≤ P_finish < 0.65` 或停滞 | steer、缩短 checkpoint 周期、准备串行换人 |
-| red | `P_finish < 0.40` 或 `slack_p90 < 0` | 在授权内使用更合适执行器/模型、安全分区并行，或立即请求用户缩范围/扩预算/延期 |
+| red | `P_finish < 0.40` 或 `slack_p90 < 0` | 在授权内使用更合适执行器/模型，或立即请求用户缩范围/扩预算/延期（分区并行未实现，见 DESIGN §6.3） |
 | missed | `now > due_at` 且未通过验收 | 原子记录 miss，按 `on_miss` 暂停仲裁或继续迟到执行 |
 
 风险升级的候选动作还必须通过 authority、constraints、budget 与 cooldown。没有合法动作时，系统应立刻 `blocked(need-user)`，而不是不断重试同一不可行方案。
