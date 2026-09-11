@@ -56,3 +56,29 @@ Required**。本轮修复了其中危害最大的 9 项（全部经总控独立�
 
 - 本地七道门 7/7（664 tests，多次运行）。
 - CI 三平台结果见提交后的 Actions 记录（Windows/Linux 阻断绿、macOS 非阻断）。
+
+## 更正与后续状态（2026-09-11 审计追加）
+
+历史记录保持原样不改写，此处追加实测更正与状态更新。
+
+**更正 1（本文第 43-46 行的判断有误）**：原文称「双树 `_common.py` 的 `RpcError`
+类型在跨包异常链中会触发 `TypeError: super(type, obj)`（lhgp.rpc.errors vs
+longtask.rpc.errors 是两个类）」。实测**两者是同一个类对象**：
+
+```text
+lhgp.rpc.errors.RpcError is longtask.rpc.errors.RpcError  →  True
+```
+
+`src/longtask/rpc/errors.py` 是 3 行门面（`from lhgp.rpc.errors import *`），
+不存在两个 `RpcError` 类，因此也不存在该跨包异常链问题。原文的风险描述不成立，
+SPEC §19.3 收敛双树时**不需要**为此做额外处理。
+
+**更正 2（第 50 行 deferred 清单中的一项已修）**：「request_id 幂等跨方法串扰」
+已于 2026-09-11 修复：`_common.py` 增加跨方法 `request_id` 归属校验
+（同一 `request_id` 被不同方法复用时拒绝，而非误判为幂等重放），两个命名空间的
+实现与 `__all__` 同步，并由 `test_handler_common_parity.py` 按实现参数化钉住。
+
+**更正 3（第 50 行其余项的状态）**：该清单其余条目（goal UPSERT 覆盖、events
+无界增长、自适应休眠被过期决策点废掉、Windows L1 外的平台唤醒等）状态未变，
+仍按 RELEASE-PLAN 后续轮次处理。
+
