@@ -43,7 +43,10 @@ SPEC §19.3 规定迁移顺序：**不得先做全仓机械 rename**。最终目
 | **persistence/decisions+events+errors** | `lhgp/persistence/` | `longtask/persistence/` | 事件词汇、决策记账、错误类型 |
 | **persistence/resume** | `lhgp/persistence/resume.py` | —（无门面） | `build_resume_brief`：读 `active.md` + `handover.md` 拼成一份自包含 brief，并写 `attempt/resumed` 审计事件。它读写投影与事件，故属 persistence；曾放在 `lhgp/contracts/`，因 arch 门规则只匹配 `longtask.*` 而漏检，修门后才暴露 |
 | **persistence/insights+maintenance+timeline** | `lhgp/persistence/` | —（新模块无门面） | brief/board/stats、diff/prune、HTML 时间轴 |
-| **rpc/handlers/_common** | `lhgp/rpc/handlers/_common.py` | `longtask/…/_common.py` | actor 派生、Principal 门禁、contract_id 校验 |
+| **rpc/handlers 分发表** | `longtask/rpc/handlers/__init__.py` **与** `lhgp/rpc/handlers/__init__.py`（两份各自维护，非门面） | — | 两侧各有一份 `HANDLERS` 表；对拍由 `tests/unit/test_rpc_dispatch_tables.py` 钉住（曾漂移到「一侧注册了另一侧没有」） |
+| **rpc/handlers/_common** | `lhgp/rpc/handlers/_common.py` **与** `longtask/rpc/handlers/_common.py`（两份独立实现，非门面） | — | actor 派生、Principal 门禁、contract_id 校验。审计 B2：两侧各 300 行上下的独立实现——安全守卫曾只加在 legacy 侧，canonical 侧把别的合同的 request_id 判为重放。方向由 `tests/unit/test_handler_common_parity.py` 钉住 |
+| **rpc/handlers/contract+goal** | `longtask/rpc/handlers/` | `lhgp/rpc/handlers/`（各 3 行 `import *`） | 合同与 Goal 的 handler 真身**在 longtask 侧**——与下面「概念在 lhgp」的简记相反，此处按实测记录（1382 / 591 行 vs 3 行） |
+| **rpc/handlers/executor+protocol** | `lhgp/rpc/handlers/` | `longtask/rpc/handlers/`（显式具名转发） | 真身在 lhgp；longtask 侧是显式具名门面（非 `import *`）。`_lifecycle.py` 只存在于 longtask 侧 |
 | **rpc/transport+server+errors+methods** | `lhgp/rpc/` | `longtask/rpc/` | JSON-RPC 传输与路由 |
 | **runtime CLI** | `longtask/cli/` | `lhgp/cli/` | main/tick/runner/daemon_loop/doctor/watch |
 | **persistence/store+schema+leases+attempts** | `longtask/persistence/` | `lhgp/persistence/` | SQLite CRUD、迁移、租约 |
