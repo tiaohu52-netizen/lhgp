@@ -58,6 +58,11 @@ uv run python examples/local-no-model/run_example.py
    适配器持续扫 stdout 找这一行。**请用紧凑 JSON**（`json.dumps(..., separators=(",", ":"))`）；
    序列化器的空格差异已由适配器容错处理（见 `FINISHED_EVENT_RE`），但紧凑形式是契约形态。
 
+   **推荐再带上凭据**：spawn 时注入的 per-attempt token 就在环境里
+   （`LHGP_SESSION_TOKEN`），把它放进事件行能让这次完成在审计里标记为
+   `completion_attested=true`——与「任何打印出事件行的回显」区分开。
+   不带仍然被采信（存量 harness 不受影响）；带了但不对，该行会被拒绝。
+
 2. **核验者的判定块**——stdout 末尾的围栏块：
 
    ````

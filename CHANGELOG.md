@@ -122,6 +122,31 @@ follow [SemVer](https://semver.org/spec/v2.0.0.html); dates in ISO 8601.
 可重建，不可超前」），`_atomic_write` 已给出单文件原子性。缺的是「重建」这一动作的
 触发，不是「回执」。不属于本轮范围，记在此处备查而非静默略过。
 
+## [Unreleased·九] 完成事件行的凭据加固（自报与凭据自报可区分）
+
+第八轮的容错改动让我回头审视了一个既有薄弱面：`attempt/finished` 事件行
+本质是**自报**的完成声明——任何打印出该行的输出都会被采信，包括 harness
+把文档里的示例回显出来（而容错又略微放宽了触发面）。不能靠改窄识别来修
+（那会把合规 harness 一起误伤），要靠**让能力差异可观察**。
+
+### Added
+
+- 事件行 MAY 携带 `session_token`（spawn 时已注入子进程环境的 per-attempt
+  凭据）：匹配 → `completion_attested=True`；不携带 → `False`（仍采信，
+  存量 harness 零影响）；不匹配或本 attempt 未注入却携带 → **拒绝该行**。
+- 标记随 observe/collect 结果与 `attempt/succeeded` 事件 payload 一并落库，
+  审计可区分「谁有能力声明完成」。
+- 示例 `worker.py` 改为推荐形态（回带 token），集成测试断言全链路
+  `completion_attested=True`。
+
+### Tests
+
+- `tests/unit/test_finished_event_attestation.py` 7 条：裸事件采信且标记
+  未凭据 / 匹配 token 采信且标记 / 错 token 拒绝 / 未注入却带 token 拒绝 /
+  非字符串 token 拒绝 / Python 默认分隔符形态仍认（容错与凭据并存）/
+  别的事件与非 JSON 仍拒绝。
+- 反向验证：摘掉 token 校验后三条拒绝用例同时变红。
+
 ## [Unreleased·八] R4a 可复制本地示例（无模型全链路）
 
 RELEASE-PLAN R4a 的交付物：`examples/local-no-model/` —— doctor → prepare →

@@ -86,6 +86,17 @@ def test_local_example_reaches_terminal_state_with_verified_artifact(tmp_path: P
         assert executors.get("executor") == "local-worker"
         assert executors.get("verifier") == "local-checker"
 
+        # 完成声明带 per-attempt 凭据：worker 按推荐形态在事件行里回带 token
+        attested = [
+            json.loads(p or "{}").get("completion_attested")
+            for (p,) in conn.execute(
+                "SELECT payload_json FROM events WHERE event_type = 'attempt/succeeded'"
+                " AND contract_id = ? AND role = 'executor'",
+                (CONTRACT_ID,),
+            )
+        ]
+        assert True in attested, f"执行者完成声明未被标记为凭据自报: {attested}"
+
         # 预算台账：两次派工都带得动（示例不设成本线，usage 允许缺席）
         payloads = [
             json.loads(p or "{}")

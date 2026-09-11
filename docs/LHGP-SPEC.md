@@ -731,6 +731,17 @@ verifier 报告验收结果的通道有两条，按 harness 能力选择：
    ```
    ````
 
+**完成事件行的凭据（MAY）**：会话型 harness 用 RPC 写回；一次性 CLI 执行者
+也可以在 stdout 里宣告完成（实现层的 ``attempt/finished`` 事件行，见
+DESIGN §12.1）。该宣告是**自报**的，因此事件行 MAY 携带
+``session_token``（spawn 时经 ``LHGP_SESSION_TOKEN`` 注入的 per-attempt 凭据）：
+
+- 携带且匹配 → 运行时把该次完成标记为**凭据自报**（``completion_attested``），
+  落进 attempt 终态事件供审计区分；
+- 不携带 → 仍按既有语义采信（存量 harness 不受影响），标记为非凭据自报；
+- 携带但不匹配，或本 attempt 未注入凭据却携带 → **拒绝该行**（防其他
+  attempt 的输出回显被当作完成声明）。
+
    运行时解析最后一个 `lhgp-verdict` 块；缺失或非法 JSON 时该通道视为
    无证据（不猜、不静默兜底）。
 

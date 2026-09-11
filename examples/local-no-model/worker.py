@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 import sys
 
@@ -31,14 +32,15 @@ def main() -> int:
     # 终态事件行：必须独占一行、可被 json 解析（适配器按前缀扫描）
     # 紧凑 JSON（分隔符无空格）：适配器按前缀扫描事件行，带空格的序列化
     # 会扫不到——这是实测踩到的坑，示例按协议写紧凑形式（产品侧另有容错）。
-    print(
-        json.dumps(
-            {"event": "attempt/finished", "outcome": "succeeded", "returncode": 0},
-            ensure_ascii=False,
-            separators=(",", ":"),
-        ),
-        flush=True,
-    )
+    #
+    # 可选凭据：spawn 时注入的 per-attempt token 就在环境里，带上它能让
+    # 「这次完成声明」在审计上标记为 completion_attested=True（区别于任何
+    # 打印出事件行的回显）。不带也仍然被采信（存量 harness 兼容）。
+    event = {"event": "attempt/finished", "outcome": "succeeded", "returncode": 0}
+    token = os.environ.get("LHGP_SESSION_TOKEN", "")
+    if token:
+        event["session_token"] = token
+    print(json.dumps(event, ensure_ascii=False, separators=(",", ":")), flush=True)
     print(f"wrote {target}", file=sys.stderr)
     return 0
 

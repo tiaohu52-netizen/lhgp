@@ -632,6 +632,10 @@ class AttemptRunner:
             full_stdout = str(collected.get("stdout") or "")
             payload["stdout_tail"] = _tail_text(collected.get("stdout"))
             payload["stderr_tail"] = _tail_text(collected.get("stderr"))
+            # 完成声明是否携带了 per-attempt 凭据（§12.1）：事件行本质是自报，
+            # 裸声明与凭据声明的可信度不同，审计必须能区分（None=非事件行完成）。
+            if collected.get("finished_by_event"):
+                payload["completion_attested"] = collected.get("completion_attested")
             # SPEC §12.4 通道 2：一次性 CLI verifier 无法调 write-back RPC，
             # 约定在 stdout 末尾写 lhgp-verdict 判定块；无块/非法 → None
             # （不猜、不静默兜底）。

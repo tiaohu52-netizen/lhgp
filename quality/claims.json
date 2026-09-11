@@ -1341,6 +1341,37 @@
           "summary": "开发中实测到的两个非缺陷行为已写进排查出口：① 每轮新建 runner 等价守护进程重启，在飞 attempt 会按 SPEC §11.3 判为 detached→failed（崩溃恢复的诚实边界）；② 注入时钟只推动合同决策时间，子进程需要真实时间退出，两者都要给。另记录了输出预算截断判定块的 verdict_source_loss 处置（调大预算重跑）。"
         }
       ]
+    },
+    {
+      "id": "completion-event-attestation-observable",
+      "statement": "完成事件行的凭据加固（SPEC §12.4）：attempt/finished 是自报的完成声明，事件行 MAY 携带 spawn 注入的 per-attempt session_token。匹配 → completion_attested=True 并落进 attempt 终态事件（审计可区分凭据自报与裸自报）；不携带 → False 且仍采信（存量 harness 零影响）；不匹配或本 attempt 未注入却携带 → 拒绝该行（防输出回显被当作完成声明）。识别形态容错键值间空白（FINISHED_EVENT_RE），但必须 json.loads 通过才采信。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/longtask/adapters/subprocess_adapter.py",
+        "src/longtask/cli/runner.py",
+        "tests/unit/test_finished_event_attestation.py",
+        "tests/integration/test_local_no_model_example.py"
+      ],
+      "evidence": [
+        {
+          "kind": "focused_test",
+          "path": "tests/unit/test_finished_event_attestation.py",
+          "recorded_at": "2026-09-11",
+          "summary": "7 条覆盖凭据矩阵：裸事件采信+标 False、匹配 token 采信+标 True、错 token 拒绝、未注入却携带拒绝、非字符串拒绝、容错空白与凭据并存、别的事件/非 JSON 仍拒绝。"
+        },
+        {
+          "kind": "integration_real_store",
+          "path": "tests/integration/test_local_no_model_example.py",
+          "recorded_at": "2026-09-11",
+          "summary": "示例 worker 以推荐形态回带 token，端到端断言 attempt/succeeded(executor) 事件 payload 里 completion_attested=True——凭据从子进程 env 到适配器再到事件流的全链贯通。"
+        },
+        {
+          "kind": "manual_review",
+          "path": "src/longtask/adapters/subprocess_adapter.py",
+          "recorded_at": "2026-09-11",
+          "summary": "反向验证：摘掉 token 校验后 test_mismatched_token_is_refused / test_token_when_none_injected_is_refused / test_non_string_token_is_refused 三条同时变红。"
+        }
+      ]
     }
   ]
 }
