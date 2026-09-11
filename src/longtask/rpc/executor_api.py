@@ -332,19 +332,29 @@ def handle_attempt_write_back(
         except UsageInvalidError as exc:
             raise RpcError(code=ErrorCode.VALIDATION_FAILED, message=str(exc)) from None
     note = params.get("progress_note")
+    # attempt 的角色必须落到 events.role **列**上（审计 B9b）。SPEC §12.4 通道 1
+    # 就是「会话型 verifier 在会话内调 attempt/write-back 上报裁决」，而读取方
+    # （tick._judge_verifier_outcomes、contract.py 的验收证据绑定）正是用这一列
+    # 判定事件是否 verifier 的：`role == "verifier"`，否则要求 `role is None` 且从
+    # payload 里找。此前 role 只进了 payload，列上落的是 store.write_back 的
+    # `inp.role or role or actor` 兜底值 "model"——既不是 verifier 也不是 None，
+    # 两个分支都不成立，于是通道 1 的裁决**对读取方完全不可见**（实测见下）。
+    # "model" 也不在 events.role 的文档取值域内
+    # （schema.py：executor / verifier / daemon / user / promoter / scheduler / system）。
+    attempt = get_attempt(conn, attempt_id)
+    attempt_role = attempt.role if attempt is not None else "executor"
     if note is not None and str(note).strip():
         events.append(
             EventInput(
                 event_type=EventType.CONTEXT_SCRATCH_UPDATED,
                 payload={"attempt_id": attempt_id, "note": str(note)},
                 attempt_id=attempt_id,
+                role=attempt_role,
             )
         )
     raw_attempt_state = params.get("attempt_state")
     if raw_attempt_state is not None:
         state_text = str(raw_attempt_state)
-        attempt = get_attempt(conn, attempt_id)
-        attempt_role = attempt.role if attempt is not None else "executor"
         contract = get_contract(conn, contract_id)
         if attempt is not None and attempt.executor_id and contract is not None:
             binding = binding_for_executor(contract.draft.authority, attempt.executor_id)
@@ -408,6 +418,7 @@ def handle_attempt_write_back(
                             **({"model_id": actual_model} if actual_model else {}),
                         },
                         attempt_id=attempt_id,
+                        role=attempt_role,
                     )
                 )
             case "failed":
@@ -423,6 +434,7 @@ def handle_attempt_write_back(
                             **({"model_id": actual_model} if actual_model else {}),
                         },
                         attempt_id=attempt_id,
+                        role=attempt_role,
                     )
                 )
             case _:

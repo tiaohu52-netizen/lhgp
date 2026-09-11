@@ -469,7 +469,11 @@ class AttemptRunner:
         contract = get_contract(self._conn, contract_id)
         if adapter is None or contract is None:
             self._fail_attempt(
-                now, contract_id, attempt_id, f"executor or contract unavailable: {executor_id}"
+                now,
+                contract_id,
+                attempt_id,
+                f"executor or contract unavailable: {executor_id}",
+                role=AttemptRole.EXECUTOR.value,
             )
             return False
         try:
@@ -497,16 +501,34 @@ class AttemptRunner:
         except CapacityRefusedError as exc:
             # §4.1 容量合同不满足：拒绝启动 attempt（事件已由编译器记
             # context/capacity-refused，这里补记账并释放租约）
-            self._fail_attempt(now, contract_id, attempt_id, f"context capacity refused: {exc}")
+            self._fail_attempt(
+                now,
+                contract_id,
+                attempt_id,
+                f"context capacity refused: {exc}",
+                role=AttemptRole.EXECUTOR.value,
+            )
             return False
         try:
             launch = adapter.prepare(input_)
             session_ref = adapter.spawn(input_, launch)
         except PrepareRefusedError as exc:
-            self._fail_attempt(now, contract_id, attempt_id, f"prepare refused: {exc}")
+            self._fail_attempt(
+                now,
+                contract_id,
+                attempt_id,
+                f"prepare refused: {exc}",
+                role=AttemptRole.EXECUTOR.value,
+            )
             return False
         except OSError as exc:
-            self._fail_attempt(now, contract_id, attempt_id, f"spawn failed: {exc}")
+            self._fail_attempt(
+                now,
+                contract_id,
+                attempt_id,
+                f"spawn failed: {exc}",
+                role=AttemptRole.EXECUTOR.value,
+            )
             return False
         # P1 review (2026-09-08, 2nd round): cursor advance deferred
         # to *after* the spawn has actually launched a subprocess.
@@ -608,6 +630,7 @@ class AttemptRunner:
                         contract_id,
                         attempt_id,
                         f"attempt timeout exceeded ({timeout.total_seconds() / 60:g}m)",
+                        role=str(info.get("role", AttemptRole.EXECUTOR.value)),
                         error_class="attempt-timeout",
                     )
                     continue
@@ -864,8 +887,21 @@ class AttemptRunner:
         attempt_id: str,
         reason: str,
         *,
+        role: str,
         error_class: str = "attempt-failed",
     ) -> None:
+        """记 attempt/failed（审计 B9）。
+
+        ``role`` 是**必需**关键字参数：attempt/started 与 attempt/orphaned 早就带
+        role，而这条路径（连同 stale、cancelled）没带，于是 events.role 为 NULL。
+        读取方（tick.py / contract.py）对 NULL 的兜底是「payload 里找 role」的旧版
+        兼容分支，而这里的 payload 是 ``{"reason": ...}``——**失败的验证者 attempt
+        因此对扫描不可见**，tick.py 里专门处理「验证者失败」的那条分支形同死代码。
+
+        不改成从 attempts 行反查 role：验证者 prepare/spawn 失败发生在该行插入
+        **之前**，查库会把验证者误判成执行者（错得更隐蔽）。调用点在派发前就知道
+        自己的角色，所以由调用点显式给值，漏写会被 mypy strict 拦下。
+        """
         append_event(
             self._conn,
             contract_id=contract_id,
@@ -874,6 +910,7 @@ class AttemptRunner:
             payload={"reason": reason},
             now=now,
             actor="daemon",
+            role=role,
         )
         # P1：更新 attempts 行
         self._conn.execute(
@@ -904,6 +941,7 @@ class AttemptRunner:
             payload={"reason": reason, "session_ref": info["session_ref"]},
             now=now,
             actor="daemon",
+            role=str(info.get("role", AttemptRole.EXECUTOR.value)),
         )
         # 审计进程-R1：stale 是终态，遗留的租约会让 decide() 封顶 REMIND、
         # workspace 排他把死租约当占用者——合同空转最长一个 attempt 超时。
@@ -969,6 +1007,7 @@ class AttemptRunner:
             payload={"reason": reason},
             now=now,
             actor=actor,
+            role=str(info.get("role", AttemptRole.EXECUTOR.value)),
         )
         set_attempt_state(
             self._conn,
@@ -1172,6 +1211,7 @@ class AttemptRunner:
                 contract_id,
                 verifier_id,
                 f"verifier adapter unavailable: {verifier_entry.id}",
+                role=AttemptRole.VERIFIER.value,
             )
             return False
         input_ = self._build_verifier_input(contract, verifier_id, now)
@@ -1179,10 +1219,22 @@ class AttemptRunner:
             launch = adapter.prepare(input_)
             session_ref = adapter.spawn(input_, launch)
         except PrepareRefusedError as exc:
-            self._fail_attempt(now, contract_id, verifier_id, f"verifier prepare refused: {exc}")
+            self._fail_attempt(
+                now,
+                contract_id,
+                verifier_id,
+                f"verifier prepare refused: {exc}",
+                role=AttemptRole.VERIFIER.value,
+            )
             return False
         except OSError as exc:
-            self._fail_attempt(now, contract_id, verifier_id, f"verifier spawn failed: {exc}")
+            self._fail_attempt(
+                now,
+                contract_id,
+                verifier_id,
+                f"verifier spawn failed: {exc}",
+                role=AttemptRole.VERIFIER.value,
+            )
             return False
 
         # verifier 占租约（fencing：与执行者不同 attempt_id 不同代次）
