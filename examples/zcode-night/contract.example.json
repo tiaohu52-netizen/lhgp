@@ -1,0 +1,43 @@
+{
+  "contract_id": "lt-night-zcode",
+  "goal_id": "night-zcode",
+  "draft": {
+    "title": "ZCode 夜间任务（示例）",
+    "objective": "写清夜间任务的目标与产出；验收判据放在 acceptance。完成时执行器应用 MCP 工具 lhgp_write_back 回写终态与 model_id。",
+    "deadline_at": "2026-09-20T12:00:00+08:00",
+    "hard_constraints": {
+      "file_effects": {
+        "mode": "workspace-write",
+        "workspace_root": "REPLACE_WITH_YOUR_WORKSPACE"
+      }
+    },
+    "execution": {
+      "dispatch_window": { "start": "23:00", "end": "08:00" }
+    },
+    "acceptance": {
+      "standard": "产出文件存在且内容合格；最终由用户验收",
+      "checks": [{ "kind": "file-exists", "target": "RESULT.md" }],
+      "verifier": "cross_check",
+      "spec": { "all": [{ "judge": "user" }] }
+    },
+    "workload_estimate": { "initial_hours": 24 },
+    "budget": {
+      "max_dispatches": 6,
+      "max_escalations": 2,
+      "max_concurrent_attempts": 1,
+      "max_attempt_minutes": 60,
+      "max_output_bytes": 1048576
+    },
+    "authority": {
+      "executor_policy": "explicit_allow",
+      "executors": [
+        { "executor_id": "zcode-desktop", "models": ["*"], "roles": ["executor"] },
+        { "executor_id": "REPLACE_WITH_VERIFIER_EXECUTOR_ID", "models": ["*"], "roles": ["verifier"] }
+      ]
+    },
+    "soft_guidance": {
+      "zcode": { "resume": true, "max_turns": 120 },
+      "execution_playbook": "任务步骤：…（写清产出文件与路径）。完成后：①lhgp_attempt_status 取 write_generation；②lhgp_write_back（attempt_state=succeeded、model_id=<实际使用的模型>、progress_note 简述）；③结束。本任务只在 execution.dispatch_window 窗口内派工。"
+    }
+  }
+}

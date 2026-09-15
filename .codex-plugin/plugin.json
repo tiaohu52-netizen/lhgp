@@ -1,0 +1,21 @@
+{
+  "id": "lhgp",
+  "name": "lhgp",
+  "version": "0.1.0",
+  "description": "远期目标协议：把跨会话、跨 Agent 的目标写成可审计合同，由本地运行时持续推进、交接和验收。",
+  "author": {
+    "name": "LHGP maintainers"
+  },
+  "license": "Apache-2.0",
+  "skills": "skills",
+  "mcpServers": ".mcp.json",
+  "interface": {
+    "displayName": "远期目标协议",
+    "shortDescription": "跨会话、跨 Agent 的可审计目标承诺",
+    "longDescription": "LHGP 将目标、验收、Deadline、预算和执行器授权写入本地合同。会话只持有一次尝试，合同负责持续推进、交接、风险暴露和证据化验收。",
+    "developerName": "LHGP maintainers",
+    "category": "Productivity",
+    "capabilities": ["mcp", "skills", "cross-session-goals"],
+    "defaultPrompt": "当用户委托一个需要跨会话或跨 Agent 推进的目标时，先用 LHGP 起草合同，明确验收、Deadline、预算和允许的执行器，再请求用户批准。"
+  }
+}

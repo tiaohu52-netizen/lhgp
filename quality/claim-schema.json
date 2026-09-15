@@ -1,0 +1,137 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://longtask.dev/schemas/quality-claims.schema.json",
+  "title": "LongTask Quality Claims Registry",
+  "description": "质量声明注册表契约（CONTRIBUTING「质量声明注册表」）。v2：声明按 design_claims（规范级）与 implementation_claims（绑定测试 + 真实 commit SHA）分桶。治理真相源；报告可解释历史，不覆盖注册表。",
+  "type": "object",
+  "required": ["registry_version", "pinned_sha", "last_revalidated"],
+  "properties": {
+    "registry_version": { "const": 2 },
+    "pinned_sha": {
+      "type": "string",
+      "description": "40 位完整提交 SHA；仓库未纳入版本控制时用字面量 \"unpinned\"（诚实表达未锚定，独立成仓后必须为真实 SHA）",
+      "pattern": "^([0-9a-f]{40}|unpinned)$"
+    },
+    "last_revalidated": { "type": "string", "format": "date" },
+    "design_claims": {
+      "type": "array",
+      "minItems": 1,
+      "description": "规范层声明：只断言「SPEC 某章节已经写明并通过人工评审」；scope_paths 应指向 SPEC 章节与 ADR；evidence 以 manual_review / source_static 为主。",
+      "items": { "$ref": "#/$defs/claim" }
+    },
+    "implementation_claims": {
+      "type": "array",
+      "minItems": 1,
+      "description": "实现层声明：断言「某段代码确实满足某条规范」；scope_paths 必须是真实代码/测试文件；evidence 必须是 focused_test / integration_real_store / ci / crash_recovery / gate_run，且根级 pinned_sha 必须不是 unpinned。",
+      "items": { "$ref": "#/$defs/claim" }
+    },
+    "claims": {
+      "type": "array",
+      "minItems": 1,
+      "description": "v1 兼容字段：v1 注册表把所有声明放进单一 claims 数组；v2 不再使用此字段，脚本侧读取单一合并视图（design_claims + implementation_claims 顺序拼接）。保留此字段仅为老消费方引用，不参与 v2 必填。",
+      "items": { "$ref": "#/$defs/claim" }
+    }
+  },
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "description": "v2 必须至少声明一桶（design_claims 或 implementation_claims）；空桶记为已接受的债。",
+      "anyOf": [
+        { "required": ["design_claims"] },
+        { "required": ["implementation_claims"] }
+      ]
+    }
+  ],
+  "$defs": {
+    "claim": {
+      "type": "object",
+      "required": ["id", "statement", "lifecycle", "scope_paths", "evidence"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]{1,63}$",
+          "description": "稳定标识，改名视为新声明"
+        },
+        "statement": {
+          "type": "string",
+          "minLength": 10,
+          "description": "可判定的治理命题，不写口号"
+        },
+        "lifecycle": {
+          "enum": ["verified", "deferred", "blocking", "accepted_debt"],
+          "description": "未跑的检查记 deferred，绝不记 verified"
+        },
+        "scope_paths": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 },
+          "description": "仓库相对路径前缀，声明管辖的代码/文档范围"
+        },
+        "evidence": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/evidence" },
+          "description": "追加式：重跑加新条目，保留历史"
+        },
+        "debt_policy": { "$ref": "#/$defs/debtPolicy" },
+        "notes": { "type": "string" }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": { "properties": { "lifecycle": { "const": "verified" } } },
+          "then": {
+            "properties": { "evidence": { "minItems": 1 } },
+            "description": "verified 必须至少有一条证据"
+          }
+        },
+        {
+          "if": { "properties": { "lifecycle": { "const": "accepted_debt" } } },
+          "then": {
+            "required": ["debt_policy"],
+            "description": "accepted_debt 必须带完整 debt_policy"
+          }
+        }
+      ]
+    },
+    "evidence": {
+      "type": "object",
+      "required": ["kind", "recorded_at", "summary"],
+      "properties": {
+        "kind": {
+          "enum": [
+            "source_static",
+            "focused_test",
+            "integration_real_store",
+            "ci",
+            "crash_recovery",
+            "gate_run",
+            "manual_review"
+          ]
+        },
+        "path": {
+          "type": "string",
+          "description": "仓库相对证据文件路径；验证时必须存在（claims 门检查）"
+        },
+        "recorded_at": { "type": "string", "format": "date" },
+        "summary": { "type": "string", "minLength": 5 }
+      },
+      "additionalProperties": false
+    },
+    "debtPolicy": {
+      "type": "object",
+      "required": ["reason", "owner", "review_by", "reentry_trigger", "non_blocking"],
+      "properties": {
+        "reason": {
+          "type": "string",
+          "minLength": 10,
+          "description": "具体的用户/运行时/语义理由；「不好拆」不是治理理由"
+        },
+        "owner": { "type": "string", "minLength": 1 },
+        "review_by": { "type": "string", "format": "date" },
+        "reentry_trigger": { "type": "string", "minLength": 5 },
+        "non_blocking": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

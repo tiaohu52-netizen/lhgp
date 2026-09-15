@@ -1,0 +1,51 @@
+{
+  "_comment": [
+    "代码改动合同模板：把一次多 agent 代码修改变成 LHGP 合同。",
+    "用法：复制本文件，替换所有 <角括号> 占位符，然后执行：",
+    "  lhgp prepare --file <本文件> --contract-id lt-YYYYMMDD-change01",
+    "  lhgp approve lt-YYYYMMDD-change01",
+    "验收 check 是可执行命令（daemon 以合同 workspace 为 cwd 执行），",
+    "verifier 会独立重跑它们——这就是「不信执行者自述」的机制。",
+    "删除所有 _comment 字段后 prepare 才会接受（prepare 拒绝未知顶层键）。"
+  ],
+  "title": "Change: <一句话说清改什么、为什么>",
+  "objective": "<改动目标：引用具体文件/测试名。验收命令在下面 checks 里定义，agent 的产出必须让它们全部通过。>",
+  "deadline_at": "<ISO8601 带时区，如 2026-12-31T23:59:59+00:00>",
+  "workload_estimate": {
+    "initial_hours": 2
+  },
+  "hard_constraints": {
+    "file_effects": {
+      "mode": "workspace-write",
+      "workspace_root": "<仓库绝对路径——agent 只能写这里>"
+    }
+  },
+  "acceptance": {
+    "standard": "<人类可读的验收口径；机器判定以下面的 checks 为准>",
+    "checks": [
+      {
+        "kind": "command-exit-zero",
+        "target": "<venv 内 python 绝对路径，如 D:/repo/.venv/Scripts/python.exe>",
+        "args": {
+          "argv": ["-m", "pytest", "<新增/受影响测试文件>", "-q"]
+        }
+      },
+      {
+        "kind": "command-exit-zero",
+        "target": "<venv 内 python 绝对路径>",
+        "args": {
+          "argv": ["scripts/quality_gate.py"]
+        }
+      }
+    ],
+    "verifier": "cross_check"
+  },
+  "budget": {
+    "max_dispatches": 3,
+    "max_escalations": 1,
+    "max_concurrent_attempts": 1,
+    "max_attempt_minutes": 30,
+    "max_output_bytes": 1048576,
+    "verification_attempts_reserved": 1
+  }
+}

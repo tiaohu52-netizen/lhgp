@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "Plan Gate Enforcement",
+    "output": "02-plan-gate-enforcement.html",
+    "viewBox": [900, 640],
+    "animation": "trace",
+    "quality_profile": "showcase",
+    "views": [
+      { "id": "submit-and-validate", "label": "Plan submission and validation", "focus": ["model", "mcp", "plan_gate", "events"], "note": "The agent submits a structured Plan; the validator either approves or rejects it." },
+      { "id": "dispatch-guard", "label": "Dispatch-time guard", "focus": ["runner", "events", "executor"], "note": "The runner checks for a recent PLAN_APPROVED before letting any executor spawn an attempt." }
+    ]
+  },
+  "participants": [
+    { "id": "model", "type": "external", "label": "LLM Agent", "sublabel": "model" },
+    { "id": "mcp", "type": "frontend", "label": "MCP Server", "sublabel": "tool surface" },
+    { "id": "plan_gate", "type": "security", "label": "Plan Gate", "sublabel": "validator" },
+    { "id": "events", "type": "database", "label": "Events Log", "sublabel": "audit trail" },
+    { "id": "runner", "type": "backend", "label": "Runner", "sublabel": "dispatch" },
+    { "id": "executor", "type": "external", "label": "Executor", "sublabel": "child process" }
+  ],
+  "segments": [
+    { "from": 130, "to": 410, "label": "Plan submission" },
+    { "from": 430, "to": 590, "label": "Dispatch guard" }
+  ],
+  "messages": [
+    { "from": "model", "to": "mcp", "y": 165, "label": "submit_plan(steps)", "variant": "emphasis" },
+    { "from": "mcp", "to": "plan_gate", "y": 207, "label": "validate(plan)" },
+    { "from": "plan_gate", "to": "events", "y": 245, "label": "write PLAN_SUBMITTED", "variant": "default" },
+    { "from": "plan_gate", "to": "events", "y": 283, "label": "write PLAN_APPROVED", "variant": "emphasis" },
+    { "from": "plan_gate", "to": "mcp", "y": 321, "label": "approved = true", "variant": "return" },
+    { "from": "mcp", "to": "model", "y": 359, "label": "{approved: true}", "variant": "return" },
+    { "from": "runner", "to": "events", "y": 437, "label": "query recent PLAN_APPROVED" },
+    { "from": "events", "to": "runner", "y": 471, "label": "row found (24h)", "variant": "return" },
+    { "from": "runner", "to": "executor", "y": 505, "label": "spawn attempt", "variant": "emphasis" },
+    { "from": "runner", "to": "events", "y": 539, "label": "write ATTEMPT_STARTED", "variant": "default" }
+  ],
+  "activations": [
+    { "participant": "mcp", "from": 159, "to": 405, "type": "frontend" },
+    { "participant": "plan_gate", "from": 201, "to": 367, "type": "security" },
+    { "participant": "events", "from": 239, "to": 329, "type": "database" },
+    { "participant": "events", "from": 431, "to": 477, "type": "database" },
+    { "participant": "runner", "from": 431, "to": 547, "type": "backend" },
+    { "participant": "executor", "from": 499, "to": 547, "type": "external" }
+  ]
+}

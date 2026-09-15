@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://longtask.dev/schemas/executor-manifest.schema.json",
+  "title": "LongTask Executor Manifest",
+  "description": "执行器接入声明（DESIGN.md §12.4）。能力声明，不是能力证明。",
+  "type": "object",
+  "required": [
+    "protocol_version",
+    "executor_id",
+    "adapter_version",
+    "transport",
+    "capabilities"
+  ],
+  "properties": {
+    "protocol_version": { "const": 1 },
+    "executor_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"
+    },
+    "adapter_version": { "type": "string", "minLength": 1 },
+    "transport": { "enum": ["bridge", "subprocess"] },
+    "capabilities": {
+      "type": "object",
+      "required": [
+        "spawn",
+        "observe",
+        "cancel",
+        "notify",
+        "followup",
+        "steer",
+        "interrupt",
+        "context",
+        "sandbox",
+        "acceptance_evidence"
+      ],
+      "properties": {
+        "spawn": { "type": "boolean" },
+        "observe": { "type": "boolean" },
+        "cancel": { "type": "boolean" },
+        "notify": { "type": "boolean" },
+        "followup": { "type": "boolean" },
+        "steer": { "type": "boolean" },
+        "interrupt": { "type": "boolean" },
+        "context": { "enum": ["required", "optional"] },
+        "sandbox": {
+          "type": "object",
+          "required": ["file_effects", "network", "process", "enforcement"],
+          "properties": {
+            "file_effects": { "enum": ["read-only", "workspace-write", "unsupported"] },
+            "network": { "enum": ["deny", "allow", "unsupported"] },
+            "process": { "enum": ["restricted", "unrestricted", "unsupported"] },
+            "enforcement": { "enum": ["full", "partial", "none"] }
+          },
+          "additionalProperties": false
+        },
+        "acceptance_evidence": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "limits": {
+      "type": "object",
+      "properties": {
+        "max_concurrent_attempts": { "type": "integer", "exclusiveMinimum": 0 },
+        "max_output_bytes": { "type": "integer", "exclusiveMinimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "user_policy": {
+      "type": "object",
+      "description": "预留未实现（审计 B10，2026-09-11 实测）：DESIGN.md §12.4 的 manifest 示例里有这一段，但运行时没有这个概念——ExecutorManifest 无此字段、registry.to_manifest() 也从不产出它，整个 src 里搜不到 user_policy。保留在此是因为它是设计文档承诺的形状，不是因为它能用；适配器作者写了它不会报错，也不会生效。",
+      "properties": {
+        "enabled": { "type": "boolean", "default": false },
+        "allow_interference": { "type": "boolean", "default": false },
+        "allow_spawn": { "type": "boolean", "default": true }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

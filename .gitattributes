@@ -1,0 +1,37 @@
+# 行尾策略（审计 B13，2026-09-11）
+#
+# 背景：本仓库在中文 Windows 上开发（core.autocrlf=true 是常见默认值），而 CI 与
+# 容器里是 Linux。此前没有 .gitattributes，行尾由每台机器的 git 配置决定：
+# 每次 `git add` 都刷 "LF will be replaced by CRLF" 警告，同一个文件在不同机器上
+# 的 diff 也会抖动。实测当时的索引是干净的（488 个文件全是 LF），问题出在缺少
+# **声明**——把策略写进仓库，换机器不再需要对齐 core.autocrlf。
+#
+# 策略：仓库内存 LF，任何平台检出也是 LF。LF 是 git 的默认内部形态，也是 CI 侧
+# 的事实标准；让 Windows 端持有 CRLF 只会制造「本地改了行尾、远端看是整文件重写」
+# 这类噪声。
+* text=auto eol=lf
+
+# 例外：Windows 原生脚本必须保留 CRLF（cmd.exe 对 LF 的批处理解析不可靠）。
+# 本仓库目前没有这类文件，规则留给将来（例如发版脚本）。
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# 二进制：不参与行尾转换，也不做文本 diff。24 个示意图 PNG 已入库，
+# 其余类型是给将来的制品留的显式声明（`binary` = `-text -diff`）。
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.gz binary
+*.whl binary
+*.exe binary
+*.dll binary
+*.so binary
+*.dylib binary
+*.db binary
+*.sqlite binary
+*.sqlite3 binary

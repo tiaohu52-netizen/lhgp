@@ -1,0 +1,286 @@
+"""Stage → contract draft synthesis.
+
+Lives in ``longtask.persistence`` (not the daemon ``cli``)
+so the contract RPC handler can call it without crossing
+the ``rpc → cli is forbidden`` arch rule.  The previous
+home in :mod:`longtask.cli.tick` made user-confirm from
+the MCP path impossible to thread back into next-stage
+contract creation.
+"""
+
+from __future__ import annotations
+
+import sqlite3
+from datetime import datetime, timedelta
+from typing import Any
+
+from lhgp.contracts.auto_approve import AutoApprove
+from longtask.persistence.store import get_contract
+
+
+def synthesize_stage_draft(
+    goal: dict[str, Any],
+    stage: dict[str, Any],
+    *,
+    previous_evidence: dict[str, Any] | None,
+    now: datetime,
+    conn: sqlite3.Connection | None = None,
+) -> dict[str, Any]:
+    """Build a contract draft from a stage's structured spec.
+
+    Carries every spec field the ``ContractDraft`` can hold
+    (title/objective/deadline/acceptance/budget) and forwards
+    the rest (scope, dependencies, artifacts) into ``context``.
+    When ``conn`` is given, the previous stage's ``auto_approve``
+    is propagated via :meth:`AutoApprove.inherit_from` so
+    pre-authorisation carries across stages.
+    """
+    raw_spec: dict[str, Any] = dict(stage["spec"]) if isinstance(stage.get("spec"), dict) else {}
+    # 4th-round review (2026-09-08): ``validate_stage_entry``
+    # treats ``stage.spec`` as a full StageSpec envelope
+    # (``goal``/``scope``/``acceptance``/etc.) and rejects a
+    # plain boolean body.  Read the envelope directly when
+    # the spec looks like an envelope; fall back to the
+    # legacy boolean-body shape for old plans.
+    envelope_keys: set[str] = {
+        "goal",
+        "scope",
+        "acceptance",
+        "dependencies",
+        "artifacts",
+        "time_budget",
+        "budget",
+        "permissions",
+    }
+    if envelope_keys.intersection(raw_spec.keys()):
+        spec_envelope: dict[str, Any] = dict(raw_spec)
+        if "goal" not in spec_envelope or not str(spec_envelope["goal"]).strip():
+            spec_envelope["goal"] = str(stage.get("title") or stage.get("id") or "stage")
+    else:
+        spec_envelope = {
+            "goal": str(stage.get("title") or stage.get("id") or "stage"),
+            "acceptance": raw_spec,
+        }
+        for opt_key in (
+            "scope",
+            "dependencies",
+            "artifacts",
+            "time_budget",
+            "budget",
+            "permissions",
+        ):
+            v = stage.get(opt_key)
+            if v is not None:
+                spec_envelope[opt_key] = v
+    from lhgp.goals.stage import StageSpec
+
+    spec = StageSpec.from_dict(spec_envelope)
+    title = str(stage.get("title") or spec.goal or str(stage.get("id", "stage")))
+    objective = spec.goal or str(goal.get("objective") or title)
+    if spec.deadline_at:
+        deadline_iso = str(spec.deadline_at)
+    else:
+        deadline_iso = (now + timedelta(hours=24)).isoformat()
+    boolean_body: Any = spec_envelope.get("acceptance", raw_spec)
+    acceptance_checks: list[Any] = []
+    _collect_machine_checks(boolean_body, acceptance_checks)
+    if not acceptance_checks:
+        # 阶段没有声明任何机器 check 时留一枚占位标记。不用
+        # ``artifact-present``：它的语义是「声明的产物已生成」（SPEC
+        # §12.1·确定性 pass/fail），而 ``stage:<id>`` 不是 workspace 工件
+        # ——评估器会把 target 当文件路径查、恒判 fail，且协议 fail 优先于
+        # verifier 判定（§12.4），自动合成的阶段合同将在验收处必失败。
+        # 占位改用 ``observable``（SPEC §12.1：需要 verifier 观察的外部
+        # 事实·由 verifier/人工仲裁），且非 mandatory——阶段门由
+        # spec.acceptance（用户判定）把守，占位只保证 checks 非空，不得
+        # 自行一票否决。
+        acceptance_checks = [
+            {
+                "kind": "observable",
+                "target": f"stage:{stage.get('id', 'unknown')}",
+                "mandatory": False,
+                "note": "placeholder: stage acceptance is verifier/user-judged",
+            }
+        ]
+    context: dict[str, Any] = {
+        "stage_spec": boolean_body,
+        "stage_id": stage.get("id"),
+    }
+    if previous_evidence:
+        context["previous_evidence"] = previous_evidence
+    if spec.dependencies:
+        context["dependencies"] = list(spec.dependencies)
+    if spec.artifacts:
+        context["expected_artifacts"] = list(spec.artifacts)
+    if spec.modifiable_scope:
+        context["modifiable_scope"] = list(spec.modifiable_scope)
+    if spec.functional or spec.interfaces or spec.constraints or spec.out_of_scope:
+        context["scope"] = {
+            "functional": list(spec.functional),
+            "interfaces": list(spec.interfaces),
+            "constraints": list(spec.constraints),
+            "out_of_scope": list(spec.out_of_scope),
+        }
+    hard_constraints: dict[str, Any] = {}
+    if spec.modifiable_scope:
+        hard_constraints["modifiable_scope"] = list(spec.modifiable_scope)
+    draft: dict[str, Any] = {
+        "title": title,
+        "objective": objective,
+        "deadline_at": deadline_iso,
+        "hard_constraints": hard_constraints,
+        "acceptance": {
+            "standard": objective,
+            "checks": acceptance_checks,
+            "verifier": "cross_check",
+            "spec": boolean_body,
+            "spec_hash": spec.spec_hash() or None,
+        },
+        "workload_estimate": {"initial_hours": 1.0},
+        "budget": {
+            "max_dispatches": max(1, spec.max_dispatches),
+            "max_escalations": 2,
+            "max_concurrent_attempts": max(1, spec.max_concurrent_attempts),
+            "max_attempt_minutes": max(1, spec.max_attempt_minutes),
+            "max_output_bytes": 1_048_576,
+        },
+        "context": context,
+    }
+    # 5th-round follow-up (review #2): the spec-only synthesizer
+    # used to drop the user's execution config — without
+    # ``workspace_root`` and ``executor_grant`` the dispatcher
+    # cannot pick an eligible executor and the contract ends up
+    # BLOCKED(NO_EXECUTOR).  The trusted source is the bound
+    # Goal's ``plan.execution_config`` (user-pinned at
+    # ``goal/update`` time, Principal-gated).  Inline stage
+    # drafts still take precedence — a stage that explicitly
+    # pins its own workspace / executor wins.
+    plan_raw = goal.get("plan") if isinstance(goal, dict) else None
+    goal_execution_config = plan_raw.get("execution_config") if isinstance(plan_raw, dict) else None
+    if isinstance(goal_execution_config, dict):
+        goal_workspace = goal_execution_config.get("workspace_root")
+        if isinstance(goal_workspace, str) and goal_workspace.strip():
+            file_effects = dict(hard_constraints.get("file_effects") or {})
+            if not file_effects.get("workspace_root"):
+                file_effects["workspace_root"] = goal_workspace
+            if not file_effects.get("mode"):
+                file_effects["mode"] = "workspace-write"
+            hard_constraints["file_effects"] = file_effects
+        goal_grant = goal_execution_config.get("executor_grant")
+        if isinstance(goal_grant, list) and goal_grant:
+            existing_authority = draft.get("authority") or {}
+            existing_executors = existing_authority.get("executors") or []
+            if not existing_executors:
+                clean: list[dict[str, Any]] = []
+                for item in goal_grant:
+                    if not isinstance(item, dict):
+                        continue
+                    executor_id = str(item.get("executor_id") or "").strip()
+                    if not executor_id:
+                        continue
+                    models_raw = item.get("models") or ["*"]
+                    roles_raw = item.get("roles") or ["executor"]
+                    clean.append(
+                        {
+                            "executor_id": executor_id,
+                            "models": [str(m) for m in models_raw],
+                            "roles": [str(r) for r in roles_raw],
+                        }
+                    )
+                if clean:
+                    draft["authority"] = {
+                        "executor_policy": "explicit_allow",
+                        "executors": clean,
+                    }
+    prev_auto_approve = _resolve_previous_auto_approve(goal, stage, conn)
+    plan_raw = goal.get("plan") if isinstance(goal, dict) else None
+    goal_pre_authorized = plan_raw.get("pre_authorized") if isinstance(plan_raw, dict) else None
+    if isinstance(goal_pre_authorized, dict) and goal_pre_authorized.get("enabled"):
+        # The user has explicitly pre-authorised the whole Goal.
+        # Use that as the synthesised contract's auto_approve so
+        # the daemon's auto-approve check (which reads
+        # Goal.plan.pre_authorized, not the contract's
+        # auto_approve) can promote it DRAFTED → ACTIVE without
+        # the model needing to claim any action scope.
+        granted_actions = goal_pre_authorized.get("actions") or ()
+        if isinstance(granted_actions, (list, tuple)):
+            actions = tuple(str(a) for a in granted_actions if a)
+            if actions:
+                draft["auto_approve"] = AutoApprove(
+                    enabled=True,
+                    actions=actions,
+                    max_budget_increment=int(
+                        goal_pre_authorized.get("max_budget_increment", 0) or 0
+                    ),
+                    max_spec_changes=int(goal_pre_authorized.get("max_spec_changes", 0) or 0),
+                ).to_dict()
+    elif prev_auto_approve is not None:
+        draft["auto_approve"] = AutoApprove().inherit_from(prev_auto_approve).to_dict()
+    return draft
+
+
+def _resolve_previous_auto_approve(
+    goal: dict[str, Any],
+    stage: dict[str, Any],
+    conn: sqlite3.Connection | None,
+) -> AutoApprove | None:
+    """Return the previous stage's contract ``auto_approve``,
+    or ``None`` for any silent-degrade case (no conn, no plan,
+    no prev stage, no contract_id, contract missing).
+    """
+    if conn is None:
+        return None
+    plan_raw = goal.get("plan")
+    if not isinstance(plan_raw, dict):
+        return None
+    stages_raw = plan_raw.get("stages")
+    if not isinstance(stages_raw, list):
+        return None
+    target_id = stage.get("id") if isinstance(stage, dict) else None
+    if target_id is None:
+        return None
+    idx = next(
+        (i for i, s in enumerate(stages_raw) if isinstance(s, dict) and s.get("id") == target_id),
+        None,
+    )
+    if idx is None or idx <= 0:
+        return None
+    prev = stages_raw[idx - 1]
+    if not isinstance(prev, dict):
+        return None
+    prev_cid = prev.get("contract_id")
+    if not prev_cid:
+        return None
+    prev_contract = get_contract(conn, str(prev_cid))
+    if prev_contract is None:
+        return None
+    return prev_contract.draft.auto_approve
+
+
+def _collect_machine_checks(node: Any, out: list[dict[str, Any]]) -> None:
+    """Walk a boolean spec and append every leaf machine criterion.
+
+    Handles ``{"all": [...]}``, ``{"any": [...]}``, and bare
+    criterion dicts. Stops at non-machine leaves (user/agent judges)
+    since the plan gate only requires coverage of typed checks.
+    """
+    if not isinstance(node, dict):
+        return
+    for comb in ("all", "any"):
+        children = node.get(comb)
+        if isinstance(children, list):
+            for child in children:
+                _collect_machine_checks(child, out)
+            return
+    judge = node.get("judge")
+    if judge != "machine":
+        return
+    kind = node.get("kind")
+    target = node.get("target")
+    if isinstance(kind, str) and kind.strip() and isinstance(target, str) and target.strip():
+        out.append({"kind": kind, "target": target, "mandatory": True})
+
+
+__all__ = [
+    "synthesize_stage_draft",
+]

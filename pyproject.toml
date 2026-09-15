@@ -1,0 +1,160 @@
+# 远期任务协议 longtask —— 包与工具链配置
+# 工具链统一走 uv（见 CONTRIBUTING.md「环境准备」）；不要绕过本文件单独配置工具。
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "longtask-protocol"
+version = "0.1.0a14"
+description = "远期目标协议参考实现：跨会话、跨 Agent 的本地合同、调度与验收运行时"
+readme = "README.md"
+requires-python = ">=3.11"
+# 运行时零第三方依赖：协议控制面只用标准库（DESIGN.md §13.1）。
+# 新增运行时依赖必须同时登记 scripts/allowed-deps.json，否则 deps 门拒绝。
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "ruff==0.14.5",
+    "mypy==1.18.2",
+    "pytest==9.0.3",
+    "pytest-cov==7.0.0",
+    "jsonschema==4.25.1",
+    "pre-commit==4.3.0",
+]
+
+[project.scripts]
+# P6 双轨分发（SPEC §19.3）：对外的推荐名字是 lhgp/lhgpd/lhgp-mcp。
+# 注意方向：**canonical 名才是 shim**——lhgp.cli.* / lhgp.mcp_server 全部转发到
+# longtask 实现（真身在 longtask/cli、longtask/mcp_server.py，见 ARCHITECTURE
+# 「真身位置地图」）。旧名 longtask/longtask-mcp 直接指向真实现，保留到兼容窗口
+# 结束。别在 3 行的 lhgp/cli/main.py 里找真实现（方向由
+# tests/unit/test_cli.py::TestCliFacadeDirection 钉住）。
+lhgp = "lhgp.cli.main:entrypoint"
+lhgpd = "lhgp.cli.daemon_proc:lhgpd_entrypoint"
+lhgp-mcp = "lhgp.mcp_server:main"
+longtask = "longtask.cli.main:entrypoint"
+longtaskd = "longtask.cli.daemon_proc:lhgpd_entrypoint"
+longtask-mcp = "longtask.mcp_server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/longtask", "src/lhgp"]
+# 附带 §17 skill 资源（不是 Python 包，但模型工具链会读 MANIFEST.json 索引）
+# 清单必须覆盖 skills/ 下的**每一个**文件：.codex-plugin/plugin.json 声明的是
+# 整个 "skills" 目录，漏一个就等于对使用者撒谎（审计 C5：flowgen 曾被漏掉，
+# 从 wheel 安装的插件静默少一个 skill）。该清单由
+# tests/unit/test_p6_plugin_package.py 与 scripts/check_artifacts.py 从文件系统
+# 推导后核对，不靠人工维护。
+artifacts = [
+    "skills/flowgen/MANIFEST.json",
+    "skills/flowgen/SKILL.md",
+    "skills/long-horizon-goals/SKILL.md",
+    "skills/longtask-contract/MANIFEST.json",
+    "skills/longtask-contract/SKILL.md",
+]
+
+[tool.hatch.build.targets.wheel.force-include]
+# wheel 安装也要保留插件 companion 资源；否则仅从 wheel 安装时模型侧
+# 无法发现 skill/MCP 配置（源码包仍保留完整仓库布局）。
+".codex-plugin/plugin.json" = ".codex-plugin/plugin.json"
+".mcp.json" = ".mcp.json"
+"skills/flowgen/MANIFEST.json" = "skills/flowgen/MANIFEST.json"
+"skills/flowgen/SKILL.md" = "skills/flowgen/SKILL.md"
+"skills/long-horizon-goals/SKILL.md" = "skills/long-horizon-goals/SKILL.md"
+"skills/longtask-contract/MANIFEST.json" = "skills/longtask-contract/MANIFEST.json"
+"skills/longtask-contract/SKILL.md" = "skills/longtask-contract/SKILL.md"
+
+# ── ruff（format + lint 一体）────────────────────────────────
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["src", "tests", "scripts"]
+# examples/ 是真实运行的归档交付物（第三方/模型产出的证据），不是本仓源码：
+# 不格式化、不 lint、不计覆盖率——改写它等于篡改验收证据
+extend-exclude = ["examples"]
+
+[tool.ruff.lint]
+# 规则集从严起步；每一族的取舍理由写在 CONTRIBUTING.md「代码规范」。
+select = [
+    "E", "W",   # pycodestyle
+    "F",        # pyflakes
+    "I",        # isort
+    "N",        # pep8-naming
+    "UP",       # pyupgrade
+    "B",        # flake8-bugbear
+    "SIM",      # flake8-simplify
+    "RUF",      # ruff 特有
+    "S",        # bandit 安全（本协议处理子进程/路径，必须开）
+    "ASYNC",    # 异步陷阱
+    "TID",      # 导入整洁（配合 arch 门）
+]
+ignore = [
+    # 骨架期允许 Protocol/占位中出现显式 ellipsis 体
+    "PIE790",
+]
+# 中文项目：注释/docstring/字符串中的全角标点是正常书写，放行；
+# RUF001-003 对真正危险的 confusables（西里尔字母冒充拉丁字母等）仍然生效。
+allowed-confusables = ["，", "（", "）", "：", "；", "？", "！", "、", "—", "…", "「", "」"]
+
+[tool.ruff.lint.per-file-ignores]
+# 测试允许断言风格；门脚本允许 subprocess（它们就是干这个的）
+"tests/**" = ["S101"]
+"scripts/**" = ["S603", "S607"]
+# claims 锚点 / 仓库卫生 / 覆盖率棘轮三类回归测试必须真的调 git 才能独立验证
+# pinned_sha 可达性、索引状态与基线只升不降；
+# 调用的命令与参数全是测试内常量，无外部输入。
+"tests/unit/test_claims_anchor_check.py" = ["S603", "S607"]
+"tests/unit/test_repo_hygiene.py" = ["S603", "S607"]
+"tests/unit/test_coverage_ratchet.py" = ["S603", "S607"]
+# watch.py 的 `from datetime import UTC` 与 stdlib 别名分组冲突导致 I001
+# 假阳性——单规则豁免，不影响其他规则
+"src/longtask/cli/watch.py" = ["I001"]
+# persistence 层：表名/列名是模块级常量，"SELECT " + _COLS_LIST 是静态拼接
+# 不接受外部输入；S608 的字符串拼接检测对此处为假阳性。
+"src/longtask/persistence/**" = ["S608"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["longtask", "lhgp"]
+
+# ── mypy（strict 起步；存量债走棘轮基线，见 scripts/quality_gate.py）──
+[tool.mypy]
+python_version = "3.11"
+mypy_path = "src"
+packages = ["longtask", "lhgp"]
+strict = true
+warn_unreachable = true
+# 权威 typecheck 平台钉死为 Windows（首要支持平台、本地默认开发环境）。
+# 否则 Linux 上的 mypy 会把 ctypes.windll 分支报成 attr-defined；
+# POSIX 专属分支由 CI 三平台测试矩阵覆盖，不靠 mypy。
+platform = "win32"
+# 骨架期就 strict：新代码没有「先随便写再补类型」的债可欠。
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+
+# ── pytest ───────────────────────────────────────────────────
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+markers = [
+    "unit: 纯逻辑单元测试（无 IO、无子进程、毫秒级）",
+    "integration: 涉及 SQLite/文件系统/子进程的集成测试",
+    "conformance: 协议一致性场景（拒接、fencing、崩溃恢复）",
+    "real_entry: 真实入口测试（真子进程 CLI / 真 JSON-RPC stdio / 真 RequestEnvelope+route）",
+]
+
+# ── coverage（棘轮：fail_under 是地板，只许上调；见 CONTRIBUTING.md）──
+[tool.coverage.run]
+source = ["src/longtask", "src/lhgp"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+exclude_also = [
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+    "\\.\\.\\.",
+]

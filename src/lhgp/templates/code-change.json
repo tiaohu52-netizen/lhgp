@@ -1,0 +1,49 @@
+{
+  "title": "Change: <一句话说清改什么、为什么>",
+  "objective": "<改动目标：引用具体文件/测试名。验收命令在下面 checks 里定义，agent 的产出必须让它们全部通过。>",
+  "deadline_at": "<ISO8601 带时区，如 2026-12-31T23:59:59+00:00>",
+  "workload_estimate": {
+    "initial_hours": 2
+  },
+  "hard_constraints": {
+    "file_effects": {
+      "mode": "workspace-write",
+      "workspace_root": "<仓库绝对路径——agent 只能写这里>"
+    }
+  },
+  "acceptance": {
+    "standard": "<人类可读的验收口径；机器判定以下面的 checks 为准>",
+    "checks": [
+      {
+        "kind": "command-exit-zero",
+        "target": "<venv 内 python 绝对路径，如 D:/repo/.venv/Scripts/python.exe>",
+        "args": {
+          "argv": [
+            "-m",
+            "pytest",
+            "<新增/受影响测试文件>",
+            "-q"
+          ]
+        }
+      },
+      {
+        "kind": "command-exit-zero",
+        "target": "<venv 内 python 绝对路径>",
+        "args": {
+          "argv": [
+            "scripts/quality_gate.py"
+          ]
+        }
+      }
+    ],
+    "verifier": "cross_check"
+  },
+  "budget": {
+    "max_dispatches": 3,
+    "max_escalations": 1,
+    "max_concurrent_attempts": 1,
+    "max_attempt_minutes": 30,
+    "max_output_bytes": 1048576,
+    "verification_attempts_reserved": 1
+  }
+}

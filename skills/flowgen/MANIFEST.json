@@ -1,0 +1,12 @@
+{
+  "name": "flowgen",
+  "version": "0.1.0a1",
+  "description": "教模型用 lhgp flow 从 Python 源码生成 Mermaid/Excalidraw 流程图，或从 wiki 读手写 '## flow' 段",
+  "protocol_version": "lhgp/v1alpha1",
+  "author": "longtask-protocol",
+  "license": "见仓库 SECURITY.md",
+  "entry": "SKILL.md",
+  "compatibility": {
+    "longtask": ">=0.1.0a8"
+  }
+}

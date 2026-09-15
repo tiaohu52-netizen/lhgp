@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "diagram_type": "lifecycle",
+  "meta": {
+    "title": "Auto-handover Detector Lifecycle",
+    "output": "04-handover-detector.html",
+    "viewBox": [820, 640],
+    "animation": "trace",
+    "quality_profile": "showcase",
+    "views": [
+      { "id": "happy-warm", "label": "Warm path", "focus": ["attempt_runs", "size_watching", "warm_warning", "next_attempt"], "note": "Size crosses 60% but stays under 90%; debounced warning; new attempt continues." },
+      { "id": "overdue", "label": "Overdue path", "focus": ["attempt_runs", "size_watching", "warm_warning", "overdue", "handover_due", "next_attempt"], "note": "Size crosses 90%; handover fires immediately; new attempt picks up." }
+    ]
+  },
+  "lanes": [
+    { "id": "main", "label": "Detection phases" },
+    { "id": "audit", "label": "Audit log" },
+    { "id": "terminal", "label": "Terminal" }
+  ],
+  "states": [
+    { "id": "attempt_runs", "type": "active", "label": "Attempt runs", "sublabel": "active.md grows", "lane": "main", "col": 0, "step": "01" },
+    { "id": "size_watching", "type": "active", "label": "Size watching", "sublabel": "ratio = size / max_bytes", "lane": "main", "col": 1, "step": "02" },
+    { "id": "warm_warning", "type": "decision", "label": "Warm warning", "sublabel": "ratio >= 0.6 (debounced 60s)", "lane": "main", "col": 2, "step": "03" },
+    { "id": "overdue", "type": "failure", "label": "Overdue", "sublabel": "ratio >= 0.9 (immediate)", "lane": "main", "col": 3, "step": "04" },
+    { "id": "handover_due", "type": "decision", "label": "Handover due", "sublabel": "HANDOVER_DUE event", "lane": "audit", "col": 2, "tag": "audit" },
+    { "id": "next_attempt", "type": "success", "label": "Next attempt", "sublabel": "runner spawns fresh attempt", "lane": "main", "col": 4, "step": "05" },
+    { "id": "completed", "type": "success", "label": "Completed", "sublabel": "task done", "lane": "terminal", "col": 2, "tag": "terminal" }
+  ],
+  "transitions": [
+    { "id": "t1", "from": "attempt_runs", "to": "size_watching", "label": "tick", "labelAt": [244, 96] },
+    { "id": "t2", "from": "size_watching", "to": "warm_warning", "label": "ratio >= 0.6", "labelAt": [325, 202] },
+    { "id": "t3", "from": "warm_warning", "to": "overdue", "label": "ratio >= 0.9", "labelAt": [479, 202] },
+    { "id": "t5", "from": "overdue", "to": "handover_due", "label": "immediate", "variant": "emphasis", "fromSide": "bottom", "toSide": "top" },
+    { "id": "t6", "from": "handover_due", "to": "next_attempt", "label": "runner reads", "labelAt": [620, 202] },
+    { "id": "t7", "from": "next_attempt", "to": "completed", "label": "task done", "via": [[810, 188], [810, 450]] }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "Why handover", "items": ["Without it, an attempt can run out of context mid-execution", "Handover writes active.md + handover.md; next attempt reads them"] },
+    { "dot": "amber", "title": "Why debounce", "items": ["Warm warning fires once per 60s even if ratio hovers near 0.6", "Overdue bypasses debounce and fires every tick until ratio drops or next attempt starts"] }
+  ]
+}

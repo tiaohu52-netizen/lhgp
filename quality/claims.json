@@ -1,0 +1,1496 @@
+{
+  "registry_version": 2,
+  "pinned_sha": "2b7d6480cf3b6dbcaf6e9ed6c4c60bdad9826d47",
+  "last_revalidated": "2026-09-15",
+  "design_claims": [
+    {
+      "id": "spec-is-authoritative-source",
+      "statement": "docs/LHGP-SPEC.md 为协议语义的唯一真相源；任何代码/测试/示例引入的概念必须在 SPEC 中可定位；SPEC 修改门槛高于代码与 ROADMAP。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "docs/LHGP-SPEC.md",
+        "docs/LHGP-ROADMAP.md",
+        "docs/decisions/"
+      ],
+      "evidence": [
+        {
+          "kind": "manual_review",
+          "path": "docs/LHGP-SPEC.md",
+          "recorded_at": "2026-09-01",
+          "summary": "SPEC §22（Always）：规范先行；§19.3：改名最后；ROADMAP §三执行原则 1「规范先行」与之一致。SPEC 当前 v1（26 章），未与代码冲突。"
+        },
+        {
+          "kind": "source_static",
+          "path": "docs/LHGP-ROADMAP.md",
+          "recorded_at": "2026-09-01",
+          "summary": "ROADMAP §八变更规则：SPEC 与本文档冲突时先改 SPEC；本文档区分历史基线、当前实现与后续目标。"
+        }
+      ],
+      "notes": "每次 SPEC 修订或代码新增概念后重验。"
+    },
+    {
+      "id": "lhgp-spec-four-axis-model",
+      "statement": "承诺状态被显式分为四条独立状态轴（SPEC §7）：commitment lifecycle / deadline_status / acceptance_status / attempt state；当前实现已落地四轴数据与状态迁移，严格 deadline 交付保证仍是独立债务。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "docs/LHGP-SPEC.md"
+      ],
+      "evidence": [
+        {
+          "kind": "source_static",
+          "path": "docs/LHGP-SPEC.md",
+          "recorded_at": "2026-09-01",
+          "summary": "SPEC §7 明确四轴；§7.1「complete → satisfied」语义合并入 deadline 轴；历史冲突项见 ROADMAP §2.3，当前实现与复验状态见 §2.1–§2.2。"
+        }
+      ]
+    },
+    {
+      "id": "lhgp-spec-authorization-tri-axis",
+      "statement": "合同授权三维 allowlist：executor / model / role；候选必须同时满足 SPEC §6.3 的 7 个条件；不合格默认拒接（default-deny）；属 P2 范围。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "docs/LHGP-SPEC.md"
+      ],
+      "evidence": [
+        {
+          "kind": "source_static",
+          "path": "docs/LHGP-SPEC.md",
+          "recorded_at": "2026-09-01",
+          "summary": "SPEC §6.3 列出 7 个候选条件；§6.1 给出 authority/attention/continuity 三组字段；当前实现已执行 executor/model/role 授权与 default-deny 判定。"
+        }
+      ]
+    },
+    {
+      "id": "lhgp-spec-external-handles",
+      "statement": "spawn 必须返回 external_run_id / session_locator / recovery_strategy / capability_snapshot（SPEC §11.3）；daemon 启动走四分支 reconciliation：reattach / collect / orphan grace / fence 后重派；属 P3 范围。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "docs/LHGP-SPEC.md"
+      ],
+      "evidence": [
+        {
+          "kind": "source_static",
+          "path": "docs/LHGP-SPEC.md",
+          "recorded_at": "2026-09-01",
+          "summary": "SPEC §11.3 句柄四元组；§11 reconcile 四分支明确；当前实现已持久化句柄并实现 reattach/collect/orphan grace/fence 分支。"
+        }
+      ]
+    },
+    {
+      "id": "lhgp-spec-goal-capsule-v1",
+      "statement": "Goal Capsule v1：9 元组结构化上下文 + provenance + fact/decision/hypothesis/untrusted 四种标记（SPEC §11.1）；属 P3 范围。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "docs/LHGP-SPEC.md"
+      ],
+      "evidence": [
+        {
+          "kind": "source_static",
+          "path": "docs/LHGP-SPEC.md",
+          "recorded_at": "2026-09-01",
+          "summary": "SPEC §11.1 列 9 元组（subject/scope/acceptance/constraints/authority/continuity/forecast/evidence/provenance）与四种标记。"
+        }
+      ]
+    },
+    {
+      "id": "lhgp-spec-forecast-six-component",
+      "statement": "六分量 forecast（SPEC §10.2）：queue / startup / remaining work / verification / retry reserve / safety margin；含 p50/p90 与 P(finish)；驱动事件式 wakeup 与 next_decision_at。属 P4 范围。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "docs/LHGP-SPEC.md"
+      ],
+      "evidence": [
+        {
+          "kind": "source_static",
+          "path": "docs/LHGP-SPEC.md",
+          "recorded_at": "2026-09-01",
+          "summary": "SPEC §10.2 六分量定义；§10.3 风险六档阈值；§10.4 决策时刻 next_decision_at。"
+        }
+      ]
+    },
+    {
+      "id": "lhgp-spec-typed-acceptance",
+      "statement": "验收 checks 分为 7 种 typed checks（SPEC §12.1），每条 check 关联 evidence 实体；mandatory / optional 分类；typed target 必须是非空字符串且 args 必须为对象；verifier 必须独立于 executor（不同 attempt / 不同 session / 优先不同 model family）；target 一律相对 workspace_root 解析；command check 在守护进程环境执行（shell=False、cwd=workspace_root、继承 daemon PATH），解释器缺失产出 undetermined 并给可行动指引（区别于 fail）；属 P5 范围。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "docs/LHGP-SPEC.md",
+        "src/lhgp/acceptance/evaluator.py",
+        "tests/unit/test_p5_acceptance.py"
+      ],
+      "evidence": [
+        {
+          "kind": "source_static",
+          "path": "docs/LHGP-SPEC.md",
+          "recorded_at": "2026-09-04",
+          "summary": "SPEC §12.1 七种 check + target 解析约定（相对 workspace_root，不带重复前缀）+ command check 环境契约（守护进程环境、解释器缺失 undetermined 非 fail）；§12.2 evidence 实体；§12.3 verifier 独立性；§12.4 证据双通道与裁决合成。"
+        },
+        {
+          "kind": "source_static",
+          "path": "src/lhgp/acceptance/evaluator.py",
+          "recorded_at": "2026-09-04",
+          "summary": "command-not-found 分支：FileNotFoundError → undetermined 且 details 带 daemon PATH 指引（绝对解释器路径 / §12.4 verifier 判定块）——区别于 fail（「跑不了」与「跑挂了」是不同的事实）。对应测试见 tests/unit/test_p5_acceptance.py（undetermined 带指引回归、target 相对 workspace_root 解析）——focused_test 证据挂在与实现绑定的 ephemeral-context-and-verifier 声明下。"
+        },
+        {
+          "kind": "source_static",
+          "path": "tests/unit/test_p5_acceptance.py",
+          "recorded_at": "2026-09-05",
+          "summary": "CheckSpec 的 mandatory 字段只接受 JSON boolean；target 必须为非空字符串、args 必须为对象；字符串等错误类型明确拒绝，避免 optional check 被隐式升级为 mandatory 或生成不可验证目标。"
+        }
+      ]
+    },
+    {
+      "id": "lhgp-spec-distribution-and-rename",
+      "statement": "分发形态（SPEC §3、§14、§15）：`.codex-plugin/plugin.json`、`.mcp.json`、`skills/long-horizon-goals/SKILL.md`、assets/；MCP 工具迁移为 10 个 `lhgp_*`；命令迁移 `longtask→lhgp`、`longtaskd→lhgpd`、数据目录 `~/.longtask→~/.lhgp`，旧名保留至少一个次版本。属 P6 范围。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "docs/LHGP-SPEC.md",
+        "docs/decisions/0003-long-horizon-goal-protocol.md",
+        "docs/LHGP-ROADMAP.md"
+      ],
+      "evidence": [
+        {
+          "kind": "source_static",
+          "path": "docs/LHGP-SPEC.md",
+          "recorded_at": "2026-09-01",
+          "summary": "SPEC §3（外部表面）、§14（分发）、§15（运行）；§19.3 改名最后原则。"
+        },
+        {
+          "kind": "manual_review",
+          "path": "docs/decisions/0003-long-horizon-goal-protocol.md",
+          "recorded_at": "2026-09-01",
+          "summary": "ADR-0003 命名权威：协议正式名 LHGP（Long-Horizon Goal Protocol），目标态 lhgp / lhgpd / ~/.lhgp，迁移窗口由 P6 安排。"
+        }
+      ]
+    }
+  ],
+  "implementation_claims": [
+    {
+      "id": "verifier-evidence-bound-to-acceptance-content",
+      "statement": "完成结论与验收内容绑定且绑定时机正确：指纹由 runtime 按 attempt 准入时的不可变修订快照计算；user_confirm 只采信与当前验收一致的指纹，指纹缺失、不一致或调用方改动 spec_hash 标记者一律 STATE_FORBIDDEN 并要求重新核验",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/lhgp/contracts/acceptance.py",
+        "src/longtask/persistence/store.py",
+        "src/longtask/rpc/handlers/contract.py",
+        "src/longtask/cli/runner.py",
+        "src/longtask/promoter/reconcile.py",
+        "src/longtask/rpc/executor_api.py",
+        "tests/unit/test_acceptance_content_binding.py",
+        "tests/integration/test_verifier_evidence_timing.py"
+      ],
+      "evidence": [
+        {
+          "kind": "focused_test",
+          "path": "tests/unit/test_acceptance_content_binding.py",
+          "recorded_at": "2026-09-10",
+          "summary": "第 8 轮外部审查复现的四种 spec_hash 组合（双缺/编辑丢标/事后加标/双标）在验收被改后均拒绝完成；无内容标识的旧证据拒绝；未改动验收的正常路径仍可完成；三个证据生产端（runner 回收、reconcile 崩溃恢复、write-back）均被扫描要求盖章。"
+        },
+        {
+          "kind": "focused_test",
+          "path": "tests/unit/test_plan_approval_migration.py",
+          "recorded_at": "2026-09-10",
+          "summary": "第 7 轮的两侧不同哈希拒绝路径仍绿，证明本次收紧未放宽任何已有判定。"
+        },
+        {
+          "kind": "integration_real_store",
+          "path": "tests/integration/test_verifier_evidence_timing.py",
+          "recorded_at": "2026-09-10",
+          "summary": "第 9 轮审查复现的「核验运行中修订验收」：驱动真实回收路径（AttemptRunner._finish_attempt）与真实修订链，断言事件携带的是准入修订的指纹而非当前行；同文件包含无修订时应能完成的阳性对照。已做反向验证：把绑定改回读当前行后该组测试变红（其中一条 DID NOT RAISE）。"
+        }
+      ]
+    },
+    {
+      "id": "skeleton-gates-green",
+      "statement": "骨架代码通过全部七道质量门（format/lint/arch/deps/claims/typecheck/test+coverage），门自身 fail-closed",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/",
+        "scripts/",
+        "tests/",
+        "pyproject.toml"
+      ],
+      "evidence": [
+        {
+          "kind": "gate_run",
+          "path": "quality/evidence/gate-run-20260831.md",
+          "recorded_at": "2026-08-31",
+          "summary": "七道门首跑全绿；首跑真实拦下 format/lint/test/coverage 四类问题并修复，证明门不是摆设。"
+        }
+      ]
+    },
+    {
+      "id": "urgency-tier-thresholds",
+      "statement": "紧迫度分档实现与 DESIGN §6.2 默认阈值表一致（0.25/0.5/1.0/1.5），越 Deadline 返回 None 走仲裁不走阶梯",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/longtask/promoter/urgency.py",
+        "tests/unit/test_urgency.py"
+      ],
+      "evidence": [
+        {
+          "kind": "focused_test",
+          "path": "tests/unit/test_urgency.py",
+          "recorded_at": "2026-08-31",
+          "summary": "公式比值、Deadline 越界返回 None、负工作量拒收、五档边界（含 0.25/0.5/1.0 含下界）、自定义阈值、乱序阈值拒收。"
+        }
+      ]
+    },
+    {
+      "id": "lease-fencing-logic",
+      "statement": "写回 generation/attempt 与当前租约不符即 LeaseFencedError（DESIGN §7），旧执行者苏醒写回不污染新 attempt",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/longtask/promoter/lease.py",
+        "tests/unit/test_lease_fencing.py"
+      ],
+      "evidence": [
+        {
+          "kind": "focused_test",
+          "path": "tests/unit/test_lease_fencing.py",
+          "recorded_at": "2026-08-31",
+          "summary": "心跳边界、过期/超前 generation 双路 fenced、同代次非持有人 fenced、分区路径前缀/阶段/id 三类互斥拒收。"
+        }
+      ]
+    },
+    {
+      "id": "error-code-registry-complete",
+      "statement": "线协议错误码与 DESIGN §11.7 全集一致，retryable 表覆盖每个码，未知码客户端按 INTERNAL 处理",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/longtask/rpc/errors.py",
+        "tests/unit/test_errors.py"
+      ],
+      "evidence": [
+        {
+          "kind": "focused_test",
+          "path": "tests/unit/test_errors.py",
+          "recorded_at": "2026-08-31",
+          "summary": "20 个 DESIGN 码全在、retryable 表无缺失无孤儿、payload 往返、未知码回退 INTERNAL 且保留原文。"
+        }
+      ]
+    },
+    {
+      "id": "persistence-transactional-writes",
+      "statement": "合同状态、attempt、租约和事件在一次事务中变更；旧 generation 写回拒绝（DESIGN §14 一致性保证）",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/longtask/persistence/"
+      ],
+      "evidence": [
+        {
+          "kind": "integration_real_store",
+          "path": "tests/integration/test_store_transactions.py",
+          "recorded_at": "2026-09-01",
+          "summary": "真实 SQLite 集成测试：CAS 冲突/代次递增、BEGIN IMMEDIATE 单事务原子性（中途异常全回滚）、request_id 重放幂等、旧代次/冒充者写回 fenced、分区租约独立 CAS、revision 冲突拒收。"
+        },
+        {
+          "kind": "crash_recovery",
+          "path": "tests/integration/test_store_transactions.py",
+          "recorded_at": "2026-09-01",
+          "summary": "TestCrashRecovery：子进程事务中途 os._exit(9) 硬崩（无回滚无清理），重开后合同状态/revision/事件数均回到崩溃前，WAL 丢弃未提交帧，无半截状态。"
+        }
+      ],
+      "notes": "投影写入（projection/rebuilt）与多进程文件锁不在本声明范围，属 projections 模块后续验收。"
+    },
+    {
+      "id": "refusal-never-degrades",
+      "statement": "约束编译失败默认拒接（DESIGN §9）：适配器无法证明兑现即 PrepareRefusedError，无静默降级路径",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/longtask/adapters/",
+        "src/lhgp/contracts/contract_draft.py",
+        "tests/conformance/"
+      ],
+      "evidence": [
+        {
+          "kind": "focused_test",
+          "path": "tests/conformance/test_adapter_scenarios.py",
+          "recorded_at": "2026-09-01",
+          "summary": "适配器层约束编译拒接：FakeExecutor 声明 unsupported 能力拒接、SubprocessAdapter 归一化路径与 deny_paths 覆盖/穿越拒接、独立网络/进程/包管理沙箱无法证明拒接、结构化 argv 拉起。"
+        },
+        {
+          "kind": "integration_real_store",
+          "path": "tests/conformance/test_refusal_scenarios.py",
+          "recorded_at": "2026-09-01",
+          "summary": "端到端一致性场景：沙箱不支持拒接并记录 dispatch/refused 事件、预算耗尽就地转入 blocked(need-user)、写事务崩溃 WAL 恢复、租约回收后旧写回 LEASE_FENCED 不污染新 attempt。"
+        },
+        {
+          "kind": "focused_test",
+          "path": "tests/unit/test_contract_schema.py",
+          "recorded_at": "2026-09-05",
+          "summary": "合同反序列化拒绝布尔预算值，避免 true/false 被转换为 1/0 并错误授予资源额度。"
+        },
+        {
+          "kind": "integration_real_store",
+          "path": "tests/conformance/test_refusal_scenarios.py",
+          "recorded_at": "2026-09-01",
+          "summary": "调度分发拒接循环（DESIGN §8.3/§9）：候选 A 注册表声明可过但 prepare 编译失败（无 argv）→ 记 dispatch/refused 入库与 log.jsonl 投影 → 推动者换候选 B 分发成功；同批覆盖 task_prompt 单 argv 尾元素传递与空白拒接（test_adapter_scenarios）。"
+        }
+      ]
+    },
+    {
+      "id": "escalation-ladder-decision",
+      "statement": "升级阶梯决策与 DESIGN §6.2/§6.3/§7/§7.1 一致：越 Deadline 走仲裁不走阶梯、活租约封顶档 1（不打扰排队合同）、免费档不消耗预算、dispatch 触顶转档 5、停滞且可分区才档 4（否则串行退档 3）",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/longtask/promoter/escalation.py",
+        "tests/unit/test_escalation.py"
+      ],
+      "evidence": [
+        {
+          "kind": "focused_test",
+          "path": "tests/unit/test_escalation.py",
+          "recorded_at": "2026-09-01",
+          "summary": "21 个用例：仲裁优先、租约封顶（含档 0 不抬档）、免费档预算无关、dispatch=0 转档 5、停滞×分区×escalations 八路组合、预算恰好为 1 边界。"
+        }
+      ],
+      "notes": "档 5 的「档 4 后 u 仍 ≥ 1.5」触发需要升级历史，属 promoter 循环职责，单次 tick 纯函数不覆盖（见模块 docstring）。"
+    },
+    {
+      "id": "rpc-contract-lifecycle",
+      "statement": "JSON-RPC 合同生命周期方法与 DESIGN §5/§11 一致：非法迁移 STATE_FORBIDDEN（含唯一写入口的 store 层兜底，自反写入除外）、冻结区字段拦截 VALIDATION_FAILED、预算与工作量数值拒绝布尔/非有限值、控制面 limit/cursor/revision 拒绝布尔伪整数、patch CAS 冲突 REVISION_CONFLICT、request_id 重放返回原结果不产生第二个事件、list/events cursor 分页续读",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/longtask/rpc/",
+        "src/lhgp/rpc/server.py",
+        "src/lhgp/contracts/contract_draft.py",
+        "src/lhgp/contracts/validation.py",
+        "src/lhgp/persistence/errors.py",
+        "src/lhgp/rpc/handlers/_common.py",
+        "src/longtask/contracts/state_machine.py",
+        "tests/integration/test_rpc_lifecycle.py"
+      ],
+      "evidence": [
+        {
+          "kind": "integration_real_store",
+          "path": "tests/integration/test_rpc_lifecycle.py",
+          "recorded_at": "2026-09-01",
+          "summary": "真实 SQLite 集成测试：prepare→approve→patch→pause→resume→cancel 正向流、非法迁移/终态拦截、冻结字段拒改、RPC 草稿预算布尔值拒接、分页 limit 布尔伪整数拒接、revision 冲突、分页续读、request_id 重放、UNKNOWN_CONTRACT。"
+        },
+        {
+          "kind": "focused_test",
+          "path": "tests/unit/test_state_machine.py",
+          "recorded_at": "2026-09-01",
+          "summary": "状态机纯函数全出边覆盖：合法迁移、非法迁移、终态无出边（DESIGN §5 状态机图逐边核对）。"
+        },
+        {
+          "kind": "focused_test",
+          "path": "tests/unit/test_contract_state_machine_enforcement.py",
+          "recorded_at": "2026-09-11",
+          "summary": "唯一写入口强制（审计 B1）：9x9 全枚举乘积上守卫判定 == 表+自反规则；store 拒绝非法转移且不留半个写入（state/revision 不变）；自反写入放行（验收失败只改 acceptance_status）；簿记直写的三条边仍在表内；RPC 边界把 IllegalStateTransitionError 映射为 STATE_FORBIDDEN(RETRYABLE=False)。"
+        }
+      ],
+      "notes": "attempt/context/control/executor/lease 族方法未在本声明范围（分别待 promoter、context、daemon、registry 模块）。"
+    },
+    {
+      "id": "rpc-advertised-but-unimplemented-methods",
+      "statement": "7 个方法在 Method 枚举与 IDEMPOTENT_METHODS 里声明，但两侧 HANDLERS 表都没有 handler：context/refresh、context/promote、control/notify、control/followup、control/steer、control/spawn、lease/release。调用 fail-closed 返回 STATE_FORBIDDEN「method not implemented」（运行时说的是真话）；文档此前把它们与已实现方法并列（DESIGN §3「一定暴露给模型」、§7 文件提交路径、§11.2 方法集合、时序 A 图、§15 bridge 步骤、SPEC §14.2），现按「预留未实现」逐处标注",
+      "lifecycle": "accepted_debt",
+      "scope_paths": [
+        "src/lhgp/rpc/methods.py",
+        "src/lhgp/rpc/handlers/__init__.py",
+        "src/longtask/rpc/handlers/__init__.py",
+        "tests/unit/test_rpc_dispatch_tables.py",
+        "DESIGN.md",
+        "docs/LHGP-SPEC.md"
+      ],
+      "evidence": [
+        {
+          "kind": "focused_test",
+          "path": "tests/unit/test_rpc_dispatch_tables.py",
+          "recorded_at": "2026-09-11",
+          "summary": "两张手工装配的 Method→handler 表必须相等（曾漏 CONTRACT_USER_CONFIRM），且 KNOWN_UNIMPLEMENTED 精确列出上述 7 个「枚举里有、两边都无 handler」的方法：新增缺口会红，补上一个也要来改清单并同步文档。"
+        },
+        {
+          "kind": "manual_review",
+          "path": "DESIGN.md",
+          "recorded_at": "2026-09-11",
+          "summary": "审计 C4 逐处标注：§3 的模型能力承诺、§7 handover 人工提升路径（context/promote）、§11.2 方法集合（7 个名字内联标注）、时序 A 图（control/spawn 与实际派工路径不符的说明）、§15 agent-cli bridge（followup/steer 不可达）。"
+        }
+      ],
+      "notes": "去广告而非实现：这 7 个方法各自是新能力开发（handler + SPEC 语义 + 测试），不是接线缺口。DESIGN 的原始文字一律保留并追加状态说明，便于读者看到「曾如此承诺」与「实际如何」。模型侧 MCP 工具（longtask/mcp_server.py 的 tool_* 一族）从未暴露这些名字，因此受影响的只有按文档写代码的客户端作者。",
+      "debt_policy": {
+        "reason": "实现任一方法都要先定语义（context/refresh 的刷新边界、context/promote 的原子校验、control/* 的授权模型、lease/release 与 reclaim 的关系），属于产品决策而非修缺陷。",
+        "owner": "protocol-maintainer",
+        "review_by": "2026-12-01",
+        "reentry_trigger": "用户要求实现其中任一方法，或第三方客户端按文档接入受阻时重审",
+        "non_blocking": true
+      }
+    },
+    {
+      "id": "executor-registry-matching",
+      "statement": "执行器注册表与能力/预算/成本分发决策符合 DESIGN §8/§12.4：用户显式框定开关（默认全部 false）、能力门槛与沙箱兼容匹配、并发余额检查、按 cost_hint 升序优先级分发、executor/* 控制面方法完整",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/longtask/adapters/registry.py",
+        "src/lhgp/rpc/handlers/executor.py",
+        "src/longtask/rpc/handlers/goal.py",
+        "src/longtask/rpc/handlers.py",
+        "tests/unit/test_registry.py",
+        "tests/conformance/test_admission_offer.py",
+        "tests/integration/test_executor_rpc.py"
+      ],
+      "evidence": [
+        {
+          "kind": "focused_test",
+          "path": "tests/unit/test_registry.py",
+          "recorded_at": "2026-09-01",
+          "summary": "单元测试覆盖：CostHint 排序优先级、LaunchSpec 序列化、默认 disabled 开关、注册表 enabled/能力布尔字段的严格类型校验（错误值 fail-closed）、admission snapshot 保留真实 enabled 状态、能力门槛匹配（required_capabilities/context/沙箱模式/网络/进程）、并发额度与成本优先级分发决策。"
+        },
+        {
+          "kind": "integration_real_store",
+          "path": "tests/integration/test_executor_rpc.py",
+          "recorded_at": "2026-09-01",
+          "summary": "RPC 控制面集成测试：executor/list 查询及 enabled_only 过滤（错误类型 fail-closed）、executor/enable 与 executor/disable 用户框定控制、executor/health 真实适配器探活与能力（无适配器 fail-closed）、UNKNOWN_EXECUTOR 错误码。"
+        },
+        {
+          "kind": "focused_test",
+          "path": "tests/conformance/test_admission_offer.py",
+          "recorded_at": "2026-09-05",
+          "summary": "admission 候选事实的非布尔 enabled 值被 VALIDATION_FAILED 拒接，防止外部快照通过 truthiness 转换伪造 eligibility。"
+        }
+      ]
+    },
+    {
+      "id": "file-projections-and-handover",
+      "statement": "可读文件投影与交接规范符合 DESIGN §3.1/§11.3/§13.3：权威库事务后可物化/重建全部 7 个投影文件、log.jsonl 包含完整事件记录、lease.json 反映活跃租约、盘上改动 dirty 草稿检测与强制 revert 回滚、handover.md 最低必填字段解析校验",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/longtask/persistence/projections.py",
+        "tests/integration/test_projections.py"
+      ],
+      "evidence": [
+        {
+          "kind": "integration_real_store",
+          "path": "tests/integration/test_projections.py",
+          "recorded_at": "2026-09-01",
+          "summary": "集成测试覆盖：rebuild_projection 生成全部 7 个投影文件、contract.yaml/lease.json/log.jsonl 内容同步、check_projection_dirty 人类草稿改动检测、revert_projection 强制回滚、HandoverData 最低字段与负工时校验。"
+        }
+      ]
+    },
+    {
+      "id": "cli-and-daemon-control-plane",
+      "statement": "longtask CLI 与 longtaskd 调度驱动符合 DESIGN §11.1/§11.2/§15.2：doctor 完整诊断、合同全生命周期子命令直通 RPC 控制面、--dry-run 演练模式、全局 kill-switch 紧急熔断控制、run_daemon_tick 调度推进与自动物化闭环",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/longtask/cli/",
+        "tests/unit/test_cli.py"
+      ],
+      "evidence": [
+        {
+          "kind": "focused_test",
+          "path": "tests/unit/test_cli.py",
+          "recorded_at": "2026-09-01",
+          "summary": "单元/集成测试覆盖：--version 与帮助信息、doctor 系统自检、prepare/approve/get/list/patch/pause/resume/cancel 端到端命令流、--dry-run 模拟、kill-switch 命令行与 daemon 熔断拦截、rebuild 文件重建、run_daemon_tick 紧迫度驱动派工与过期仲裁闭环。"
+        }
+      ]
+    },
+    {
+      "id": "strict-deadline-wakeup-design",
+      "statement": "跨关机分层唤醒（DESIGN v0.7 §6.4、ADR-0002）：L0 电源守卫与 L1 计划任务注册已实现（事件 wakeup/*、降级声明 fail-closed）；L2 云侧通知与 L3 中继依赖外部基础设施，未部署",
+      "lifecycle": "accepted_debt",
+      "scope_paths": [
+        "src/longtask/scheduler/wakeup.py",
+        "src/lhgp/rpc/handlers/protocol.py",
+        "tests/unit/test_wakeup.py",
+        "tests/unit/test_daemon_wakeup_rpc.py",
+        "docs/decisions/"
+      ],
+      "evidence": [
+        {
+          "kind": "focused_test",
+          "path": "tests/unit/test_wakeup.py",
+          "recorded_at": "2026-09-01",
+          "summary": "覆盖 L0 判定与失败降级、Windows Task Scheduler argv/分钟取整/权限失败、L1 取最早决策点、过去时刻立即唤醒、一次性 fired 重新登记、终态注销、端口不可用降级，以及 daemon/wake RPC 的认证、合同校验与 wakeup/rtc-fired 审计。"
+        },
+        {
+          "kind": "manual_review",
+          "path": "docs/evidence/windows-l1-scheduler-smoke-2026-09-04.md",
+          "recorded_at": "2026-09-04",
+          "summary": "本机真实 schtasks.exe 创建任务返回 0、查询状态 Ready，随后删除并确认再次查询返回 1；同时验证 Windows 要求 yyyy/mm/dd 日期格式。"
+        }
+      ],
+      "notes": "L2/L3 未部署：strict_deadline=notify_only/notify_and_wake 的对应能力如实记 wakeup/degraded，不假装 strict。写前上传最小字段与 scoped token（仅 notify+WoL）在 L2/L3 部署时补 conformance 场景后收口。",
+      "debt_policy": {
+        "reason": "L2（云侧定时器）与 L3（常在线中继）是外部基础设施，超出单机参考实现范围（DESIGN §10、§16）。",
+        "owner": "protocol-maintainer",
+        "review_by": "2026-12-01",
+        "reentry_trigger": "实现 L2/L3 部署或第三方适配器 SDK 时重审",
+        "non_blocking": true
+      }
+    },
+    {
+      "id": "mcp-server-and-skill",
+      "statement": "MCP server 薄层（DESIGN §11.1、§17）+ §17 longtask-contract skill：任何 MCP 兼容的 agent harness 可通过 stdio JSON-RPC 2.0 发现并调用长任务协议。当前暴露 34 个面向 AI 任务流的工具（18 个 lhgp_ 规范别名 + 16 个 longtask_ 遗留别名，含 lhgp_request_verification 用户触发验收与 lhgp_doctor 只读预检），不暴露 RPC 方法——工具是 AI 任务流语义不是 RPC 隧道。skill 教模型怎么起草合同（objective 写验收不是方法、acceptance.checks 逐条可独立核对、workload_initial_hours 如实填决定紧迫度）。stdio 输出强制 ASCII（ensure_ascii=True）避免 Windows pipe 编码转换破坏非 ASCII 字节；协议错误码透传（StrEnum 值），JSON-RPC 标准错误码用于客户端层）。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/longtask/mcp_server.py",
+        "skills/longtask-contract/SKILL.md",
+        "skills/longtask-contract/MANIFEST.json",
+        "tests/integration/test_mcp_server.py",
+        "tests/conformance/test_lhgp_tool_namespace.py",
+        "docs/evidence/P6-fresh-machine-smoke-2026-09-05.md",
+        "README.zh-CN.md"
+      ],
+      "evidence": [
+        {
+          "kind": "integration_real_store",
+          "path": "tests/integration/test_mcp_server.py",
+          "recorded_at": "2026-09-01",
+          "summary": "stdio 集成场景覆盖 discover（initialize + tools.list）、health、立合同→批准→查询→执行者认领四步走通、未知工具/缺必填回 JSON-RPC error；health.tool_count 与 tools/list 实际条目数严格一致，MCP client_id 不可冒充用户，enabled_only/include_payload/workload_initial_hours/acceptance_checks 等参数对错误类型 fail-closed。真实 spawn longtask-mcp 子进程 + 真实 SQLite + 真实 stdio JSON-RPC。"
+        },
+        {
+          "kind": "integration_real_store",
+          "path": "tests/conformance/test_lhgp_tool_namespace.py",
+          "recorded_at": "2026-09-04",
+          "summary": "5 个一致性场景钉住规范命名空间的暴露完整性：lhgp_get_contract / lhgp_list_contracts 可被发现；规范别名与旧工具复用同一处理链（防语义分叉）；只用 lhgp_* 工具完成立合同→读合同→列出合同；按状态过滤列出；结构性守卫确保合同读取/列出能力不再退回「只有旧命名暴露」。守卫已反向验证：移除别名后 4 项断言全部转红，非恒真测试。修复前只见 lhgp_* 工具集的 AI 无法读取或列出合同。"
+        },
+        {
+          "kind": "manual_review",
+          "path": "docs/evidence/P6-fresh-machine-smoke-2026-09-05.md",
+          "recorded_at": "2026-09-05",
+          "summary": "当前提交重新构建并在全新 CPython 3.13 隔离环境安装 wheel；canonical/legacy CLI、空目录 doctor 和 lhgp-mcp tools/list 均成功，响应包含双命名空间及审计/控制扩展。"
+        }
+      ],
+      "notes": "各 MCP 客户端的 MCP server 注册不在本协议范围——每个 MCP 客户端（Claude Desktop 等）需独立配置 longtask-mcp 路径。stdin/stdout pipe 在 Windows 上透明用系统编码（cp936）转换 utf-8——强制 ensure_ascii=True 让编码无关；模型侧按 UTF-8 解析 JSON 字符串 \\u 转义即可。"
+    },
+    {
+      "id": "ephemeral-context-and-verifier",
+      "statement": "临时上下文（DESIGN §4.1）+ 交叉核对 verifier（DESIGN §5.2）：active.md 快照 + scratch.md 骨架由契约 context 字段驱动，容量合同 fail-closed 拒绝启动（context/capacity-refused）；task_prompt 自动注入交接摘要（修复再派 attempt 缺验收失败上下文的缺口）。执行者 succeeded 后由 AttemptRunner._dispatch_verifier 派生独立 verifier attempt（role=VERIFIER，候选必须 ≠ 执行者）；daemon tick 末钩子 _judge_verifier_outcomes 按 verifier 终态事件裁决：succeeded→合同 complete（actor=verifier），failed→退回 active。无独立候选如实记 ESCALATION_HANDED_TO_USER，不静默。验收证据双通道（SPEC §12.4）：会话型 harness 走 attempt/write-back RPC；一次性 CLI harness 在 stdout 末尾写 lhgp-verdict 判定块，收尾时与协议确定性评估合成——确定性 pass/fail 优先不被模型覆盖（防橡皮图章，冲突记 model_outcome 供审计），协议 undetermined 由模型显式 pass/fail 填补，无证据 fail-closed 不猜。 用户触发验收（SPEC §12.4 contract/request-verification）：Principal 可在任意非终态合同直接请求验收（不派 executor 只派 verifier）——blocked(need-user) 自动回 active 后由 daemon tick 消费请求事件派生独立 verifier（requested_by=user 落事件）；终态拒接、verifier 进行中拒接、验证预算耗尽如实拒绝并说明升级路径。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/longtask/persistence/context.py",
+        "src/lhgp/contracts/continuity.py",
+        "src/longtask/cli/runner.py",
+        "src/lhgp/acceptance/verdict.py",
+        "src/longtask/cli/daemon.py",
+        "tests/unit/test_context.py",
+        "tests/unit/test_verdict.py",
+        "tests/integration/test_verifier.py",
+        "tests/integration/test_verifier_verdict.py"
+      ],
+      "evidence": [
+        {
+          "kind": "focused_test",
+          "path": "tests/unit/test_context.py",
+          "recorded_at": "2026-09-01",
+          "summary": "10 个 unit 场景：policy 解析（默认值/合同 overrides/形状不对回落）、context 数值限制拒绝布尔值、active.md 物化（含交接与最近 attempt 终态）、scratch.md 初始化、容量超限 fail-closed 记 capacity-refused、交接附言进任务文本（修复再派 attempt 缺上下文缺口）、probe 路径不物化快照（§10 时序）。"
+        },
+        {
+          "kind": "focused_test",
+          "path": "tests/unit/test_contract_schema.py",
+          "recorded_at": "2026-09-05",
+          "summary": "continuity 数值字段拒绝布尔值，避免恢复窗口与上下文容量被错误解析为 1。"
+        },
+        {
+          "kind": "integration_real_store",
+          "path": "tests/integration/test_verifier.py",
+          "recorded_at": "2026-09-01",
+          "summary": "4 个集成场景：两个 fake 执行者时按 cost+id 排序派生独立 verifier（exec-a → exec-b，role=verifier）；单候选池记 ESCALATION_HANDED_TO_USER（不静默）；verifier succeeded → 合同 complete（事件 contract/completed 带 verifier 证据）；verifier failed → 合同退回 active（事件 contract/blocked）。"
+        },
+        {
+          "kind": "focused_test",
+          "path": "tests/unit/test_verdict.py",
+          "recorded_at": "2026-09-04",
+          "summary": "14 个 unit 场景钉住判定块解析与裁决合成：合法块解析（verdict/checks/outcome 校验）、缺失/空 stdout/非法 JSON/非法 verdict 值 → None（fail-closed 不猜）、非法 outcome 条目跳过、空 checks 拒收、多块取最后；合成规则：确定性 pass/fail 优先，协议 undetermined 由模型显式 pass/fail 填补，双方均无则 undetermined。"
+        },
+        {
+          "kind": "integration_real_store",
+          "path": "tests/integration/test_verifier_verdict.py",
+          "recorded_at": "2026-09-04",
+          "summary": "4 个集成场景走通端到端裁决链（fake verifier stdout 带判定块 → runner 收尾合成 → tick 裁决）：模型 pass 填补 undetermined 命令 check → verifier succeeded → 合同 complete；模型 fail → verifier failed → 合同退回 active（repair）；无判定块 → 确定性 file check 仍评估（pass）但 model_verdict=None；协议确定性 fail（文件不存在）→ 模型 pass 不覆盖 → 合同退回 active，冲突证据可审计。"
+        },
+        {
+          "kind": "integration_real_store",
+          "path": "tests/integration/test_request_verification.py",
+          "recorded_at": "2026-09-04",
+          "summary": "6 个集成场景：blocked→请求→回 active + verification/requested 落库；active 态请求不产生多余 resume；终态拒接；verifier 进行中拒接；验证预算 1/1 耗尽如实拒绝并说明升级路径；daemon 消费链（用户请求事件 → 独立 verifier 派生 exec-b≠exec-a → verification/started 落库；重复消费幂等不派第二个）。——真实运行验证（细节见仓库内部记录）发现 2 的修复验证。"
+        }
+      ]
+    },
+    {
+      "id": "executor-session-rpc",
+      "statement": "执行者侧 RPC（DESIGN §11.2、§7、§14.1）：被拉起的会话对协议「有手有嘴」——attempt/status 读本 attempt 事件史与租约代次；lease/renew 持代次续心跳（非持有人/已换代 LEASE_FENCED）；attempt/write-back 三元组 fencing 写回（旧代次 LEASE_FENCED 事件不落库，§14.1），request_id 幂等（重试不重复落事件，§11.3），词汇表内事件（context/scratch-updated + attempt/succeeded|failed）。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/longtask/rpc/executor_api.py",
+        "src/longtask/rpc/handlers.py",
+        "src/longtask/rpc/methods.py",
+        "tests/integration/test_executor_session_rpc.py"
+      ],
+      "evidence": [
+        {
+          "kind": "integration_real_store",
+          "path": "tests/integration/test_executor_session_rpc.py",
+          "recorded_at": "2026-09-01",
+          "summary": "12 个集成场景：status 返回事件史与租约（UNKNOWN_CONTRACT 校验）；renew 持有者续约心跳 + 非持有人 fenced + timeout_seconds 严格整数校验（拒绝 bool）；write-back 进度+终态落库 + 旧代次 fenced 不落库 + request_id 幂等（重试同 event_ids）+ write_generation 严格整数校验（拒绝 bool）与非法 attempt_state 校验。"
+        }
+      ]
+    },
+    {
+      "id": "cross-attempt-progress-context",
+      "statement": "执行者通过 attempt/write-back 提交的 context/scratch-updated 进度，会在下一 attempt 的 active.md 快照中以 untrusted progress data 形式保留，支持跨会话恢复且不把模型文本升级为系统指令。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/longtask/persistence/context.py",
+        "src/longtask/rpc/executor_api.py",
+        "tests/unit/test_context.py"
+      ],
+      "evidence": [
+        {
+          "kind": "integration_real_store",
+          "path": "tests/unit/test_context.py",
+          "recorded_at": "2026-09-05",
+          "summary": "scratch-updated 事件被编译进后续 active.md，并明确带 untrusted 标记。"
+        }
+      ]
+    },
+    {
+      "id": "handover-untrusted-prompt-boundary",
+      "statement": "上一 attempt 的 handover 文本在重新派发时明确标为不可信交接数据，仅作参考，不升级为当前会话指令；该边界与 active.md 中的 progress data 标记一致。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/longtask/persistence/context.py",
+        "tests/unit/test_context.py"
+      ],
+      "evidence": [
+        {
+          "kind": "integration_real_store",
+          "path": "tests/unit/test_context.py",
+          "recorded_at": "2026-09-05",
+          "summary": "handover_prompt_addendum 与 build_attempt_input 回归断言要求交接内容带不可信标记。"
+        }
+      ]
+    },
+    {
+      "id": "contract-deadline-snapshot-visibility",
+      "statement": "contract/get 与 contract/list 直接返回合同最新 deadline 风险快照，使模型无需重放全量事件即可获得可解释的 p50/p90、slack、risk 与 next-decision 事实。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/longtask/rpc/handlers/contract.py",
+        "src/longtask/mcp_server.py",
+        "src/lhgp/persistence/events_query.py",
+        "src/longtask/persistence/schema.py",
+        "tests/integration/test_rpc_lifecycle.py"
+      ],
+      "evidence": [
+        {
+          "kind": "integration_real_store",
+          "path": "tests/integration/test_rpc_lifecycle.py",
+          "recorded_at": "2026-09-05",
+          "summary": "contract/get 与 contract/list 在真实 SQLite 合同事件流中返回最新 forecast/updated 快照，且由数据库侧按合同隔离查询，不受历史长度影响。"
+        }
+      ]
+    },
+    {
+      "id": "contract-list-resource-bound",
+      "statement": "contract/list 的 RPC 与 MCP 边界统一限制 page size 为 1–200，避免模型请求异常大页面拖垮 daemon 或上下文。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/longtask/rpc/handlers/contract.py",
+        "src/longtask/mcp_server.py",
+        "tests/integration/test_rpc_lifecycle.py"
+      ],
+      "evidence": [
+        {
+          "kind": "integration_real_store",
+          "path": "tests/integration/test_rpc_lifecycle.py",
+          "recorded_at": "2026-09-05",
+          "summary": "真实 RPC 集成测试验证 contract/list 对非正和超过 200 的 limit 返回 VALIDATION_FAILED；MCP schema 同步声明 minimum/maximum。"
+        }
+      ]
+    },
+    {
+      "id": "mcp-idempotency-key-discoverability",
+      "statement": "所有有副作用的 MCP 工具 schema 显式暴露 request_id，并指导模型在网络/进程重试时复用同一 ID，以保留 RPC 层 request_id 幂等语义；同一 request_id 携带不同合同草案时明确拒绝，避免静默接受参数漂移。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/longtask/mcp_server.py",
+        "src/longtask/persistence/store.py",
+        "skills/long-horizon-goals/SKILL.md",
+        "tests/integration/test_mcp_server.py"
+      ],
+      "evidence": [
+        {
+          "kind": "integration_real_store",
+          "path": "tests/integration/test_mcp_server.py",
+          "recorded_at": "2026-09-05",
+          "summary": "MCP 工具发现/元数据测试覆盖双命名空间；有副作用工具 schema 提供 request_id，默认稳定键穿过 save_contract 幂等重放，重复 prepare 不创建重复合同；存储层对同键不同草案抛 IdempotencyMismatchError 且不追加事件，skill 明确重试复用规则。"
+        }
+      ]
+    },
+    {
+      "id": "forecast-level-honesty",
+      "statement": "仅基于本地历史 attempt 时长的 Deadline 预测明确标记为 historical，并在扣除排队、启动、验收和安全边际后用真实 succeeded 样本的经验 CDF 计算 p_finish；快照同时暴露 sample_count 与 p_finish_basis。失败、取消或孤立运行不参与交付时长基线，不得伪装成按时完成证据。只有经过独立回放校准与置信区间验证才可标记 calibrated。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/lhgp/forecast/model.py",
+        "src/longtask/cli/tick.py",
+        "docs/LHGP-SPEC.md",
+        "skills/long-horizon-goals/SKILL.md",
+        "tests/unit/test_p4_forecast.py",
+        "tests/integration/test_p4_next_decision.py"
+      ],
+      "evidence": [
+        {
+          "kind": "integration_real_store",
+          "path": "tests/unit/test_p4_forecast.py",
+          "recorded_at": "2026-09-05",
+          "summary": "完整 forecast 输入与 3 个样本时，快照 confidence 为 high 但 forecast_level 明确为 historical；p_finish 按扣除固定交付开销后的 succeeded 样本经验 CDF 计算，并暴露 sample_count/p_finish_basis。run_daemon_tick 端到端测试验证失败样本不会污染 p50/p90 基线，且 p90 采用 nearest-rank 保守取值，低样本仍为 coarse。"
+        }
+      ]
+    },
+    {
+      "id": "attempt-context-deadline-visibility",
+      "statement": "daemon 为新 attempt 编译 active.md 时会注入当前合同的协议生成 deadline_snapshot，并明确只读、仅供风险判断而非按时完成保证，使跨会话模型获得与 MCP 查询一致的风险事实。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/longtask/persistence/context.py",
+        "tests/unit/test_context.py"
+      ],
+      "evidence": [
+        {
+          "kind": "integration_real_store",
+          "path": "tests/unit/test_context.py",
+          "recorded_at": "2026-09-05",
+          "summary": "真实 SQLite 上的 active.md 编译测试验证风险快照、只读语义和非保证声明均进入新 attempt 上下文。"
+        }
+      ]
+    },
+    {
+      "id": "real-multi-executor-handoff",
+      "statement": "合同授权池内的不同 executor 可以跨 attempt 串行接力：首个真实 subprocess 执行器失败后被停用，下一轮由另一个授权 executor 修复，独立 verifier 验收后合同完成。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/longtask/adapters/registry.py",
+        "src/longtask/cli/tick.py",
+        "src/longtask/cli/runner.py",
+        "tests/integration/test_real_subprocess_repair_loop.py"
+      ],
+      "evidence": [
+        {
+          "kind": "integration_real_store",
+          "path": "tests/integration/test_real_subprocess_repair_loop.py",
+          "recorded_at": "2026-09-05",
+          "summary": "真实 subprocess 场景明确授权 exec-real/exec-repair 为 executor、ver-real 为 verifier；第一轮失败后停用 exec-real，第二轮实际选择 exec-repair 修复并由 ver-real 独立验收完成。"
+        }
+      ]
+    },
+    {
+      "id": "deadline-bounded-command-checks",
+      "statement": "typed command-exit-zero 验收不会无限阻塞 daemon：命令超时受 check 参数、60 秒硬上限和合同剩余 Deadline 三重约束，超时以 undetermined 证据交给 verifier/仲裁。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/lhgp/acceptance/evaluator.py",
+        "src/longtask/cli/runner.py",
+        "tests/unit/test_p5_acceptance.py",
+        "docs/LHGP-SPEC.md"
+      ],
+      "evidence": [
+        {
+          "kind": "integration_real_store",
+          "path": "tests/unit/test_p5_acceptance.py",
+          "recorded_at": "2026-09-05",
+          "summary": "慢 command-exit-zero 在短超时下返回 undetermined，未等待命令自然结束；布尔值、NaN 与 Infinity timeout 会安全回落到默认 60 秒，不污染 Deadline 计算。"
+        },
+        {
+          "kind": "source_static",
+          "path": "src/longtask/cli/runner.py",
+          "recorded_at": "2026-09-05",
+          "summary": "verifier 收尾把合同剩余 Deadline 作为 evaluate_check 的运行时上限。"
+        }
+      ]
+    },
+    {
+      "id": "mcp-mutation-annotations-complete",
+      "statement": "所有暴露给模型的 MCP 持久状态变更工具均声明 destructiveHint=true，所有只读工具声明 readOnlyHint=true，避免宿主把合同或 Goal 变更误判为无副作用调用。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/longtask/mcp_server.py",
+        "tests/integration/test_mcp_server.py"
+      ],
+      "evidence": [
+        {
+          "kind": "integration_real_store",
+          "path": "tests/integration/test_mcp_server.py",
+          "recorded_at": "2026-09-05",
+          "summary": "MCP tools/list 集成测试逐项核对所有当前 state-changing 工具与只读工具的 annotations 闭集。"
+        }
+      ]
+    },
+    {
+      "id": "control-rpc-preempts-idle-daemon",
+      "statement": "会改变调度语义的本机 RPC（批准、修订、暂停/恢复/取消、仲裁、验收请求、控制和执行者写回）会唤醒正在自适应休眠的 daemon，使用户控制不必等待下一个自然 Deadline 决策点。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/longtask/cli/daemon_loop.py",
+        "tests/integration/test_daemon_lifecycle.py",
+        "tests/integration/test_control_interrupt.py"
+      ],
+      "evidence": [
+        {
+          "kind": "source_static",
+          "path": "src/longtask/cli/daemon_loop.py",
+          "recorded_at": "2026-09-05",
+          "summary": "RPC dispatch 对控制面 mutation 使用 wake_event.set()；daemon 主循环以 wake_event.wait(timeout) 代替固定阻塞 sleep，控制请求可立即打断休眠。"
+        },
+        {
+          "kind": "integration_real_store",
+          "path": "tests/integration/test_control_interrupt.py",
+          "recorded_at": "2026-09-05",
+          "summary": "控制请求写盘与 daemon 消费、取消、释放租约的集成场景通过。"
+        }
+      ]
+    },
+    {
+      "id": "terminal-contract-cancels-attempts",
+      "statement": "合同进入 cancelled 或 expired 后，daemon 在下一轮主动终止本进程持有的外部 attempt，记录取消事件并释放租约，防止已终止承诺继续消耗资源或迟到写回。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/longtask/cli/daemon_loop.py",
+        "src/longtask/cli/runner.py",
+        "tests/integration/test_control_interrupt.py"
+      ],
+      "evidence": [
+        {
+          "kind": "integration_real_store",
+          "path": "tests/integration/test_control_interrupt.py",
+          "recorded_at": "2026-09-05",
+          "summary": "终态合同消费场景验证 running attempt 被取消、租约释放、单条 daemon 取消事件落库；既有 control/interrupt 幂等场景继续通过。"
+        }
+      ]
+    },
+    {
+      "id": "daemon-process-restart-reattach",
+      "statement": "真实 daemon 进程 stop/start 边界保持外部 subprocess 连续性：第二个 daemon 通过持久句柄 reattach 原 attempt，租约仍由原 attempt 持有，且不会重复派发 executor。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/longtask/cli/daemon_loop.py",
+        "src/longtask/promoter/reconcile.py",
+        "tests/integration/test_daemon_process_restart.py"
+      ],
+      "evidence": [
+        {
+          "kind": "integration_real_store",
+          "path": "tests/integration/test_daemon_process_restart.py",
+          "recorded_at": "2026-09-05",
+          "summary": "真实 start/stop CLI 启动两个独立 daemon；外部 subprocess 在 daemon 停止后继续运行，第二个 daemon 产生 reconcile/reattached 并接管 Runner，executor attempt 数保持 1、租约 holder 未变，随后 cancel 合同可终止该重绑进程。"
+        }
+      ]
+    },
+    {
+      "id": "real-subprocess-repair-loop",
+      "statement": "真实 SubprocessAdapter 进程级闭环：executor 首次产出失败后由独立 verifier 判失败，repair 再派新的 executor 与 verifier，最终仅在验收证据通过时将合同置为 complete；verifier 成功不会递归派生 verifier。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/longtask/cli/runner.py",
+        "src/longtask/cli/dispatch.py",
+        "tests/integration/test_real_subprocess_repair_loop.py"
+      ],
+      "evidence": [
+        {
+          "kind": "integration_real_store",
+          "path": "tests/integration/test_real_subprocess_repair_loop.py",
+          "recorded_at": "2026-09-05",
+          "summary": "真实 sys.executable 子进程执行器首次写入 bad、verifier 真实判失败；第二轮执行器写入 good、独立 verifier 判通过，合同最终 complete 且 verifier attempt 恰为两条。"
+        },
+        {
+          "kind": "source_static",
+          "path": "src/longtask/cli/runner.py",
+          "recorded_at": "2026-09-05",
+          "summary": "_finish_attempt 仅在 role=executor 且 succeeded 时派生 verifier；verifier 成功不再递归派生。verifier ID 同秒冲突时按 attempts 表补序号。"
+        },
+        {
+          "kind": "source_static",
+          "path": "src/longtask/cli/dispatch.py",
+          "recorded_at": "2026-09-05",
+          "summary": "executor attempt ID 同秒冲突时按 attempts 表补序号后再占租约、写入 started 事件，避免重复 attempt 覆盖。"
+        }
+      ]
+    },
+    {
+      "id": "local-rpc-transport",
+      "statement": "daemon 与 rpc-call 之间使用本机认证传输：Unix domain socket 优先；Windows 无 AF_UNIX 时仅回环 TCP，并保留 daemon.token 握手认证。活动 endpoint 不得被第二个 daemon 覆盖。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/lhgp/rpc/transport.py",
+        "src/lhgp/rpc/client.py",
+        "tests/unit/test_rpc_transport.py"
+      ],
+      "evidence": [
+        {
+          "kind": "focused_test",
+          "path": "tests/unit/test_rpc_transport.py",
+          "recorded_at": "2026-09-04",
+          "summary": "认证握手、Unix round-trip（平台支持时）、Windows loopback fallback round-trip（平台支持时）以及活动 endpoint 不被第二个 listener 覆盖的回归场景。"
+        },
+        {
+          "kind": "source_static",
+          "path": "src/lhgp/rpc/transport.py",
+          "recorded_at": "2026-09-04",
+          "summary": "fallback 固定绑定 127.0.0.1，metadata 原子写入；启动前探测活动端口，避免覆盖存活 daemon。"
+        }
+      ]
+    },
+    {
+      "id": "notification-outbox",
+      "statement": "通知 outbox 持久化并具备幂等去重、租约领取、失败重试、安静时间与发送状态审计。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/longtask/persistence/notifications.py",
+        "tests/unit/test_notifications.py"
+      ],
+      "evidence": [
+        {
+          "kind": "focused_test",
+          "path": "tests/unit/test_notifications.py",
+          "recorded_at": "2026-09-04",
+          "summary": "覆盖重复入队幂等、claim/lease、发送成功、失败退避重试、安静时间和状态转移路由。"
+        }
+      ]
+    },
+    {
+      "id": "notification-routing",
+      "statement": "合同状态与风险事件按 attention 配置路由到 need_user、satisfied、missed、risk_red 等通知类型，并通过 outbox 进入可审计投递队列。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/longtask/persistence/notifications.py",
+        "tests/unit/test_notifications.py",
+        "tests/integration/test_mcp_server.py"
+      ],
+      "evidence": [
+        {
+          "kind": "focused_test",
+          "path": "tests/unit/test_notifications.py",
+          "recorded_at": "2026-09-04",
+          "summary": "验证状态转移根据 attention 产生通知事件，且通知查询支持 goal/status 过滤与默认敏感 payload 脱敏。"
+        },
+        {
+          "kind": "integration_real_store",
+          "path": "tests/integration/test_mcp_server.py",
+          "recorded_at": "2026-09-04",
+          "summary": "MCP notifications 工具暴露、参数校验与过滤行为通过真实存储集成测试。"
+        }
+      ]
+    },
+    {
+      "id": "daemon-lifecycle-and-attempt-runner",
+      "statement": "longtaskd 常驻闭环（DESIGN §3.3/§3.4/§5.1/§15.2）：start/stop 真实分离进程与优雅退出；AttemptRunner 拉起真实子进程、存活续约、终态回收（attempt/succeeded|failed + 租约释放）、换代记 stale；死租约 redispatch 走回收路径；预算按 attempt/started 事件计数触顶转 blocked(need-user)",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/longtask/cli/daemon.py",
+        "src/longtask/cli/runner.py",
+        "tests/integration/test_daemon_lifecycle.py",
+        "tests/integration/test_attempt_runner.py"
+      ],
+      "evidence": [
+        {
+          "kind": "integration_real_store",
+          "path": "tests/integration/test_daemon_lifecycle.py",
+          "recorded_at": "2026-09-01",
+          "summary": "真实分离子进程：start -> running -> stop 优雅退出（未强杀）-> pid/token/stop 标记清理；已在运行拒绝二次 start；陈旧 pid 文件不阻塞新 start。"
+        },
+        {
+          "kind": "integration_real_store",
+          "path": "tests/integration/test_attempt_runner.py",
+          "recorded_at": "2026-09-01",
+          "summary": "真实子进程四场景：成功路径产出落工作区 + attempt/succeeded + 租约释放；spawn OSError -> attempt/failed + 释放 + 可再派；死租约 redispatch 走 lease/reclaimed 代次 +1；预算事件计数 1/1 触顶转 blocked(need-user) 不再派工。"
+        }
+      ]
+    },
+    {
+      "id": "goal-stage-acceptance-binding",
+      "statement": "goal/prepare 指定 stage_id 时，运行时强制检查 Goal 存在、阶段存在于 plan、阶段未被其他合同占用、合同 acceptance checks 覆盖阶段声明的全部 acceptance_checks，并在通过后把 contract_id 写回阶段（SPEC §4.3）。typed check（SPEC §12.1）与遗留字符串 check 在规范化身份（typed 折叠为 kind:target）上可比；typed check 可持久化并原样读回为 CheckSpec。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/longtask/rpc/handlers/goal.py",
+        "src/longtask/persistence/store.py",
+        "tests/conformance/test_goal_stage_binding.py"
+      ],
+      "evidence": [
+        {
+          "kind": "integration_real_store",
+          "path": "tests/conformance/test_goal_stage_binding.py",
+          "recorded_at": "2026-09-03",
+          "summary": "10 个一致性场景覆盖全部分支：无要求通过；遗留文本一致通过；文本不一致/部分覆盖拒接并列出缺失项；typed check 满足 kind:target（回归旧实现 TypeError）；args 不影响身份；阶段不在 plan 拒接；已被其他合同占用拒接；goal 不存在拒接；typed check 经真实 SQLite 持久化并原样读回为 CheckSpec。"
+        },
+        {
+          "kind": "source_static",
+          "path": "src/longtask/persistence/store.py",
+          "recorded_at": "2026-09-03",
+          "summary": "新增 _serialize_acceptance_checks / _parse_acceptance_checks：写入时 CheckSpec 经 to_dict() 投影（旧实现直接 json.dumps CheckSpec 导致 typed check 合同无法落库），读回时经 parse_check 重建为 CheckSpec，保证往返一致。"
+        },
+        {
+          "kind": "manual_review",
+          "path": "src/lhgp/acceptance/checks.py",
+          "recorded_at": "2026-09-03",
+          "summary": "新增 check_identity(check)：typed check 折叠为 kind:target，遗留文本按原文，使「覆盖判定」在规范化身份而非对象身份上进行；绑定逻辑据此给出可处理的 VALIDATION_FAILED（载明缺失项），而非 500 式 TypeError。"
+        },
+        {
+          "kind": "source_static",
+          "path": "docs/LHGP-SPEC.md",
+          "recorded_at": "2026-09-03",
+          "summary": "SPEC §4.3 新增「Goal 计划与阶段」模型与「阶段绑定不变式」，将代码已实现的 stage acceptance 绑定落到语义权威，并明确检查身份比较 MUST 在规范化身份上进行。"
+        },
+        {
+          "kind": "integration_real_store",
+          "path": "tests/integration/test_goal_auto_advance.py",
+          "recorded_at": "2026-09-04",
+          "summary": "5 个集成场景补齐完整闭环的「最后一公里」证据（此前仅覆盖 verifier→合同 complete，从未覆盖合同→阶段推进）：绑定合同的 verifier 通过 → 阶段完成且 current 指向下一阶段；最后阶段完成 → goal satisfied；verifier 失败 → 阶段不推进；推进后 goal/next 指向下一阶段 create_contract；推进事件 actor=verifier 落库可审计。"
+        }
+      ]
+    },
+    {
+      "id": "goal-auto-advance-from-verified-contracts",
+      "statement": "完整闭环成立（SPEC §4.3）：Goal stage → 阶段 acceptance 要求 → goal/prepare 绑定（合同覆盖全部要求并写回 contract_id）→ 合同执行与独立 verifier → verifier passed → daemon tick 钩子自动推进阶段（tick._advance_goal_after_verified_contract → advance_goal，actor=verifier）；最后阶段完成时 goal 状态 satisfied。阶段完成只能由 verifier 证据推导，执行者声明或 verifier 失败均不推进。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/longtask/cli/tick.py",
+        "src/longtask/persistence/store.py",
+        "src/lhgp/goals/progress.py",
+        "tests/integration/test_goal_auto_advance.py"
+      ],
+      "evidence": [
+        {
+          "kind": "integration_real_store",
+          "path": "tests/integration/test_goal_auto_advance.py",
+          "recorded_at": "2026-09-04",
+          "summary": "5 个真实 SQLite 集成场景驱动 run_daemon_tick 全链路：verifier succeeded → 阶段推进（completed=[stage-1]、current=stage-2、status=active）；单阶段计划完成 → satisfied 且 current=None；verifier failed → 合同退回 active 且阶段零推进；推进后 goal_next_action 指向 stage-2 create_contract；goal/amendment 事件带 actor=verifier 可审计。"
+        },
+        {
+          "kind": "source_static",
+          "path": "src/longtask/cli/tick.py",
+          "recorded_at": "2026-09-04",
+          "summary": "_judge_verifier_outcomes 在 verifier succeeded 裁决合同 complete 后调用 _advance_goal_after_verified_contract：定位 plan 中 contract_id 匹配的阶段，校验其为当前阶段后经 advance_goal 走 revision-CAS 推进；推进失败不掩盖 verifier 证据（下次读取/推进可安全重试）。"
+        }
+      ]
+    },
+    {
+      "id": "untrusted-output-sanitized-at-the-single-ingest-boundary",
+      "statement": "不可信外部文本保证（DESIGN §14.2）：执行器 stdout/stderr 进入证据、投影与下一个执行者的提示词之前，必须经过结构性清洗——剥离 CSI/OSC/DCS/SOS/PM/APC 与两字节转义、C0/C1/DEL、以及除 ZWNJ/ZWJ 外的 Unicode Cf；保留 \t/\n/\r；清洗幂等。清洗只做结构性剥离，不做语义判断，也不改写措辞。落点是适配器唯一的输出出口，不是各消费方各自清洗。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/lhgp/untrusted/sanitize.py",
+        "src/longtask/adapters/subprocess_adapter.py",
+        "tests/unit/test_untrusted_sanitize.py"
+      ],
+      "evidence": [
+        {
+          "kind": "focused_test",
+          "path": "tests/unit/test_untrusted_sanitize.py",
+          "recorded_at": "2026-09-10",
+          "summary": "13 条：CSI 着色、OSC（BEL 与 ST 两种收尾）、DCS 字符串序列、双向覆写符 U+202E、C1、DEL、输出末尾截断的转义序列、制表/换行/回车保留、ZWNJ/ZWJ 保留、幂等、空输入；并锁定实战动机——ANSI 序列插进 lhgp-verdict 围栏时，清洗前 parse_verdict_block 返回 None（有效证据退化成无证据），清洗后同一段输出可解析。"
+        },
+        {
+          "kind": "source_static",
+          "path": "src/longtask/adapters/subprocess_adapter.py",
+          "recorded_at": "2026-09-10",
+          "summary": "_MonitoredProcess.stdout_text()/stderr_text() 在 decode 之后调用 sanitize_terminal_text；这是适配器唯一的输出出口，collect 的两个分支（终态事件已到 / 等进程退出）都从它取数。"
+        }
+      ]
+    },
+    {
+      "id": "untrusted-injection-fence-is-constructed-not-promised",
+      "statement": "不可信外部文本保证（DESIGN §14.2）：executor 写的 handover 内容进入提示词时（续跑 brief 与上下文快照两处），必须被可验证围栏包住。围栏 token 由正文摘要派生（LHGP-UNTRUSTED-<sha256 前 12 位>），正文里任何形似围栏的前缀被改写成不可能匹配的形态，因此「围栏内 = 全部正文」由构造保证；label 不合规 fail-closed 拒绝。声明明确这是提示词层防线而非安全边界——它不阻止模型被说服，只保证模型不会把执行者写的字当成协议或用户的话。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/lhgp/untrusted/boundary.py",
+        "src/lhgp/persistence/resume.py",
+        "src/longtask/persistence/context.py",
+        "tests/unit/test_untrusted_boundary.py"
+      ],
+      "evidence": [
+        {
+          "kind": "focused_test",
+          "path": "tests/unit/test_untrusted_boundary.py",
+          "recorded_at": "2026-09-10",
+          "summary": "11 条：开闭围栏配对、表头声明 NOT INSTRUCTIONS、正文自带的围栏前缀被中和（块里只留一行真正的闭合围栏）、敌意正文作为数据原样保留、摘要随正文变化、同样正文得同样围栏、正文先清洗再围栏、含换行或大写的 label 被拒、terse 与 full 围栏相同而字节更少。"
+        },
+        {
+          "kind": "source_static",
+          "path": "src/lhgp/persistence/resume.py",
+          "recorded_at": "2026-09-10",
+          "summary": "build_resume_brief 原先把 handover.md 逐字注入且无标注；现在经 make_untrusted_block(label=last-handover) 包装。同一代码库的 handover_prompt_addendum 早已标「不可信」，此处补上口径一致的另一半。"
+        },
+        {
+          "kind": "source_static",
+          "path": "src/longtask/persistence/context.py",
+          "recorded_at": "2026-09-10",
+          "summary": "上下文快照的交接字段原先以裸 `## 交接（上一 attempt 留下的现场）` 段落出现；现在包进 terse 围栏——快照有 max_bytes 容量合同（超限拒接启动 attempt），故用同一条规则的简版声明。"
+        }
+      ]
+    },
+    {
+      "id": "cancel-terminates-the-process-tree-not-just-the-child",
+      "statement": "取消保证（DESIGN §14.3）：取消 attempt 以整棵进程为单位发起，不只是直接子进程——harness 的 worker 若成孤儿会继续写工作区，形成「已取消却还在改盘」且无事件无报错。POSIX 下 spawn 即 start_new_session 使子进程自成组长，取消走进程组信号；Windows 走 taskkill /T，不带 /F 的失败立即升级 /F（Windows 没有可用的礼貌树终止）。安全前提：仅当 getpgid(pid) == pid 时才 killpg，组号无法确认为该进程自己时拒绝组信号，宁可少杀也不连坐推动者。诚实边界：taskkill 按快照遍历，其后 new 出的曾孙可能被漏掉，不做「保证全灭」声明。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/lhgp/adapters/processes.py",
+        "src/longtask/adapters/subprocess_adapter.py",
+        "tests/unit/test_processes_tree.py",
+        "tests/integration/test_process_tree_termination.py"
+      ],
+      "evidence": [
+        {
+          "kind": "integration_real_store",
+          "path": "tests/integration/test_process_tree_termination.py",
+          "recorded_at": "2026-09-10",
+          "summary": "真起两级进程（父→python 孙），断言孙进程确实消失。判定用「pid + 启动时间」双重比对而非裸 pid（Windows pid 会复用，裸 pid 会把「已死、pid 被接管」误判成活着）；读不到启动时间即判前提不成立而非空过。已做反向验证：改用旧的单进程终止后，父进程已停而孙进程仍存活，确认该测试能抓住这个 bug 而不是跟着实现自圆其说。"
+        },
+        {
+          "kind": "focused_test",
+          "path": "tests/unit/test_processes_tree.py",
+          "recorded_at": "2026-09-10",
+          "summary": "6 条：taskkill argv 的两种形态（含/不含 /F）、非正 pid 拒绝、POSIX 下自己是组长时返回组号、不是组长时返回 None、探测失败时返回 None。后三条锁的是「判错会杀掉推动者自己」这条最不能出的错。"
+        },
+        {
+          "kind": "source_static",
+          "path": "src/longtask/adapters/subprocess_adapter.py",
+          "recorded_at": "2026-09-10",
+          "summary": "cancel() 两条路径都以树为单位：优雅失败或宽限期内未退即升级强杀，且即使直接子进程已退出也照杀（此时残留的正是要清理的孙进程）。spawn() 在 POSIX 传 start_new_session=True，Windows 显式不传以保持既有拉起形态。"
+        }
+      ]
+    },
+    {
+      "id": "mcp-tool-annotation-classification-completeness",
+      "statement": "工具注解失真（DESIGN §14.1 表）：只读/破坏性两个集合是 MCP 工具注解的唯一分类真相源，注解由集合派生且用直接赋值（内联声明覆盖不了它）。每个工具必须恰好属于一个集合——中立注解（两者皆 False）对写持久状态的工具意味着宿主不会请求人工确认，是静默失效。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/longtask/mcp_server.py",
+        "tests/unit/test_mcp_tool_surface.py"
+      ],
+      "evidence": [
+        {
+          "kind": "focused_test",
+          "path": "tests/unit/test_mcp_tool_surface.py",
+          "recorded_at": "2026-09-10",
+          "summary": "TestToolAnnotationDrift 4 条：51 个工具零中立零交集、注解必须等于集合派生值（内联覆盖即红）、集合里不得有已不存在的工具名、写持久状态的工具抽查必须带 destructiveHint。已做反向验证：注入未分类工具、注入内联覆盖、注入幽灵条目三种漂移，三种都让对应断言变红。"
+        },
+        {
+          "kind": "source_static",
+          "path": "src/longtask/mcp_server.py",
+          "recorded_at": "2026-09-10",
+          "summary": "修复前 7 个工具内联写 annotations 且与集合互相覆盖：lhgp_prepare_goal（立合同）、lhgp_propose_plan、lhgp_send_message 被声明为中立（宿主不请求确认），lhgp_resume_attempt 与 _DESTRUCTIVE_TOOLS 自相矛盾（集合条目成死代码），longtask_user_confirm_spec_verdict（CANDIDATE 合同唯一签字出口）谁都没写。现内联声明全删，派生改直接赋值，分类结果 27 只读 + 24 destructive = 51。"
+        }
+      ]
+    },
+    {
+      "id": "identifier-validators-reject-trailing-newline",
+      "statement": "标识符校验的锚点边界：凡以 `^...$` 收尾的校验正则，Python 的 `$` 也匹配尾随换行之前的位置，因此 `re.match(\"^ab$\", \"ab\" + chr(10))` 是匹配的。所有标识符类校验必须用 `\\Z` 或 `fullmatch`，即「自称 fail-closed 的校验器必须真的拒绝尾随换行」。覆盖：不可信围栏 label、resume 路径分量、contract_id（lhgp 与 longtask 两棵树各一份）、scheduler task_id。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/lhgp/untrusted/boundary.py",
+        "src/lhgp/persistence/resume.py",
+        "src/lhgp/rpc/handlers/_common.py",
+        "src/longtask/rpc/handlers/_common.py",
+        "src/longtask/scheduler/wakeup.py",
+        "tests/unit/test_identifier_anchors.py"
+      ],
+      "evidence": [
+        {
+          "kind": "focused_test",
+          "path": "tests/unit/test_identifier_anchors.py",
+          "recorded_at": "2026-09-10",
+          "summary": "把这一类按校验点逐条钉住：label 的尾随 \n 与 \r\n 被拒且正常 label 仍被接受、resume 的 attempt_id/contract_id 尾随换行被拒、contract_id 两棵树各一份都被拒、点段（`.` / `..` / `lh-..-a`）仍被拒、正常 id 仍被接受。"
+        },
+        {
+          "kind": "manual_review",
+          "path": "docs/wiki/playbook/four-layer-review.md",
+          "recorded_at": "2026-09-10",
+          "summary": "反向验证：把 label 正则从 `\\Z` 改回 `$` 后 test_trailing_newline_is_rejected 变红（且失败测试名与预期一致），确认该用例不是装饰。"
+        }
+      ]
+    },
+    {
+      "id": "sanitized-output-is-observable-in-collect",
+      "statement": "不可信外部文本保证的可观察面（DESIGN §14.2）：清洗会改写证据的字节，因此 collect 结果必须与 output_truncated 并列上报 output_sanitized，使审计能区分「执行者的原始输出」与「协议改写过的输出」。旗子必须能取真假两值——恒为 True 的旗子是假信号。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/longtask/adapters/subprocess_adapter.py",
+        "tests/conformance/test_adapter_scenarios.py"
+      ],
+      "evidence": [
+        {
+          "kind": "integration_real_store",
+          "path": "tests/conformance/test_adapter_scenarios.py",
+          "recorded_at": "2026-09-10",
+          "summary": "真子进程场景 3 条：写入 ESC 着色 + U+202E 的载荷后 output_sanitized 为 True 且 stdout 里两者都不存在、正文仍在；干净输出为 False；超预算时 output_truncated 为 True 且保留字节不超预算。载荷用 bytes.fromhex 构造，源码里不留不可见字符。"
+        },
+        {
+          "kind": "manual_review",
+          "path": "src/longtask/adapters/subprocess_adapter.py",
+          "recorded_at": "2026-09-10",
+          "summary": "反向验证两种变异：摘掉 stdout_text 的清洗 → 清洗场景变红；把两个分支的 output_truncated 都写死 False → 截断场景变红（只改一个分支时测试照绿，说明必须改测试实际走的那条分支才算验证）。"
+        }
+      ]
+    },
+    {
+      "id": "mcp-tool-surface-profiles",
+      "statement": "MCP 工具面 profile（DESIGN §11.8）：工具面按调用方角色收窄，是服务端声明而非提示词约定——tools/list 只返回 profile 内工具；tools/call 对 profile 外工具一律拒调（fail-closed，隐藏必须是不可达）；initialize 与 tools/list 应答携带 profile 名。六档：executor(11)/verifier(7)/planner(12)/operator(36)/full(35 正名)/legacy(52 全量)。未设置环境变量 = legacy，既有安装零变化；未知取值启动即退出，不静默回落；角色清单引用不存在的工具名启动即报错。签字门补正名 lhgp_user_confirm_spec_verdict（此前 CANDIDATE→PASSED 的唯一 MCP 入口只有 longtask_* 别名轨）。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/longtask/mcp_profiles.py",
+        "src/longtask/mcp_server.py",
+        "tests/unit/test_tool_profiles.py"
+      ],
+      "evidence": [
+        {
+          "kind": "focused_test",
+          "path": "tests/unit/test_tool_profiles.py",
+          "recorded_at": "2026-09-10",
+          "summary": "17 条：声明一致性（每个 role 工具真实存在、只收正名、executor 无批准权、verifier 无变更面、operator 可达签字门）、行为（tools/list 过滤、越界拒调、未初始化 context 拒服务、initialize 报 profile）、默认不变（未设置/空白 = legacy 全量）、尺寸守护（executor/verifier/planner ≤ 全量一半+6；operator = full 减别名轨）。"
+        },
+        {
+          "kind": "manual_review",
+          "path": "src/longtask/mcp_server.py",
+          "recorded_at": "2026-09-10",
+          "summary": "反向验证四项变异全部命中预期测试名：摘掉越界拒调→test_call_outside_profile_is_refused 红；executor 塞入 approve→test_executor_cannot_see_principal_gates 红；operator 丢签字门→test_operator_can_reach_the_signature_gate 红；未知 profile 静默回落→test_unknown_profile_is_rejected_not_silently_defaulted 红。另做过真子进程端到端：executor profile 下 initialize 应答 profile=executor、tools/list 恰 11 个、硬调 lhgp_approve_goal 返回 -32602 outside profile、界内 lhgp_health 正常。"
+        }
+      ]
+    },
+    {
+      "id": "verdict-source-loss-distinguishable-from-absent",
+      "statement": "SPEC §12.4 通道 2 的截断语义：lhgp-verdict 判定块约定在 stdout 末尾，budget.max_output_bytes 保留头部，因此输出截断发生时判定块必然丢失。此时运行时必须把「判定块随预算截断丢失」记为独立事实（事件 payload 的 verdict_source_loss 字段），不得静默按「verifier 没写」处理——两者下游同为 undetermined/人工仲裁，但责任方与修法不同（部署侧调大预算重跑 vs verifier 未按约定输出）。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/lhgp/acceptance/verdict.py",
+        "src/longtask/cli/runner.py",
+        "tests/unit/test_verdict.py",
+        "tests/conformance/test_adapter_scenarios.py"
+      ],
+      "evidence": [
+        {
+          "kind": "integration_real_store",
+          "path": "tests/conformance/test_adapter_scenarios.py",
+          "recorded_at": "2026-09-10",
+          "summary": "真子进程 3 条：1000 行噪声 + 末尾判定块、预算 4KB → output_truncated=True 且 verdict_from_output 抛 VerdictSourceLossError；无预算 → 正常解析 succeeded；无块无截断 → None 保留原语义。载荷用临时脚本文件构造（-c 多层转义会把字符串字面量撕开，本测试因此踩过坑，改为文件传递）。"
+        },
+        {
+          "kind": "focused_test",
+          "path": "tests/unit/test_verdict.py",
+          "recorded_at": "2026-09-10",
+          "summary": "4 条纯函数面：未截断无块 → None；截断无块 → 抛错；截断但块在截断点前 → 正常返回（块自足）；未截断时与 parse_verdict_block 行为一致。"
+        },
+        {
+          "kind": "manual_review",
+          "path": "src/longtask/cli/runner.py",
+          "recorded_at": "2026-09-10",
+          "summary": "反向验证：把守护条件改为 if False（退回静默 None）后 test_truncated_absent_block_raises_source_loss 变红。修复前先实证了 bug：同一 verifier 脚本无预算时 verdict=True、预算 4KB 时 verdict=False 且 output_truncated=True 无任何下游消费——verifier 跑成功、证据写了、却按协议退化为人工仲裁，用户白等一轮。"
+        }
+      ]
+    },
+    {
+      "id": "attempt-usage-ledger-recorded-on-write-back",
+      "statement": "attempt 消耗台账（SPEC §12.3.1，存储 schema v5）：写回 MAY 携带 usage 自报（input/output tokens 必填非负整数、cache tokens/cost_estimate 可选），形状 fail-closed 校验（负数/错型含 bool/未知键拒收且发生在任何落库之前）；台账落 attempts.usage_json，终态事件 payload 并行携带；stats.usage_totals 跨 attempt 透明合计（无台账不出键，脏数据跳过）。自报是下界语义；同一 attempt 重复写回按最后一次为准；预算强制（budget.max_cost）不在本版本。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/lhgp/persistence/usage.py",
+        "src/longtask/persistence/schema.py",
+        "src/longtask/persistence/store.py",
+        "src/longtask/rpc/executor_api.py",
+        "src/lhgp/persistence/insights.py",
+        "tests/unit/test_attempt_usage.py"
+      ],
+      "evidence": [
+        {
+          "kind": "focused_test",
+          "path": "tests/unit/test_attempt_usage.py",
+          "recorded_at": "2026-09-11",
+          "summary": "21 条：normalize_usage 9 边界全部拒收（含 bool 伪装 int、None 显式语义）、v4 旧库幂等升级后 user_version=5 且可重复 ensure_schema、终态写回 usage 同时落 attempts 行与 attempt/succeeded payload、非法 usage 拒收后 attempt 行无副作用（usage_json 为 NULL 且 state 仍 running）、无 usage 写回向后兼容、stats 跨 attempt 合计与空库无键与脏数据跳过。"
+        },
+        {
+          "kind": "manual_review",
+          "path": "src/longtask/rpc/executor_api.py",
+          "recorded_at": "2026-09-11",
+          "summary": "反向验证两项变异命中预期测试名：RPC 校验替换为透传 dict → test_invalid_usage_is_refused_without_side_effects 红（负数会落库）；insights 聚合摘除 → test_stats_aggregates_usage_across_attempts 红。四层自查：L1 新代码仅边界处 Any（外部 JSON 入口，正当）；L2 normalize_usage/UsageInvalidError 均有生产调用点（executor_api）；L3 bool 伪装 int 显式排除、None 分两义处理（未携带 vs 字段 null）。"
+        }
+      ]
+    },
+    {
+      "id": "quiet-window-zero-dispatch-measured",
+      "statement": "无动作窗口零派工（ROADMAP §六指标的可观察面）：lhgp 的 LLM 调用只发生在 executor/verifier attempt 内部，调度核心是确定性代码。三类安静合同（ACTIVE+活租约、ACTIVE+紧迫度极低、BLOCKED need-user）连跑 5 轮 60s tick，零新 attempt、零派工/升级事件、状态纹丝不动。该指标此前在 ROADMAP 记为「未度量」，本测试把它钉进 CI——任何让安静窗口产生派工的改动（QUEUED 误升级、blocked 误唤醒、租约误判死）在此变红。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "tests/integration/test_quiet_window_zero_dispatch.py",
+        "src/longtask/cli/tick.py"
+      ],
+      "evidence": [
+        {
+          "kind": "integration_real_store",
+          "path": "tests/integration/test_quiet_window_zero_dispatch.py",
+          "recorded_at": "2026-09-11",
+          "summary": "真 SQLite + 真注册表 + run_daemon_tick 连跑 5 轮：attempt 计数零增量、attempt/started 与 escalation/dispatch-deferred 事件零新增、三个合同状态逐字不变（active/active/blocked）。"
+        }
+      ]
+    },
+    {
+      "id": "budget-max-cost-enforced-at-dispatch",
+      "statement": "成本预算线（SPEC §12.3.2，DESIGN v0.11）：合同 MAY 在 budget 声明 max_cost（正数，缺席=不设线）。强制点在 decide()——全部 attempt 的 cost_estimate 自报合计触线时返回 HAND_TO_USER，且先于「无租约 STEER 转 RESPAWN」换挡（转向重派同样花钱）；租约活着时维持 §7 封顶。解析对齐 JSON schema 严格口径（数字字符串/bool/null 拒收）；未声明合同行为与既往版本一致。budget 序列化/读回的三处手写字段清单（save、revisions 快照、_row_to_contract_view）必须包含该字段，由存取回环回归测试钉死。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/lhgp/contracts/budget.py",
+        "src/lhgp/contracts/contract_draft.py",
+        "src/lhgp/contracts/validation.py",
+        "src/lhgp/promoter/escalation.py",
+        "src/longtask/cli/tick.py",
+        "src/longtask/persistence/store.py",
+        "src/lhgp/persistence/usage.py",
+        "tests/unit/test_budget_max_cost.py",
+        "tests/integration/test_cost_budget_enforcement.py"
+      ],
+      "evidence": [
+        {
+          "kind": "integration_real_store",
+          "path": "tests/integration/test_cost_budget_enforcement.py",
+          "recorded_at": "2026-09-11",
+          "summary": "tick 端到端 2 条：成本触线合同（自报 2.0 ≥ max_cost 1.0、紧迫度 u=4 达 RESPAWN 区）→ blocked(need-user) 且 blocked 事件写明 cost budget exhausted、零新派工；同轮对照组（未声明 max_cost）正常派工（门不误伤）；未触线合同正常派工（线不提前收紧）。"
+        },
+        {
+          "kind": "focused_test",
+          "path": "tests/unit/test_budget_max_cost.py",
+          "recorded_at": "2026-09-11",
+          "summary": "18 条：缺席 None/显式 null 拒收/正数解析/负数零 bool 字符串串拒收、validate()、raw 校验、decide 五分支（耗尽先于 STEER 换挡、余量为正正常 RESPAWN、None 向后兼容、PARALLEL 档同样被拦、活租约仍封顶）、JSON schema 正例负例。"
+        },
+        {
+          "kind": "manual_review",
+          "path": "tests/unit/test_attempt_usage.py",
+          "recorded_at": "2026-09-11",
+          "summary": "反向验证两项变异命中预期测试名：decide 成本分支改 if False → 单测红；tick 成本合计改 if False → 端到端红。另存取回环 2 条（max_cost=9.75 写入即读回、缺席读回 None）——端到端首跑曾因 store 三处手写字段清单缺该字段而静默失效，此为真 bug 非测试错误。"
+        }
+      ]
+    },
+    {
+      "id": "local-no-model-end-to-end-example",
+      "statement": "R4a 可复制本地示例：doctor → prepare → approve → execute → verify → satisfied 全链路，无需模型账号/网络/密钥。执行者与核验者是两个普通 subprocess 程序，分别走两条 stdout 协议通道（attempt/finished 事件行 + lhgp-verdict 判定块）；派工/回收/交叉验收全部由真实调度主循环（run_daemon_loop）产生，不使用人工补写成功事件的 harness。失败时给出可执行排查出口。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "examples/local-no-model/run_example.py",
+        "examples/local-no-model/worker.py",
+        "examples/local-no-model/checker.py",
+        "examples/local-no-model/README.md",
+        "tests/integration/test_local_no_model_example.py"
+      ],
+      "evidence": [
+        {
+          "kind": "integration_real_store",
+          "path": "tests/integration/test_local_no_model_example.py",
+          "recorded_at": "2026-09-11",
+          "summary": "真子进程运行示例脚本并断言：退出码 0 且输出含『全链路通过』；交付物 result.txt 内容含标记；合同终态 ∈ {satisfied, complete} 且 acceptance_status=passed；attempts 表存在 executor(local-worker) 与 verifier(local-checker) 两条真实 attempt 且均 succeeded；events 里不存在 actor=user 的 attempt/* 或 verification/* 记录（成功非人工补写）；至少两次 attempt/started（执行+验收各一次）。"
+        },
+        {
+          "kind": "manual_review",
+          "path": "examples/local-no-model/README.md",
+          "recorded_at": "2026-09-11",
+          "summary": "开发中实测到的两个非缺陷行为已写进排查出口：① 每轮新建 runner 等价守护进程重启，在飞 attempt 会按 SPEC §11.3 判为 detached→failed（崩溃恢复的诚实边界）；② 注入时钟只推动合同决策时间，子进程需要真实时间退出，两者都要给。另记录了输出预算截断判定块的 verdict_source_loss 处置（调大预算重跑）。"
+        }
+      ]
+    },
+    {
+      "id": "completion-event-attestation-observable",
+      "statement": "完成事件行的凭据加固（SPEC §12.4）：attempt/finished 是自报的完成声明，事件行 MAY 携带 spawn 注入的 per-attempt session_token。匹配 → completion_attested=True 并落进 attempt 终态事件（审计可区分凭据自报与裸自报）；不携带 → False 且仍采信（存量 harness 零影响）；不匹配或本 attempt 未注入却携带 → 拒绝该行（防输出回显被当作完成声明）。识别形态容错键值间空白（FINISHED_EVENT_RE），但必须 json.loads 通过才采信。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/longtask/adapters/subprocess_adapter.py",
+        "src/longtask/cli/runner.py",
+        "tests/unit/test_finished_event_attestation.py",
+        "tests/integration/test_local_no_model_example.py"
+      ],
+      "evidence": [
+        {
+          "kind": "focused_test",
+          "path": "tests/unit/test_finished_event_attestation.py",
+          "recorded_at": "2026-09-11",
+          "summary": "7 条覆盖凭据矩阵：裸事件采信+标 False、匹配 token 采信+标 True、错 token 拒绝、未注入却携带拒绝、非字符串拒绝、容错空白与凭据并存、别的事件/非 JSON 仍拒绝。"
+        },
+        {
+          "kind": "integration_real_store",
+          "path": "tests/integration/test_local_no_model_example.py",
+          "recorded_at": "2026-09-11",
+          "summary": "示例 worker 以推荐形态回带 token，端到端断言 attempt/succeeded(executor) 事件 payload 里 completion_attested=True——凭据从子进程 env 到适配器再到事件流的全链贯通。"
+        },
+        {
+          "kind": "manual_review",
+          "path": "src/longtask/adapters/subprocess_adapter.py",
+          "recorded_at": "2026-09-11",
+          "summary": "反向验证：摘掉 token 校验后 test_mismatched_token_is_refused / test_token_when_none_injected_is_refused / test_non_string_token_is_refused 三条同时变红。"
+        }
+      ]
+    },
+    {
+      "id": "injection-surface-truncation-is-marked",
+      "statement": "注入面截断纪律（DESIGN §4.1）：凡进入提示词的文本被长度预算截断时，必须落在**行界**并带**显式标记**（说明去哪里看全文），不得静默拦腰切断。覆盖两处：handover 附言（1200 字符预算，标记指向 handover.md）与用户指令注入（240 字符预算，标记指向消息层）。标记字节计入预算（含标记总长不超上限）；首行本身超预算的退化场景硬切 + 标记，诚实边界成文。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/longtask/persistence/context.py",
+        "tests/unit/test_context.py"
+      ],
+      "evidence": [
+        {
+          "kind": "focused_test",
+          "path": "tests/unit/test_context.py",
+          "recorded_at": "2026-09-11",
+          "summary": "handover 端与 directive 端各驱动生产路径断言：超长 next_action 经 handover_prompt_addendum、超长 directive 经 send_message + compile_context_snapshot，输出必含对应标记且长度不超预算；另有 8 条助手级边界（短文本不动/恰好预算不动/多行切点完整/无半行残留/单行退化/标记计预算/预算小于标记拒收）。"
+        },
+        {
+          "kind": "manual_review",
+          "path": "src/longtask/persistence/context.py",
+          "recorded_at": "2026-09-11",
+          "summary": "反向验证两次：把 handover 调用点退回裸切片 → test_addendum_uses_line_truncation 红；把 directive 调用点退回裸切片 → **第一次没红**（原用例只测助手函数、锁不住接线），改为驱动 send_message + compile_context_snapshot 的生产路径后才红。这条「测试必须打在接线上」的教训与 real_entry 棘轮同源。"
+        }
+      ]
+    },
+    {
+      "id": "parallel-tier-not-claimed-until-implemented",
+      "statement": "档 4 并行加派诚实化（DESIGN §6.2/§6.3/§7.1）：分区租约机制未接线（无生产调用点、partition_id 恒默认空值、lease/partition-conflict 与 PARTITION_CONFLICT 从未写出），因此 decide() **不得**产出 UrgencyTier.PARALLEL。估算停滞一律如实返回 RESPAWN，理由自陈 parallel dispatch is not implemented 且记录被请求的并行意图，并且不消耗 max_escalations。文档与工具面不得把分区并行描述为已有能力（DESIGN §7.1 明令）。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "src/lhgp/promoter/escalation.py",
+        "src/lhgp/promoter/urgency.py",
+        "src/lhgp/promoter/lease.py",
+        "src/lhgp/persistence/events.py",
+        "src/longtask/cli/tick.py",
+        "DESIGN.md",
+        "tests/unit/test_escalation.py"
+      ],
+      "evidence": [
+        {
+          "kind": "focused_test",
+          "path": "tests/unit/test_escalation.py",
+          "recorded_at": "2026-09-11",
+          "summary": "TestStalledRespawnIsHonest 5 条（档位=RESPAWN、理由含 not implemented 与 partitions_requested、不消耗 escalations、escalations 取值不影响结果、不可分区同样串行）+ TestParallelTierIsUnreachable 2 条（穷举 >100 组输入断言 PARALLEL 不可达、停滞理由自陈未实现）。"
+        },
+        {
+          "kind": "source_static",
+          "path": "src/lhgp/promoter/lease.py",
+          "recorded_at": "2026-09-11",
+          "summary": "模块 docstring 显式声明接线状态：check_write_fence 是生产路径；Partition/check_partition_compatible 设计先行、未接线，保留待 ADR-005，且不得被描述为已有能力。events.py 两个预留事件类型、urgency.py 枚举保留理由、tick.py case 兼容历史数据重放均同步注释。"
+        }
+      ]
+    },
+    {
+      "id": "schemas-match-runtime-shapes",
+      "statement": "仓库 schemas/*.json 与运行时形状一致（审计 B10，2026-09-11 实测修正）：event.schema.json 声明 events 表的全部 14 列、required 等于表的 NOT NULL ∪ 主键集、actor/role 枚举覆盖 src 全部字面量写入点；executor-manifest.schema.json 的属性集等于 ExecutorManifest 字段 ∪ 显式设计预留集（user_policy 出自 DESIGN §12.4 的示例，运行时无此概念——ExecutorManifest 没有该字段、registry.to_manifest() 从不产出，属预留而非已实现）；contract.schema.json 接受真实 draft 序列化。口径说明：三个 schema 在 src 里没有运行时读者，本声明是「文档与代码一致」而不是「运行时按 schema 校验」。",
+      "lifecycle": "verified",
+      "scope_paths": [
+        "schemas/contract.schema.json",
+        "schemas/event.schema.json",
+        "schemas/executor-manifest.schema.json",
+        "tests/unit/test_schemas_match_runtime.py"
+      ],
+      "evidence": [
+        {
+          "kind": "focused_test",
+          "path": "tests/unit/test_schemas_match_runtime.py",
+          "recorded_at": "2026-09-11",
+          "summary": "7 条断言关系而非字面清单：PRAGMA 列集 ⊆ schema 属性且反向无多余、required == NOT NULL ∪ 主键、4 种真实事件形状（有/无 request_id、role 空/verifier、无合同）通过 schema、AST 扫 src 的 append_event(actor=/role=) 字面量全部被枚举接受、manifest 属性集与 dataclass 字段双向对齐、真实 manifest 实例通过 schema。反向验证：删掉 event 的 role 声明 → 3 条红；给 manifest 加幻影字段 → 目标条红；恢复后逐字节一致。AST 扫描当场抓出人工阅读漏掉的 actor='auto-lesson'（src/lhgp/feedback/lessons.py:137）。"
+        },
+        {
+          "kind": "source_static",
+          "path": "schemas/event.schema.json",
+          "recorded_at": "2026-09-11",
+          "summary": "重写前该文件会拒绝 100% 的真实事件：additionalProperties:false 却只列 10 个属性（events 表 14 列）、把可空的 contract_id/request_id 写进 required、actor 枚举只有 user|daemon|adapter|model。现按 DDL 与真实写入点逐项重写，每处 description 注明依据（含 role='model' 正是 B9b 修掉的缺陷）。"
+        }
+      ]
+    }
+  ]
+}

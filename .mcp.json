@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "lhgp": {
+      "type": "stdio",
+      "command": "lhgp-mcp",
+      "args": [],
+      "env": {}
+    }
+  }
+}

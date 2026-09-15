@@ -1,0 +1,68 @@
+name: ci
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+# Cancel in-progress runs for the same ref when a new commit lands.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# CI only needs to read the repository. Keep the default token least-privileged.
+permissions:
+  contents: read
+
+jobs:
+  quality-gate:
+    name: 7-gate quality (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - name: Checkout
+        # fetch-depth: 0 — the claims gate resolves quality/claims.json's
+        # pinned_sha against real history (git merge-base --is-ancestor).
+        # A shallow checkout would make an honest anchor look broken.
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Install project + dev
+        run: uv sync --extra dev
+
+      - name: Build distributable artifacts
+        # Catch hatch/force-include regressions before a release is tagged.
+        run: uv build
+
+      - name: Verify artifact companion resources
+        run: uv run python scripts/check_artifacts.py
+
+      - name: Run authoritative 7-gate quality check
+        # scripts/quality_gate.py is the single source of truth (CONTRIBUTING.md).
+        # The CI environment matrix proves the gate works on all three OSes;
+        # local development is Windows-only by default.
+        run: uv run python scripts/quality_gate.py
+
+      - name: Upload coverage artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.os }}
+          path: |
+            .coverage
+            htmlcov/
+            coverage.xml
+          if-no-files-found: ignore

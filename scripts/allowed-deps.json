@@ -1,0 +1,18 @@
+{
+  "comment": "依赖白名单（DESIGN §13.1 依赖审计）。新增依赖：先在此登记理由，再改 pyproject.toml；两者不一致 deps 门即红。",
+  "runtime": {
+    "comment": "运行时零第三方依赖（协议控制面只用标准库）。第一个例外需要 ADR。",
+    "allow": {}
+  },
+  "dev": {
+    "comment": "开发/门工具，必须 == 锁定。版本升级随 commit 说明。",
+    "allow": {
+      "ruff": "format + lint（含 bandit S 族：子进程/路径场景）",
+      "mypy": "strict 类型门",
+      "pytest": "测试运行器",
+      "pytest-cov": "覆盖率棘轮数据源",
+      "jsonschema": "claims 注册表与 schemas/ 校验（门脚本用）",
+      "pre-commit": "提交钩子框架（独立成仓后启用）"
+    }
+  }
+}

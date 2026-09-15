@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "diagram_type": "dataflow",
+  "meta": {
+    "title": "Auto-handover Data Flow",
+    "output": "03-events-dataflow.html",
+    "viewBox": [1080, 540],
+    "animation": "trace",
+    "quality_profile": "showcase",
+    "views": [
+      { "id": "handover", "label": "Auto-handover data flow", "focus": ["daemon", "handover", "docs", "events", "runner", "executor"], "note": "How active.md size reaches the audit log and the runner takes the next attempt." }
+    ]
+  },
+  "stages": [
+    { "label": "Tick" },
+    { "label": "Detect" },
+    { "label": "Audit" },
+    { "label": "React" }
+  ],
+  "nodes": [
+    { "id": "daemon", "type": "backend", "label": "Daemon Tick", "sublabel": "every cycle", "stage": 0, "row": 0, "tag": "poll attempts" },
+    { "id": "handover", "type": "backend", "label": "Auto-handover", "sublabel": "size / max_bytes", "stage": 1, "row": 0, "tag": "warm 0.6" },
+    { "id": "docs", "type": "database", "label": "active.md", "sublabel": "per-attempt snapshot", "stage": 1, "row": 1, "tag": "size read" },
+    { "id": "events", "type": "database", "label": "Events Audit Log", "sublabel": "HANDOVER_DUE", "stage": 2, "row": 0, "tag": "append only" },
+    { "id": "runner", "type": "backend", "label": "Attempt Runner", "sublabel": "next attempt", "stage": 3, "row": 0, "tag": "reads signal" },
+    { "id": "executor", "type": "external", "label": "Executor", "sublabel": "child process", "stage": 3, "row": 1, "tag": "spawn" }
+  ],
+  "flows": [
+    { "from": "daemon", "to": "handover", "label": "tick walks", "variant": "emphasis" },
+    { "from": "handover", "to": "docs", "label": "size / max_bytes", "variant": "default", "labelDy": 60 },
+    { "from": "handover", "to": "events", "label": "HANDOVER_DUE", "variant": "emphasis" },
+    { "from": "events", "to": "runner", "label": "signal", "variant": "default" },
+    { "from": "runner", "to": "executor", "label": "spawn", "variant": "emphasis", "labelDy": 60 }
+  ]
+}
+

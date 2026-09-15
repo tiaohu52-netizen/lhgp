@@ -1,0 +1,138 @@
+name: release
+
+# 把「已冻结的标签」变成 GitHub Release（正文 + 制品附件）。
+#
+# 为什么需要这个工作流：Release 不是 git 对象，而是 GitHub API 里的一条记录，
+# 创建它必须有仓库写权限的 token。维护者本机只有 SSH 密钥（能推提交与标签，
+# 对 API 无效）。GitHub Actions 跑在 GitHub 上，自带 GITHUB_TOKEN，因此
+# 「打标签 → 推送 → 由 CI 发布」这条链不需要任何长期凭据。
+#
+# 触发：推送到默认分支（用来处理"先打标签、后补发布说明"的常见顺序）与标签推送，
+# 也允许手动 dispatch。工作流自己决定要不要发布——版本没打标签就什么都不做。
+
+on:
+  push:
+    branches: [master, main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+# 发布不能被新提交取消：半个 Release（正文已建、附件没传完）比晚一点更糟。
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+# 本仓唯一需要写权限的工作流；其余两个（ci/quality）保持 contents: read。
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    name: 发布 v<pyproject 版本>
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        # fetch-depth: 0 —— 需要能解析到标签对象，且制品要能从标签提交重建。
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: 解析版本，确认它已冻结成标签
+        id: version
+        run: |
+          set -euo pipefail
+          version=$(python -c "import tomllib,pathlib;print(tomllib.loads(pathlib.Path('pyproject.toml').read_text(encoding='utf-8'))['project']['version'])")
+          tag="v${version}"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          if ! git rev-parse --verify "refs/tags/${tag}" >/dev/null 2>&1; then
+            # 正常状态：版本号先涨、标签后打。此时什么都不做，且不是失败。
+            echo "::notice::${tag} 尚未打标签：本工作流只发布已冻结的版本，跳过。"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "${tag} 标签存在 ✓"
+          fi
+
+      - name: 幂等检查（已有 Release 则跳过）
+        id: existing
+        if: steps.version.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if gh release view "${{ steps.version.outputs.tag }}" >/dev/null 2>&1; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::${{ steps.version.outputs.tag }} 已有 Release，跳过（重复推送安全）。"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 取出发布说明（正文的唯一来源在仓库里）
+        if: steps.version.outputs.skip == 'false' && steps.existing.outputs.found == 'false'
+        run: |
+          set -euo pipefail
+          tag="${{ steps.version.outputs.tag }}"
+          notes="docs/releases/${tag}.md"
+          if [ ! -f "$notes" ]; then
+            echo "::error::缺少发布说明 ${notes}：正文必须有仓库内的唯一来源，不要在网页上另写一份（两处必然漂移）。"
+            exit 1
+          fi
+          # 先存到工作区之外：下一步要检出标签，而发布说明通常是在打标签之后补写的。
+          cp "$notes" "${RUNNER_TEMP}/release-notes.md"
+
+      - name: 检出被冻结的标签提交
+        if: steps.version.outputs.skip == 'false' && steps.existing.outputs.found == 'false'
+        run: |
+          set -euo pipefail
+          # 制品必须来自标签指向的那个提交，而不是触发本次运行的 HEAD——
+          # 否则 Release 的附件与它声明的版本对不上，且这种偏差无法从外部发现。
+          git checkout --detach "refs/tags/${{ steps.version.outputs.tag }}"
+          echo "已检出 ${{ steps.version.outputs.tag }} = $(git rev-parse --short HEAD)"
+
+      - name: 构建制品
+        if: steps.version.outputs.skip == 'false' && steps.existing.outputs.found == 'false'
+        run: uv build
+
+      - name: 制品 companion 资源核对
+        if: steps.version.outputs.skip == 'false' && steps.existing.outputs.found == 'false'
+        run: uv run python scripts/check_artifacts.py
+
+      - name: 计算制品校验和并附到正文末尾
+        if: steps.version.outputs.skip == 'false' && steps.existing.outputs.found == 'false'
+        run: |
+          set -euo pipefail
+          {
+            echo ""
+            echo "---"
+            echo ""
+            echo "## 制品校验（自动计算）"
+            echo ""
+            echo "以下 SHA-256 由本工作流在上传时对 \`$(git rev-parse --short HEAD)\` 重建出的文件计算，"
+            echo "不由人工填写——本地构建与 CI 构建的字节不同，硬编码的哈希会骗人。"
+            echo ""
+            echo '```'
+            (cd dist && sha256sum ./*.whl ./*.tar.gz)
+            echo '```'
+          } >> "${RUNNER_TEMP}/release-notes.md"
+          cat "${RUNNER_TEMP}/release-notes.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 创建正式 Release
+        if: steps.version.outputs.skip == 'false' && steps.existing.outputs.found == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="${{ steps.version.outputs.tag }}"
+          gh release create "$tag" \
+            --title "${tag} — 限期合同中枢（Deadline Contract Hub）" \
+            --notes-file "${RUNNER_TEMP}/release-notes.md" \
+            --verify-tag \
+            dist/*.whl dist/*.tar.gz
+          echo "::notice::已发布 ${tag}"

@@ -1,0 +1,7 @@
+{
+  "$comment": "覆盖率棘轮基线。CONTRIBUTING 的棘轮条款要求存量债记录在 quality/ 下、只许收紧不许放松：scripts/quality_gate.py 把 fail_under 作为 --cov-fail-under 的值，实测覆盖率高于它时就应把 fail_under 抬到新的实测值向下取整，让下一次下滑立刻变红。last_measured 是写下这个数时的真实测量值，用于校验 fail_under 没有被写成做不到的目标。",
+  "fail_under": 78,
+  "last_measured": 79.1,
+  "measured_on": "2026-09-10",
+  "scope": ["src/longtask", "src/lhgp"]
+}

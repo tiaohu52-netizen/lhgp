@@ -1,0 +1,203 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://longtask.dev/schemas/contract.schema.json",
+  "title": "LongTask Contract",
+  "description": "远期任务合同（DESIGN.md §4 contract.yaml / §11.6 ContractDraft）",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "title",
+    "objective",
+    "deadline_at",
+    "hard_constraints",
+    "acceptance",
+    "workload_estimate",
+    "budget",
+    "authority",
+    "attention",
+    "continuity"
+  ],
+  "properties": {
+    "schema_version": { "const": 2 },
+    "contract_id": {
+      "type": "string",
+      "pattern": "^lt-[A-Za-z0-9_-]+$",
+      "description": "服务端分配；prepare 入参不得携带"
+    },
+    "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "objective": {
+      "type": "string",
+      "minLength": 1,
+      "description": "冻结区：完成标准描述，创建后不可修改"
+    },
+    "deadline_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "冻结区：RFC3339 且必须显式时区"
+    },
+    "hard_constraints": {
+      "type": "object",
+      "description": "冻结区：适配器必须能完整翻译，否则拒接（DESIGN §9）",
+      "required": ["file_effects"],
+      "properties": {
+        "file_effects": {
+          "type": "object",
+          "required": ["mode"],
+          "properties": {
+            "mode": { "enum": ["read-only", "workspace-write"] },
+            "workspace_root": { "type": "string", "minLength": 1 },
+            "deny_paths": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 }
+            }
+          },
+          "additionalProperties": false
+        },
+        "network": {
+          "type": "object",
+          "required": ["mode"],
+          "properties": { "mode": { "enum": ["deny", "allow"] } },
+          "additionalProperties": false
+        },
+        "process": {
+          "type": "object",
+          "required": ["mode"],
+          "properties": { "mode": { "enum": ["restricted", "unrestricted"] } },
+          "additionalProperties": false
+        },
+        "package_install": {
+          "type": "object",
+          "required": ["mode"],
+          "properties": { "mode": { "enum": ["deny", "allow"] } },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": true
+    },
+    "soft_guidance": {
+      "type": "object",
+      "description": "可修订区：注入提示词的软指引"
+    },
+    "authority": { "type": "object" },
+    "attention": { "type": "object" },
+    "continuity": { "type": "object" },
+    "acceptance": {
+      "type": "object",
+      "required": ["standard", "checks"],
+      "properties": {
+        "standard": { "type": "string", "minLength": 1 },
+        "checks": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "oneOf": [
+              { "type": "string", "minLength": 1 },
+              {
+                "type": "object",
+                "required": ["kind", "target"],
+                "properties": {
+                  "kind": {
+                    "enum": [
+                      "file-exists",
+                      "file-content-matches",
+                      "command-exit-zero",
+                      "artifact-present",
+                      "structure-valid",
+                      "observable",
+                      "user-assertion"
+                    ]
+                  },
+                  "target": { "type": "string", "minLength": 1 },
+                  "args": { "type": "object" },
+                  "mandatory": { "type": "boolean", "default": true },
+                  "note": { "type": "string" }
+                },
+                "additionalProperties": false
+              }
+            ]
+          }
+        },
+        "verifier": {
+          "enum": ["cross_check", "none"],
+          "default": "cross_check",
+          "description": "DESIGN §5.2：默认另派只读核对 attempt"
+        },
+        "spec": {
+          "type": ["object", "null"],
+          "description": "结构化验收 spec（acceptance/spec.py）：dispatch loop 据此合成 verdict",
+          "additionalProperties": true
+        },
+        "spec_hash": {
+          "type": ["string", "null"],
+          "description": "调用方自报的 spec 内容标签（可选，供 plan gate 与审计）；核验证据的内容绑定由 runtime 计算的 acceptance 指纹负责"
+        }
+      },
+      "additionalProperties": false
+    },
+    "context": {
+      "type": "object",
+      "properties": {
+        "policy_ref": { "type": "string" },
+        "required": { "type": "boolean", "default": false }
+      },
+      "additionalProperties": false
+    },
+    "execution": {
+      "type": "object",
+      "properties": {
+        "required_capabilities": {
+          "type": "array",
+          "items": { "type": "string" },
+          "uniqueItems": true
+        },
+        "allowed_control": {
+          "type": "array",
+          "items": { "enum": ["notify", "followup", "steer", "interrupt"] },
+          "uniqueItems": true
+        },
+        "allow_new_session": { "type": "boolean", "default": true },
+        "allow_parallel": { "type": "boolean", "default": false },
+        "acceptance_mode": { "const": "contract_defined" },
+        "deadline_policy": { "const": "best_effort" },
+        "interference_scope": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "workload_estimate": {
+      "type": "object",
+      "required": ["initial_hours"],
+      "properties": {
+        "initial_hours": { "type": "number", "exclusiveMinimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "budget": {
+      "type": "object",
+      "required": [
+        "max_dispatches",
+        "max_escalations",
+        "max_concurrent_attempts",
+        "max_attempt_minutes",
+        "max_output_bytes"
+      ],
+      "properties": {
+        "max_dispatches": { "type": "integer", "exclusiveMinimum": 0 },
+        "max_escalations": { "type": "integer", "exclusiveMinimum": 0 },
+        "max_concurrent_attempts": { "type": "integer", "exclusiveMinimum": 0 },
+        "max_attempt_minutes": { "type": "integer", "exclusiveMinimum": 0 },
+        "max_output_bytes": { "type": "integer", "exclusiveMinimum": 0 }
+        ,"verification_attempts_reserved": { "type": "integer", "minimum": 0 }
+        ,"max_cost": { "type": "number", "exclusiveMinimum": 0,
+                       "description": "可选：按钱画线的预算上限（货币单位由部署约定）；台账口径见 SPEC §12.3.1" }
+      },
+      "additionalProperties": false
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "CAS 修订号，服务端维护"
+    },
+    "created_by": { "enum": ["user"] }
+  },
+  "additionalProperties": true
+}

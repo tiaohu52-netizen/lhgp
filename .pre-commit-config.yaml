@@ -1,0 +1,35 @@
+# pre-commit 钩子：快路径增量门（改动文件级）。
+# 权威全量门是 scripts/quality_gate.py（本地与 CI 同一命令）；
+# 这里的钩子只做「快反馈」，不声称替代全量门。
+# 安装：uv run pre-commit install
+
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-format
+        name: ruff format（仅暂存文件）
+        entry: uv run ruff format --force-exclude
+        language: system
+        types: [python]
+        require_serial: true
+
+      - id: ruff-check
+        name: ruff check（仅暂存文件，自动修复）
+        entry: uv run ruff check --force-exclude --fix
+        language: system
+        types: [python]
+        require_serial: true
+
+      - id: arch-check
+        name: 架构依赖方向检查（全量，快）
+        entry: uv run python scripts/arch_check.py
+        language: system
+        pass_filenames: false
+        always_run: true
+
+      - id: deps-check
+        name: 依赖白名单检查
+        entry: uv run python scripts/deps_check.py
+        language: system
+        pass_filenames: false
+        always_run: true

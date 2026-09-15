@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Resilient Contract Execution",
+    "output": "01-resilient-execution.html",
+    "viewBox": [1200, 560],
+    "quality_profile": "showcase",
+    "views": [
+      { "id": "main", "label": "Main flow", "focus": ["model", "user", "mcp", "cli", "plan_gate", "daemon", "retry", "events"], "note": "The four streams reduced to one line." }
+    ]
+  },
+  "components": [
+    { "id": "model", "type": "external", "label": "LLM Agent", "sublabel": "model", "pos": [40, 240], "size": [130, 60] },
+    { "id": "user", "type": "external", "label": "Operator", "sublabel": "human", "pos": [40, 360], "size": [130, 60] },
+    { "id": "mcp", "type": "frontend", "label": "MCP Server", "sublabel": "49 tools", "pos": [220, 240], "size": [130, 60] },
+    { "id": "cli", "type": "frontend", "label": "CLI", "sublabel": "plan / attempt", "pos": [220, 360], "size": [130, 60] },
+    { "id": "plan_gate", "type": "security", "label": "Plan Gate", "sublabel": "whitelist check", "pos": [400, 300], "size": [140, 60], "tag": "opt-in" },
+    { "id": "daemon", "type": "backend", "label": "Daemon Loop", "sublabel": "tick + bridge", "pos": [400, 100], "size": [140, 60] },
+    { "id": "retry", "type": "security", "label": "Retry", "sublabel": "429 / 502 / 503", "pos": [580, 100], "size": [140, 60], "tag": "4 attempts" },
+    { "id": "events", "type": "database", "label": "Events Audit Log", "sublabel": "6 new event types", "pos": [760, 200], "size": [160, 60] }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "control plane", "wraps": ["mcp", "cli", "plan_gate", "daemon", "retry", "events"] }
+  ],
+  "connections": [
+    { "id": "model-mcp", "from": "model", "to": "mcp", "label": "tools/call", "labelAt": [160, 220] },
+    { "id": "user-cli", "from": "user", "to": "cli", "label": "submit", "labelAt": [160, 340] },
+    { "id": "mcp-plan", "from": "mcp", "to": "plan_gate", "label": "submit_plan", "fromSide": "right", "toSide": "top", "labelAt": [310, 236] },
+    { "id": "cli-plan", "from": "cli", "to": "plan_gate", "label": "plan submit", "fromSide": "right", "toSide": "bottom", "labelAt": [310, 356] },
+    { "id": "plan-events", "from": "plan_gate", "to": "events", "label": "PLAN_* events", "fromSide": "right", "toSide": "left", "labelAt": [600, 250] },
+    { "id": "daemon-retry", "from": "daemon", "to": "retry", "label": "wrap dispatch", "labelAt": [560, 96] },
+    { "id": "retry-events", "from": "retry", "to": "events", "label": "RETRY_ATTEMPTED", "fromSide": "right", "toSide": "top", "labelAt": [640, 174] }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "Write side: plan + resume", "items": ["MCP submit_plan and CLI plan submit both go through the Plan Gate", "Whitelist + objective coverage + step count must all pass", "On approval: writes plan/submitted, then plan/approved"] },
+    { "dot": "amber", "title": "Read side: retry + auto-handover", "items": ["Daemon tick wraps every dispatch through Retry (429/502/503/504 + connect/timeout)", "Each retry writes RETRY_ATTEMPTED with attempt / delay / error_type / method", "Auto-handover: when active.md >= 60% (warm, debounced 60s) or >= 90% (overdue, immediate), write HANDOVER_DUE"] },
+    { "dot": "emerald", "title": "Audit", "items": ["6 new event types pin the wire strings; no protocol drift", "Events log is migration-free; existing on-disk rows remain readable", "Plan gate is opt-in via contract.draft.context.gate = 'plan' (default off)"] }
+  ]
+}

@@ -1,0 +1,52 @@
+# 质量门 CI（CONTRIBUTING「质量门」）。
+# 与本地同一命令：scripts/quality_gate.py。
+name: quality
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Quality checks do not publish or mutate repository state.
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        # fetch-depth: 0 so the claims gate can resolve pinned_sha in history.
+        with:
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+
+      - name: Sync dev dependencies
+        run: uv sync --extra dev
+
+      - name: Quality gate (authoritative sequence)
+        run: uv run python scripts/quality_gate.py
+
+  gate-linux:
+    # 协议目标跨平台（DESIGN §13.1）；Linux 上再跑一遍同一道门。
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        # fetch-depth: 0 so the claims gate can resolve pinned_sha in history.
+        with:
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+
+      - name: Sync dev dependencies
+        run: uv sync --extra dev
+
+      - name: Quality gate (authoritative sequence)
+        run: uv run python scripts/quality_gate.py

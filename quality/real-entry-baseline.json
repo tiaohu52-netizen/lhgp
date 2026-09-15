@@ -1,0 +1,14 @@
+{
+  "$comment": "real_entry 棘轮：tests/unit 下引用真实入口（CLI main / run_daemon_tick / RequestEnvelope+route / mcp_server）却未打 real_entry 标记的测试数上限。由 tests/conftest.py 在收集阶段核对，超过即整个会话以 UsageError 退出。只许下调；上调要在 PR 里写明理由。真正的清欠动作是逐个文件判定：走真入口就补 @pytest.mark.real_entry，本就该带 IO 就搬去 tests/integration/。",
+  "max_unmarked_tests": 114,
+  "measured_on": "2026-09-10",
+  "unmarked_files": [
+    "test_cli.py",
+    "test_cli_list_verbose.py",
+    "test_daemon_wakeup_rpc.py",
+    "test_plan_signoff_principal.py",
+    "test_schema_handler_consistency.py",
+    "test_server_envelope.py",
+    "test_synthesize_spec.py"
+  ]
+}

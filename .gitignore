@@ -1,0 +1,77 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 工具缓存
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# uv：独立成仓后应提交 uv.lock（DESIGN §13.1 锁定依赖），现阶段不生成
+
+# 运行时状态目录（本机部署产生，绝不入库）
+.longtask/
+
+# 编辑器
+.idea/
+.vscode/
+*.swp
+
+# OS
+Thumbs.db
+Desktop.ini
+
+# 运行时数据目录（真实注册表/工作区/数据库不入库；归档走 examples/）
+runtime/
+
+# 本地 dogfood、规划与工作记忆（可能包含凭证、会话内容和状态数据库）
+.dogfood/
+.dogfood-v5/
+.dogfood-v5.archive-*/
+.planning/
+.workbuddy/
+runtime-mcp/
+.history-backup/
+
+# 宣传视频渲染产物（tape 脚本入库，媒体不入库）
+promo/*.mp4
+promo/*.gif
+promo/*.webm
+promo/demo-data/
+
+# 一次性 scratch / 调试日志（被移动到 .scratch-trash/ 后由本规则忽略）
+.scratch-trash/
+# 老路径 scratch-trash/（已弃用，但仍可能留有调试文件）
+scratch-trash/
+# 批量移动脚本留下的临时清单（运行完即空，不是仓库内容）
+_move_list.json
+# 一次性的 quality probe / 调试日志（不是 .quality/）
+quality/probe_*.py
+quality/check_*.py
+quality/debug_*.py
+quality/fix_*.py
+quality/inline_*.py
+quality/update_*.py
+quality/find_*.py
+quality/clean_*.py
+quality/patch_*.py
+quality/poll_*.py
+quality/msg.txt
+quality/commit_msg*.txt
+quality/gate-run*.log
+quality/last-gate.log
+quality/pytest-run.log
+quality/qg_test.log
+
+# R4a 示例的默认数据目录（本地产物，不入库）
+examples/local-no-model/example-data/
+
+examples/zcode-night/lhgp-zcode.config.json
+
+.workbuddy-ai/
