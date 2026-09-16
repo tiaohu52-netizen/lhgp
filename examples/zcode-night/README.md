@@ -39,9 +39,15 @@ lhgp watch --contract <你的合同 id>
 夜间产物与审计：
 
 - 产物：合同 `workspace_root` 内（按你的任务描述）；
-- wrapper 审计：`<数据根>/contracts/<合同 id>/zcode-runs.jsonl`（rc / 用时 / 会话 id / model_id / token 用量 / 配额命中）；
+- wrapper 审计：`<数据根>/contracts/<合同 id>/zcode-runs.jsonl`（`event:"start"/"exit"` 配对记录：rc / 用时 / 会话 id / model_id / token 用量 / 配额命中。wrapper 被 attempt 时限硬杀时 finish 不会执行、只有 start 记录——按「有 start 无 exit」即可发现被杀运行，2026-09-15 起生效；旧行无 event 字段视作 exit）；
 - 会话续跑：`<数据根>/contracts/<合同 id>/zcode-session.json`（删除即回到全新会话）；
 - 验收：按合同 `acceptance`（机器闸 + 你本人签名 `lhgp contract user-confirm <id>`）。
+
+版本兼容注记：`soft_guidance.zcode.max_turns` 暂被 wrapper 忽略——ZCode 0.16.5
+的 `--help` 广告了 `--max-turns` 选项，但参数解析器拒绝它（2026-09-16 两种传参
+顺序实测均 "Unknown option" rc=1；2026-09-15 夜间派工三次快速失败同因），
+runtime 文档与实现不一致。wrapper 一律不传该选项，回合上限依赖模型自然结束；
+待 runtime 真正支持后再接线。
 
 ## 组件
 

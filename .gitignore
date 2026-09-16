@@ -73,5 +73,7 @@ quality/qg_test.log
 examples/local-no-model/example-data/
 
 examples/zcode-night/lhgp-zcode.config.json
+# 夜战合同实例（含本机工作区路径，属机器本地部署产物；样板 contract.example.json 仍入库）
+examples/zcode-night/contract-*.json
 
 .workbuddy-ai/

@@ -16,10 +16,12 @@
  *
  * 能力：①快照解析 ids + attempt/status 取 lease.generation；②active.md 以
  * --attach 原生挂给 ZCode；③会话续跑（sessionId 持久化，同合同自动 --resume；
- * soft_guidance.zcode.resume=false 可关，max_turns 可调）；④流式转发输出并解析
+ * soft_guidance.zcode.resume=false 可关；max_turns 暂忽略——0.16.5 广告
+ * --max-turns 但解析器拒绝，见 README 版本兼容注记）；④流式转发输出并解析
  * --json；⑤退出后自动 attempt/write-back（终态 + 真实 model_id + token 用量）；
  * ⑥派工时间窗防御（execution.dispatch_window，窗口外拒跑并写回 failed）；
- * ⑦供应商业务错误（含 BigModel 5 小时额度）识别入 note 与 zcode-runs.jsonl。
+ * ⑦供应商业务错误（含 BigModel 5 小时额度）识别入 note 与 zcode-runs.jsonl；
+ * ⑧运行审计 start/exit 配对记录——被 attempt 时限硬杀也能留启动痕，不再整段失踪。
  *
  * 离线校验：LHGP_ZCODE_DRYRUN=1 只打印计划 JSON（不拉起 ZCode、不写回）。
  */
@@ -233,8 +235,6 @@ function main() {
 
   const resumeDisabled = contractZcfg.resume === false;
   const stored = ids.contract_id && !resumeDisabled ? loadSession(dataRoot, ids.contract_id) : null;
-  const maxTurns = Number(contractZcfg.max_turns || 120);
-
   const zargs = [
     runtime,
     "--prompt",
@@ -242,9 +242,12 @@ function main() {
     "--json",
     "--cwd",
     process.cwd(),
-    "--max-turns",
-    String(maxTurns),
   ];
+  // --max-turns 不传：ZCode 0.16.5 的 --help 广告了该选项（"Maximum model turns for
+  // headless prompts"）但参数解析器拒绝它（2026-09-16 两种传参顺序实测均
+  // "Unknown option" rc=1；2026-09-15 夜间派工三次快速失败同因）——runtime 文档与
+  // 实现不一致。soft_guidance.zcode.max_turns 暂被忽略（字段保留，待 runtime 真正
+  // 支持再把本注记换成传参逻辑）。
   if (ids.snapshot) zargs.push("--attach", ids.snapshot);
   if (stored && stored.session_id) zargs.push("--resume", stored.session_id);
 
@@ -263,6 +266,7 @@ function main() {
           generation,
           model_id: modelId,
           resume: stored ? stored.session_id : null,
+          max_turns: "ignored (runtime 0.16.5 advertises --max-turns but its parser rejects it)",
           zcode_argv: [node.path, ...zargs],
         },
         null,
@@ -280,6 +284,22 @@ function main() {
   let stdoutBuf = "";
   let stderrBuf = "";
   const child = spawn(node.path, zargs, { cwd: process.cwd(), stdio: ["ignore", "pipe", "pipe"] });
+
+  // 启动即落一条 start 记录：daemon 按 attempt 时限硬杀（Windows taskkill /F =
+  // TerminateProcess，不可捕获）时 finish() 不会执行，start 记录是唯一留痕——
+  // 审计侧按 event 配对即可发现「有启动无退出」的被杀运行，不再出现整段失踪。
+  if (ids.contract_id) {
+    appendRunLog(dataRoot, ids.contract_id, {
+      at: new Date().toISOString(),
+      event: "start",
+      attempt_id: ids.attempt_id,
+      pid: child.pid,
+      model_id: modelId,
+      resume_from: stored ? stored.session_id : null,
+      max_turns: null,
+    });
+  }
+
   child.stdout.on("data", (d) => {
     stdoutBuf += d.toString("utf8");
     process.stdout.write(d);
@@ -289,7 +309,10 @@ function main() {
     process.stderr.write(d);
   });
 
+  let finished = false;
   const finish = (rc) => {
+    if (finished) return;
+    finished = true;
     const seconds = Math.round((Date.now() - started) / 1000);
     const result = pickLastJson(stdoutBuf);
     const sessionId = result && typeof result.sessionId === "string" ? result.sessionId : null;
@@ -311,6 +334,7 @@ function main() {
     if (ids.contract_id) {
       appendRunLog(dataRoot, ids.contract_id, {
         at: new Date().toISOString(),
+        event: "exit",
         attempt_id: ids.attempt_id,
         rc,
         seconds,
@@ -348,6 +372,19 @@ function main() {
     log("fatal: spawn failed: " + err.message);
     finish(1);
   });
+  // 桥接自身收到可捕获信号时把子进程一起带走并补写退出记录（rc=143 视作被终止）；
+  // 不可捕获的硬杀（taskkill /F / 停电）由上面的 start 记录兜底留痕。
+  for (const sig of ["SIGINT", "SIGTERM", "SIGHUP", "SIGBREAK"]) {
+    process.on(sig, () => {
+      log(`wrapper received ${sig}; terminating child and writing partial exit record`);
+      try {
+        child.kill();
+      } catch {
+        /* child may already be gone */
+      }
+      finish(143);
+    });
+  }
 }
 
 main();
