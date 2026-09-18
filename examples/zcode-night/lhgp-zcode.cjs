@@ -250,6 +250,13 @@ function main() {
   // 支持再把本注记换成传参逻辑）。
   if (ids.snapshot) zargs.push("--attach", ids.snapshot);
   if (stored && stored.session_id) zargs.push("--resume", stored.session_id);
+  // resume 失效防护（2026-09-18）：应用升级/数据目录迁移会让存量 session 失效
+  // （实测 "Error: Model creation failed" rc=1 in 1s），而 daemon 会按失败重派，
+  // 连续快速失败把 max_dispatches 预算整批烧光（wav6-openpi-discipline-g1 实案）。
+  // 预先算好不带 --resume 的降级参数，供 finish() 快速失败时重试一次。
+  const storedResumeFrom = stored && stored.session_id ? stored.session_id : null;
+  const resumeFlagIdx = storedResumeFrom ? zargs.indexOf("--resume") : -1;
+  const zargsNoResume = resumeFlagIdx >= 0 ? zargs.slice(0, resumeFlagIdx) : zargs;
 
   if (dryRun) {
     process.stdout.write(
@@ -283,39 +290,70 @@ function main() {
   const started = Date.now();
   let stdoutBuf = "";
   let stderrBuf = "";
-  const child = spawn(node.path, zargs, { cwd: process.cwd(), stdio: ["ignore", "pipe", "pipe"] });
+  let activeResumeFrom = storedResumeFrom;
+  let retriedWithoutResume = false;
 
-  // 启动即落一条 start 记录：daemon 按 attempt 时限硬杀（Windows taskkill /F =
-  // TerminateProcess，不可捕获）时 finish() 不会执行，start 记录是唯一留痕——
-  // 审计侧按 event 配对即可发现「有启动无退出」的被杀运行，不再出现整段失踪。
-  if (ids.contract_id) {
-    appendRunLog(dataRoot, ids.contract_id, {
-      at: new Date().toISOString(),
-      event: "start",
-      attempt_id: ids.attempt_id,
-      pid: child.pid,
-      model_id: modelId,
-      resume_from: stored ? stored.session_id : null,
-      max_turns: null,
+  const spawnChild = (args, resumeFrom) => {
+    const c = spawn(node.path, args, { cwd: process.cwd(), stdio: ["ignore", "pipe", "pipe"] });
+    // 启动即落一条 start 记录：daemon 按 attempt 时限硬杀（Windows taskkill /F =
+    // TerminateProcess，不可捕获）时 finish() 不会执行，start 记录是唯一留痕——
+    // 审计侧按 event 配对即可发现「有启动无退出」的被杀运行，不再整段失踪。
+    if (ids.contract_id) {
+      appendRunLog(dataRoot, ids.contract_id, {
+        at: new Date().toISOString(),
+        event: "start",
+        attempt_id: ids.attempt_id,
+        pid: c.pid,
+        model_id: modelId,
+        resume_from: resumeFrom,
+        max_turns: null,
+      });
+    }
+    c.stdout.on("data", (d) => {
+      stdoutBuf += d.toString("utf8");
+      process.stdout.write(d);
     });
-  }
+    c.stderr.on("data", (d) => {
+      stderrBuf += d.toString("utf8");
+      process.stderr.write(d);
+    });
+    c.on("exit", (code) => finish(code === null ? 1 : code));
+    c.on("error", (err) => {
+      log("fatal: spawn failed: " + err.message);
+      finish(1);
+    });
+    return c;
+  };
 
-  child.stdout.on("data", (d) => {
-    stdoutBuf += d.toString("utf8");
-    process.stdout.write(d);
-  });
-  child.stderr.on("data", (d) => {
-    stderrBuf += d.toString("utf8");
-    process.stderr.write(d);
-  });
+  let child = spawnChild(zargs, activeResumeFrom);
 
   let finished = false;
   const finish = (rc) => {
     if (finished) return;
-    finished = true;
     const seconds = Math.round((Date.now() - started) / 1000);
     const result = pickLastJson(stdoutBuf);
     const sessionId = result && typeof result.sessionId === "string" ? result.sessionId : null;
+    // 快速失败降级：带 --resume 且秒败（≤15s）且没有产出任何 turn JSON 时，
+    // 判定存量 session 失效，去掉 --resume 全新起跑重试一次（不重试配额类
+    // 业务错误，那类失败重试同样失败）。成功后 saveSession 会写入新 sessionId，
+    // 续跑链自愈；只降级一次，避免把失败变成死循环。
+    const quotaLike = /使用上限|PROVIDER_BUSINESS_ERROR|quota|rate.?limit/i.test(stderrBuf);
+    if (
+      rc !== 0 &&
+      activeResumeFrom &&
+      !retriedWithoutResume &&
+      !result &&
+      !quotaLike &&
+      seconds <= 15
+    ) {
+      retriedWithoutResume = true;
+      activeResumeFrom = null;
+      log(`resume session failed fast (rc=${rc} in ${seconds}s); retrying once without --resume`);
+      stderrBuf += "\n[lhgp-zcode] retry without --resume after stale-session fast failure\n";
+      child = spawnChild(zargsNoResume, null);
+      return;
+    }
+    finished = true;
     const usage = result ? mapUsage(result.usage) : undefined;
     const quotaHit = /使用上限|PROVIDER_BUSINESS_ERROR|quota|rate.?limit/i.test(stderrBuf);
     const ok = rc === 0 && !!result;
@@ -339,7 +377,7 @@ function main() {
         rc,
         seconds,
         session_id: sessionId,
-        resume_from: stored ? stored.session_id : null,
+        resume_from: activeResumeFrom,
         model_id: modelId,
         usage: usage || null,
         quota_hit: quotaHit,
@@ -367,11 +405,9 @@ function main() {
     process.exit(rc);
   };
 
-  child.on("exit", (code) => finish(code === null ? 1 : code));
-  child.on("error", (err) => {
-    log("fatal: spawn failed: " + err.message);
-    finish(1);
-  });
+  // 子进程 exit/error 处理已在 spawnChild 内挂接；桥接自身收到可捕获信号时把
+  // 当前子进程一起带走并补写退出记录（rc=143 视作被终止）；不可捕获的硬杀
+  // （taskkill /F / 停电）由上面的 start 记录兜底留痕。
   // 桥接自身收到可捕获信号时把子进程一起带走并补写退出记录（rc=143 视作被终止）；
   // 不可捕获的硬杀（taskkill /F / 停电）由上面的 start 记录兜底留痕。
   for (const sig of ["SIGINT", "SIGTERM", "SIGHUP", "SIGBREAK"]) {
